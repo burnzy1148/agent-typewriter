@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/burnzy1148/agent-typewriter.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -350,9 +354,9 @@
     "watch": "npm run build -- --watch",
     "typecheck": "tsc --noEmit -p .",
     "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --outdir=.test-out && node --test .test-out/*.test.js",
-    "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies --allow-missing-repository",
+    "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && xvfb-run -a node .it-out/runTest.js"
+    "it": "npm run build && esbuild it/suite.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",
