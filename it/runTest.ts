@@ -27,10 +27,22 @@ async function main() {
     ),
   );
 
+  // VS Code puts an IPC socket in the user-data dir. The default one under
+  // .vscode-test/ is too long for macOS's 104-char socket limit in deep
+  // checkouts such as worktrees, so keep it short.
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
+
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath,
-    launchArgs: [workspace, '--disable-extensions', '--disable-gpu', '--no-sandbox', '--disable-workspace-trust'],
+    launchArgs: [
+      workspace,
+      `--user-data-dir=${userData}`,
+      '--disable-extensions',
+      '--disable-gpu',
+      '--no-sandbox',
+      '--disable-workspace-trust',
+    ],
   });
 }
 
