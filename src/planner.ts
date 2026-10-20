@@ -23,6 +23,32 @@ export function normalizeEol(text: string): string {
   return text.indexOf('\r') === -1 ? text : text.replace(/\r\n?/g, '\n');
 }
 
+export type Eol = '\n' | '\r\n';
+
+/** A file's line ending: CRLF only when CRLF breaks outnumber LF-only breaks. */
+export function detectEol(raw: string): Eol {
+  if (raw.indexOf('\r\n') === -1) return '\n';
+  let crlf = 0;
+  let lf = 0;
+  for (let i = raw.indexOf('\n'); i !== -1; i = raw.indexOf('\n', i + 1)) {
+    if (i > 0 && raw[i - 1] === '\r') crlf++;
+    else lf++;
+  }
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+/** Line and column of an offset into LF-normalized text. */
+export function lfOffsetToLineCol(lfText: string, offset: number): { line: number; character: number } {
+  const at = Math.max(0, Math.min(offset, lfText.length));
+  let line = 0;
+  let lineStart = 0;
+  for (let i = lfText.indexOf('\n'); i !== -1 && i < at; i = lfText.indexOf('\n', i + 1)) {
+    line++;
+    lineStart = i + 1;
+  }
+  return { line, character: at - lineStart };
+}
+
 /**
  * Turns a before/after pair into an ordered list of hunks that read like a
  * person editing top to bottom: whole new lines are typed as lines, and a

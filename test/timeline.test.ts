@@ -4,7 +4,7 @@ import { Timeline, type NewChangeEvent } from '../src/timeline';
 import { PathFilter, parseExtensionList } from '../src/filter';
 
 function ev(relPath: string, before: string, after: string): NewChangeEvent {
-  return { uri: 'file:///w/' + relPath, relPath, time: Date.now(), kind: 'modify', before, after, linesAdded: 0, linesRemoved: 0 };
+  return { uri: 'file:///w/' + relPath, relPath, time: Date.now(), kind: 'modify', before, after, eol: '\n', linesAdded: 0, linesRemoved: 0 };
 }
 
 test('events play back in recorded order across files', () => {

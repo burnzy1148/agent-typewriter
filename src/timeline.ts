@@ -10,8 +10,11 @@ export interface ChangeEvent {
   /** Epoch millis when the change was recorded. */
   time: number;
   kind: ChangeKind;
+  /** LF-normalized text; see eol for the real file's line ending. */
   before: string;
   after: string;
+  /** The real file's line ending when this change was recorded. */
+  eol: '\n' | '\r\n';
   linesAdded: number;
   linesRemoved: number;
 }

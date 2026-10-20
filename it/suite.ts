@@ -118,4 +118,41 @@ export async function run(): Promise<void> {
   await until('txt playback', idle);
   assert.equal(mirrorText('notes.txt'), 'now it is watched\n');
   console.log('[it] live filter change ok');
+
+  // --- 7. Line endings: CRLF files replay as CRLF, LF files as LF whatever files.eol says.
+  const mirrorDoc = (rel: string) =>
+    vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel);
+  const crlf = (lines: string[]) => lines.map((l) => l + '\r\n').join('');
+  const lines = Array.from({ length: 50 }, (_, i) => `export const v${i} = ${i};`);
+  write('src/crlf.ts', crlf(lines));
+  await until('crlf create event', () => timeline.all().some((e) => e.relPath === 'src/crlf.ts'), 5000);
+  await until('crlf create playback', idle);
+  const edited = lines.slice();
+  edited[25] = 'export const v25 = 25 * 2; // changed in the middle';
+  write('src/crlf.ts', crlf(edited));
+  await until('crlf modify event', () => timeline.all().filter((e) => e.relPath === 'src/crlf.ts').length === 2, 5000);
+  await until('crlf modify playback', idle);
+  assert.equal(mirrorDoc('src/crlf.ts')?.eol, vscode.EndOfLine.CRLF, 'CRLF file replayed with LF line endings');
+  assert.equal(mirrorText('src/crlf.ts'), disk('src/crlf.ts'), 'CRLF mirror does not match disk');
+  assert.equal(mirrorDoc('src/crlf.ts')?.lineAt(25).text, edited[25], 'edit landed on the wrong line');
+
+  // A line-ending-only rewrite is not recorded; the next change uses the new ending.
+  const crlfEvents = timeline.all().length;
+  write('src/crlf.ts', edited.map((l) => l + '\n').join(''));
+  await sleep(600);
+  assert.equal(timeline.all().length, crlfEvents, 'line-ending-only rewrite was recorded');
+  write('src/crlf.ts', edited.map((l) => l + '\n').join('') + 'export const last = true;\n');
+  await until('lf modify event', () => timeline.all().length === crlfEvents + 1, 5000);
+  await until('lf modify playback', idle);
+  assert.equal(mirrorDoc('src/crlf.ts')?.eol, vscode.EndOfLine.LF, 'mirror kept CRLF after the file became LF');
+  assert.equal(mirrorText('src/crlf.ts'), disk('src/crlf.ts'));
+
+  // A new LF file stays LF even when VS Code's default is CRLF.
+  await vscode.workspace.getConfiguration('files').update('eol', '\r\n', vscode.ConfigurationTarget.Workspace);
+  write('src/lf.ts', 'export const a = 1;\nexport const b = 2;\n');
+  await until('lf create event', () => timeline.all().some((e) => e.relPath === 'src/lf.ts'), 5000);
+  await until('lf create playback', idle);
+  assert.equal(mirrorDoc('src/lf.ts')?.eol, vscode.EndOfLine.LF, 'LF file took the CRLF default');
+  assert.equal(mirrorText('src/lf.ts'), disk('src/lf.ts'));
+  console.log('[it] line endings ok');
 }

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { MirrorFileSystem } from './mirrorFs';
 import { baseCharsPerSecond } from './pace';
-import { planHunks, type Hunk } from './planner';
+import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
 import type { ChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
@@ -23,6 +23,8 @@ export class Player implements vscode.Disposable {
   private manualSpeed = 1;
   private replayColumn: vscode.ViewColumn | undefined;
   private lastRelPath: string | undefined;
+  /** Line ending of the change being played; reapplied if its tab is reopened. */
+  private currentEol: Eol = '\n';
   private waiters: Array<() => void> = [];
   private inFlight: Promise<void> = Promise.resolve();
   private readonly encoder = new TextEncoder();
@@ -81,15 +83,16 @@ export class Player implements vscode.Disposable {
       if (!newest || e.seq > newest.seq) newest = e;
       if (!this.mirror.has(uri)) continue;
       const doc = await vscode.workspace.openTextDocument(uri);
-      if (doc.getText() === e.after) continue;
+      if (normalizeEol(doc.getText()) === e.after && doc.eol === toEndOfLine(e.eol)) continue;
       const edit = new vscode.WorkspaceEdit();
-      edit.replace(uri, fullRange(doc), e.after);
+      edit.set(uri, [vscode.TextEdit.setEndOfLine(toEndOfLine(e.eol)), vscode.TextEdit.replace(fullRange(doc), e.after)]);
       await vscode.workspace.applyEdit(edit);
       await this.save(doc);
     }
     if (newest) {
       const editor = await this.showMirror(newest.relPath, newest.after);
-      if (editor.document.getText() !== newest.after) await replaceAll(editor, newest.after);
+      await setEol(editor, newest.eol);
+      if (normalizeEol(editor.document.getText()) !== newest.after) await replaceAll(editor, newest.after);
       this.lastRelPath = newest.relPath;
     }
   }
@@ -126,6 +129,8 @@ export class Player implements vscode.Disposable {
     const s = this.settings();
     const switching = this.lastRelPath !== e.relPath;
     let editor = await this.showMirror(e.relPath, e.before);
+    this.currentEol = e.eol;
+    await setEol(editor, e.eol);
     if (switching && this.lastRelPath !== undefined) {
       await this.sleep(s.fileSwitchDelayMs / this.speedMultiplier(s));
     }
@@ -133,10 +138,10 @@ export class Player implements vscode.Disposable {
 
     // The mirror might not match this event's "before" (first replay, after a
     // seek, or if someone typed into it). Snap it so the hunks line up.
-    if (editor.document.getText() !== e.before) await replaceAll(editor, e.before);
+    if (normalizeEol(editor.document.getText()) !== e.before) await replaceAll(editor, e.before);
 
     if (e.kind === 'delete') {
-      editor.selection = new vscode.Selection(new vscode.Position(0, 0), editor.document.positionAt(e.before.length));
+      editor.selection = new vscode.Selection(new vscode.Position(0, 0), posAt(editor.document, e.before.length));
       await this.sleep(500 / this.speedMultiplier(s));
       await replaceAll(editor, '');
       await this.save(editor.document);
@@ -161,7 +166,7 @@ export class Player implements vscode.Disposable {
     if (this.epoch !== epoch) return;
 
     editor = await this.editorFor(e.relPath, editor);
-    if (editor.document.getText() !== e.after) await replaceAll(editor, e.after);
+    if (normalizeEol(editor.document.getText()) !== e.after) await replaceAll(editor, e.after);
     await this.save(editor.document);
   }
 
@@ -170,11 +175,11 @@ export class Player implements vscode.Disposable {
   private async typeHunk(relPath: string, editor: vscode.TextEditor, h: Hunk, epoch: number): Promise<void> {
     const s = this.settings();
     const doc = editor.document;
-    const start = doc.positionAt(h.offset);
+    const start = posAt(doc, h.offset);
 
     // Navigate: put the caret where the edit happens, the way a person clicks there.
     const caretAt = h.deleteText.length > 0 && h.deleteText.length <= BACKSPACE_MAX && !h.deleteText.includes('\n')
-      ? doc.positionAt(h.offset + h.deleteText.length)
+      ? posAt(doc, h.offset + h.deleteText.length)
       : start;
     editor.selection = new vscode.Selection(caretAt, caretAt);
     editor.revealRange(new vscode.Range(caretAt, caretAt), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
@@ -204,8 +209,8 @@ export class Player implements vscode.Disposable {
         const doc = editor.document;
         const cps = this.cps(s, doc) * 1.6;
         const step = Math.min(remaining, Math.max(1, Math.round(cps / TICK_HZ)));
-        const from = doc.positionAt(h.offset + remaining - step);
-        const to = doc.positionAt(h.offset + remaining);
+        const from = posAt(doc, h.offset + remaining - step);
+        const to = posAt(doc, h.offset + remaining);
         await editSafe(editor, (b) => b.delete(new vscode.Range(from, to)));
         remaining -= step;
         editor.selection = new vscode.Selection(from, from);
@@ -218,7 +223,7 @@ export class Player implements vscode.Disposable {
     // select the text, pause so the selection registers, then delete it.
     editor = await this.editorFor(relPath, editor);
     const doc = editor.document;
-    const range = new vscode.Range(doc.positionAt(h.offset), doc.positionAt(h.offset + remaining));
+    const range = new vscode.Range(posAt(doc, h.offset), posAt(doc, h.offset + remaining));
     editor.selection = new vscode.Selection(range.start, range.end);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     if (!this.finishNow) await this.sleep(this.humanize(380, s) / this.speedMultiplier(s));
@@ -236,13 +241,13 @@ export class Player implements vscode.Disposable {
       const doc = editor.document;
 
       if (this.finishNow) {
-        const at = doc.positionAt(offset + i);
+        const at = posAt(doc, offset + i);
         await editSafe(editor, (b) => b.insert(at, text.slice(i)));
         return;
       }
 
       const cps = this.cps(s, doc);
-      const atLineStart = doc.positionAt(offset + i).character === 0;
+      const atLineStart = posAt(doc, offset + i).character === 0;
       let chunk = '';
       let instant = false;
       if (atLineStart) {
@@ -263,18 +268,18 @@ export class Player implements vscode.Disposable {
         chunk = text.slice(i, j);
       }
 
-      const at = doc.positionAt(offset + i);
+      const at = posAt(doc, offset + i);
       await editSafe(editor, (b) => b.insert(at, chunk));
       i += chunk.length;
-      const caret = doc.positionAt(offset + i);
+      const caret = posAt(doc, offset + i);
       editor.selection = new vscode.Selection(caret, caret);
       if (chunk.includes('\n') || i === chunk.length) {
         editor.revealRange(new vscode.Range(caret, caret), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       }
       if (!instant) await this.sleep(this.delayAfter(chunk, cps, s));
     }
-    const end = editor.document.positionAt(offset + text.length);
-    this.flashRange(editor, new vscode.Range(editor.document.positionAt(offset), end));
+    const end = posAt(editor.document, offset + text.length);
+    this.flashRange(editor, new vscode.Range(posAt(editor.document, offset), end));
   }
 
   // ---------------------------------------------------------------- pacing
@@ -327,6 +332,7 @@ export class Player implements vscode.Disposable {
     const visible = vscode.window.visibleTextEditors.find((ed) => ed.document.uri.toString() === key);
     if (visible) return visible;
     const editor = await this.showMirror(relPath, '');
+    await setEol(editor, this.currentEol);
     return editor;
   }
 
@@ -385,4 +391,20 @@ async function replaceAll(editor: vscode.TextEditor, text: string): Promise<void
 async function editSafe(editor: vscode.TextEditor, fn: (b: vscode.TextEditorEdit) => void): Promise<void> {
   const ok = await editor.edit(fn, { undoStopBefore: false, undoStopAfter: false });
   if (!ok) throw new Error('editor rejected the edit (tab closed or document changed)');
+}
+
+/** Position of an offset into the LF-normalized text, whatever the document's line ending. */
+function posAt(doc: vscode.TextDocument, lfOffset: number): vscode.Position {
+  if (doc.eol === vscode.EndOfLine.LF) return doc.positionAt(lfOffset);
+  const p = lfOffsetToLineCol(normalizeEol(doc.getText()), lfOffset);
+  return new vscode.Position(p.line, p.character);
+}
+
+function toEndOfLine(eol: Eol): vscode.EndOfLine {
+  return eol === '\r\n' ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+}
+
+async function setEol(editor: vscode.TextEditor, eol: Eol): Promise<void> {
+  const want = toEndOfLine(eol);
+  if (editor.document.eol !== want) await editSafe(editor, (b) => b.setEndOfLine(want));
 }
