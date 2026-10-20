@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { MirrorFileSystem } from './mirrorFs';
+import { baseCharsPerSecond } from './pace';
 import { planHunks, type Hunk } from './planner';
 import type { ChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
@@ -199,10 +200,10 @@ export class Player implements vscode.Disposable {
         if (this.epoch !== epoch) return;
         await this.whilePaused(epoch);
         if (this.finishNow) break;
-        const cps = this.cps(s) * 1.6;
-        const step = Math.min(remaining, Math.max(1, Math.round(cps / TICK_HZ)));
         editor = await this.editorFor(relPath, editor);
         const doc = editor.document;
+        const cps = this.cps(s, doc) * 1.6;
+        const step = Math.min(remaining, Math.max(1, Math.round(cps / TICK_HZ)));
         const from = doc.positionAt(h.offset + remaining - step);
         const to = doc.positionAt(h.offset + remaining);
         await editSafe(editor, (b) => b.delete(new vscode.Range(from, to)));
@@ -240,7 +241,7 @@ export class Player implements vscode.Disposable {
         return;
       }
 
-      const cps = this.cps(s);
+      const cps = this.cps(s, doc);
       const atLineStart = doc.positionAt(offset + i).character === 0;
       let chunk = '';
       let instant = false;
@@ -283,8 +284,8 @@ export class Player implements vscode.Disposable {
     return catchUp * this.manualSpeed;
   }
 
-  private cps(s: Settings): number {
-    return s.charsPerSecond * this.speedMultiplier(s);
+  private cps(s: Settings, doc: vscode.TextDocument): number {
+    return baseCharsPerSecond(doc.languageId, s.charsPerSecond, s.languageSpeeds) * this.speedMultiplier(s);
   }
 
   private delayAfter(chunk: string, cps: number, s: Settings): number {
