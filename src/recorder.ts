@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { PathFilter } from './filter';
-import { countChanges, normalizeEol } from './planner';
+import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
 import type { ChangeKind, Timeline } from './timeline';
 import type { Settings } from './config';
 
@@ -16,7 +16,8 @@ const OWN_SAVE_WINDOW_MS = 2000;
  * makes the buffer replayable in exact order across many files.
  */
 export class Recorder implements vscode.Disposable {
-  private readonly snapshots = new Map<string, string>();
+  /** LF-normalized text plus the file's real line ending. */
+  private readonly snapshots = new Map<string, Snapshot>();
   private readonly timers = new Map<string, { timer: NodeJS.Timeout; created: boolean }>();
   private readonly ownSaves = new Map<string, number>();
   private readonly subscriptions: vscode.Disposable[] = [];
@@ -124,8 +125,8 @@ export class Recorder implements vscode.Disposable {
     for (let i = 0; i < uris.length; i += batch) {
       await Promise.all(
         uris.slice(i, i + batch).map(async (uri) => {
-          const text = await this.readText(uri, s);
-          if (text !== undefined) this.snapshots.set(uri.toString(), text);
+          const snap = await this.readText(uri, s);
+          if (snap !== undefined) this.snapshots.set(uri.toString(), snap);
         }),
       );
     }
@@ -157,14 +158,14 @@ export class Recorder implements vscode.Disposable {
     if (!exists) {
       if (previous !== undefined) {
         this.snapshots.delete(key);
-        this.record(uri, relPath, 'delete', previous, '');
+        this.record(uri, relPath, 'delete', previous.text, '', previous.eol);
       }
       return;
     }
     if (exists.type !== vscode.FileType.File) return;
 
-    const text = await this.readText(uri, s, exists.size);
-    if (text === undefined) {
+    const snap = await this.readText(uri, s, exists.size);
+    if (snap === undefined) {
       this.snapshots.delete(key);
       return;
     }
@@ -172,23 +173,25 @@ export class Recorder implements vscode.Disposable {
     const savedAt = this.ownSaves.get(key);
     if (s.ignoreOwnSaves && savedAt !== undefined && Date.now() - savedAt < OWN_SAVE_WINDOW_MS) {
       this.ownSaves.delete(key);
-      this.snapshots.set(key, text);
+      this.snapshots.set(key, snap);
       return;
     }
 
-    this.snapshots.set(key, text);
+    // Always store the new snapshot, so a line-ending-only rewrite updates eol
+    // for the next change without being recorded itself.
+    this.snapshots.set(key, snap);
     if (previous === undefined) {
       // No baseline: a brand-new file is typed from empty; an unknown existing
       // file just gets its baseline now.
-      if (created) this.record(uri, relPath, 'create', '', text);
+      if (created) this.record(uri, relPath, 'create', '', snap.text, snap.eol);
       else this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
       return;
     }
-    if (previous === text) return;
-    this.record(uri, relPath, 'modify', previous, text);
+    if (previous.text === snap.text) return;
+    this.record(uri, relPath, 'modify', previous.text, snap.text, snap.eol);
   }
 
-  private record(uri: vscode.Uri, relPath: string, kind: ChangeKind, before: string, after: string): void {
+  private record(uri: vscode.Uri, relPath: string, kind: ChangeKind, before: string, after: string, eol: Eol): void {
     const { added, removed } = countChanges(before, after);
     this.timeline.push({
       uri: uri.toString(),
@@ -197,23 +200,29 @@ export class Recorder implements vscode.Disposable {
       kind,
       before,
       after,
+      eol,
       linesAdded: added,
       linesRemoved: removed,
     });
   }
 
-  private async readText(uri: vscode.Uri, s: Settings, knownSize?: number): Promise<string | undefined> {
+  private async readText(uri: vscode.Uri, s: Settings, knownSize?: number): Promise<Snapshot | undefined> {
     try {
       const size = knownSize ?? (await vscode.workspace.fs.stat(uri)).size;
       if (size > s.maxFileSizeKB * 1024) return undefined;
       const bytes = await vscode.workspace.fs.readFile(uri);
       const text = this.decoder.decode(bytes);
       if (text.slice(0, 8000).includes('\u0000')) return undefined;
-      return normalizeEol(text);
+      return { text: normalizeEol(text), eol: detectEol(text) };
     } catch {
       return undefined;
     }
   }
+}
+
+interface Snapshot {
+  text: string;
+  eol: Eol;
 }
 
 async function stat(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {
