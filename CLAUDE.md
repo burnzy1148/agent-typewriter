@@ -1,77 +1,36 @@
-# Project Instructions for AI Agents
+# Agent Typewriter
 
-This file provides instructions and context for AI coding agents working on this project.
+A VS Code extension that watches files change on disk and replays each change as human-like typing.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
-## Beads Issue Tracker
+## Commands
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+- `npm test`: unit tests plus a fuzz test of the planner.
+- `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
+- `npm run package`: builds the .vsix.
 
-### Quick Reference
+## Architecture
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
+- `src/planner.ts`: diffs before/after text into ordered hunks to type, each offset relative to the text after earlier hunks.
+- `src/timeline.ts`: ordered, bounded buffer of recorded change events with a playback cursor and seek.
+- `src/recorder.ts`: watches the workspace, keeps file snapshots, and records each settled write as a before/after event.
+- `src/player.ts`: consumes the timeline in order and types each change into its mirror editor.
+- `src/mirrorFs.ts`: in-memory filesystem behind the `agent-typewriter:` mirror documents that replay is typed into.
+- `src/filter.ts`: decides which workspace paths get recorded (extension allow-list, exclude globs, include globs).
+- `src/timelineView.ts`: tree view listing recorded changes and their played/playing/pending state.
+- `src/config.ts`: reads and updates the `agentTypewriter.*` settings.
+- `src/extension.ts`: activation; wires recorder, timeline, player, mirror filesystem, view, and commands together.
 
-### Rules
+## Rules that must not break
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- The extension never writes to the user's real files. Replay only happens in `agent-typewriter:` mirror documents.
+- A change's "before" text is captured when the change is recorded, never when it is played.
+- Applying `planHunks` to the before text must reproduce the after text exactly. The fuzz test guards this.
+- Recording and playback stay decoupled through the `Timeline`.
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
+## Workflow
 
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
-
-
-## Build & Test
-
-_Add your build and test commands here_
-
-```bash
-# Example:
-# npm install
-# npm test
-```
-
-## Architecture Overview
-
-_Add a brief overview of your project architecture_
-
-## Conventions & Patterns
-
-_Add your project-specific conventions here_
+- beads holds the roadmap and OpenSpec holds feature definitions. See AGENTS.md for beads usage.
+- Pick work with `bd ready --exclude-type epic`, then claim it with `bd update <id> --claim`.
+- Each feature bead becomes one OpenSpec change: explore, then propose. Record the change name on the bead with `bd update <id> --spec-id openspec/changes/<name>`. Then apply, then archive, then `bd close`.
+- Implementation tasks live in the change's `tasks.md`, not as beads. Anything new discovered during implementation becomes a bead with `--deps discovered-from:<id>`.
+- Remove the `needs-spec` label once a change is proposed.

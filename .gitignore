@@ -5,3 +5,11 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Build and test output
+node_modules/
+dist/
+.test-out/
+.it-out/
+.vscode-test/
+*.vsix
