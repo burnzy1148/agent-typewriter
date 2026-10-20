@@ -67,6 +67,7 @@ Filter changes apply immediately while watching; newly matching files are snapsh
 | Setting | Default | |
 |---|---|---|
 | `charsPerSecond` | 35 | Base typing speed |
+| `languageSpeeds` | {} | Base speed per language ID, e.g. `{ "markdown": 60 }`; unlisted languages use `charsPerSecond` |
 | `jitter` | 0.6 | Rhythm unevenness, 0 to 1 |
 | `catchUpFactor` | 0.5 | Speed added per queued change |
 | `maxSpeedup` | 8 | Cap on automatic catch-up |

@@ -274,6 +274,15 @@
           "minimum": 1,
           "description": "Base typing speed in characters per second."
         },
+        "agentTypewriter.languageSpeeds": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "default": {},
+          "markdownDescription": "Base typing speed per language, in characters per second, keyed by VS Code language ID (for example `{ \"markdown\": 60, \"json\": 120 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerSecond#`."
+        },
         "agentTypewriter.jitter": {
           "type": "number",
           "default": 0.6,

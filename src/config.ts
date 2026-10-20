@@ -6,6 +6,8 @@ export const SECTION = 'agentTypewriter';
 export interface Settings extends FilterSettings {
   autoStart: boolean;
   charsPerSecond: number;
+  /** Language id → base chars per second. Raw from settings; pace.ts ignores bad entries. */
+  languageSpeeds: Record<string, unknown>;
   jitter: number;
   catchUpFactor: number;
   maxSpeedup: number;
@@ -26,6 +28,7 @@ export function readSettings(): Settings {
     exclude: c.get('exclude', []),
     extensions: c.get('extensions', []),
     charsPerSecond: Math.max(1, c.get('charsPerSecond', 35)),
+    languageSpeeds: asRecord(c.get<unknown>('languageSpeeds', {})),
     jitter: clamp(c.get('jitter', 0.6), 0, 1),
     catchUpFactor: Math.max(0, c.get('catchUpFactor', 0.5)),
     maxSpeedup: Math.max(1, c.get('maxSpeedup', 8)),
@@ -45,6 +48,10 @@ export async function updateSetting(key: string, value: unknown): Promise<void> 
     ? vscode.ConfigurationTarget.Workspace
     : vscode.ConfigurationTarget.Global;
   await vscode.workspace.getConfiguration(SECTION).update(key, value, target);
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 function clamp(n: number, lo: number, hi: number): number {
