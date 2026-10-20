@@ -1,0 +1,118 @@
+import * as vscode from 'vscode';
+
+export const MIRROR_SCHEME = 'agent-typewriter';
+
+/**
+ * A tiny in-memory filesystem that backs the replay editors.
+ *
+ * The real files are never touched. Each watched file gets a mirror document
+ * at agent-typewriter:/<relative path>, so tabs show the real file name and
+ * VS Code picks the right language mode and syntax highlighting from the
+ * extension. Being a writable filesystem (unlike a read-only content
+ * provider) is what lets the player apply edits through the editor API and
+ * save quietly so closing a tab never prompts.
+ */
+export class MirrorFileSystem implements vscode.FileSystemProvider {
+  private files = new Map<string, { data: Uint8Array; mtime: number; ctime: number }>();
+  private readonly emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
+  readonly onDidChangeFile = this.emitter.event;
+
+  static uriFor(relPath: string): vscode.Uri {
+    return vscode.Uri.from({ scheme: MIRROR_SCHEME, path: '/' + relPath.replace(/^\/+/, '') });
+  }
+
+  has(uri: vscode.Uri): boolean {
+    return this.files.has(uri.path);
+  }
+
+  clear(): void {
+    const uris = [...this.files.keys()].map((p) => vscode.Uri.from({ scheme: MIRROR_SCHEME, path: p }));
+    this.files.clear();
+    this.emitter.fire(uris.map((uri) => ({ type: vscode.FileChangeType.Deleted, uri })));
+  }
+
+  watch(): vscode.Disposable {
+    return new vscode.Disposable(() => undefined);
+  }
+
+  stat(uri: vscode.Uri): vscode.FileStat {
+    const f = this.files.get(uri.path);
+    if (f) return { type: vscode.FileType.File, ctime: f.ctime, mtime: f.mtime, size: f.data.byteLength };
+    if (this.isDirectory(uri.path)) return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
+    throw vscode.FileSystemError.FileNotFound(uri);
+  }
+
+  readDirectory(uri: vscode.Uri): [string, vscode.FileType][] {
+    const prefix = uri.path.endsWith('/') ? uri.path : uri.path + '/';
+    const out = new Map<string, vscode.FileType>();
+    for (const p of this.files.keys()) {
+      if (!p.startsWith(prefix)) continue;
+      const rest = p.slice(prefix.length);
+      const slash = rest.indexOf('/');
+      if (slash === -1) out.set(rest, vscode.FileType.File);
+      else out.set(rest.slice(0, slash), vscode.FileType.Directory);
+    }
+    return [...out];
+  }
+
+  createDirectory(): void {
+    // Directories are implicit.
+  }
+
+  readFile(uri: vscode.Uri): Uint8Array {
+    const f = this.files.get(uri.path);
+    if (!f) throw vscode.FileSystemError.FileNotFound(uri);
+    return f.data;
+  }
+
+  writeFile(uri: vscode.Uri, content: Uint8Array): void {
+    const now = Date.now();
+    const existing = this.files.get(uri.path);
+    this.files.set(uri.path, { data: content, mtime: now, ctime: existing?.ctime ?? now });
+    this.emitter.fire([{ type: existing ? vscode.FileChangeType.Changed : vscode.FileChangeType.Created, uri }]);
+  }
+
+  delete(uri: vscode.Uri): void {
+    const prefix = uri.path + '/';
+    for (const p of [...this.files.keys()]) {
+      if (p === uri.path || p.startsWith(prefix)) this.files.delete(p);
+    }
+    this.emitter.fire([{ type: vscode.FileChangeType.Deleted, uri }]);
+  }
+
+  rename(oldUri: vscode.Uri, newUri: vscode.Uri): void {
+    const f = this.files.get(oldUri.path);
+    if (!f) throw vscode.FileSystemError.FileNotFound(oldUri);
+    this.files.delete(oldUri.path);
+    this.files.set(newUri.path, f);
+    this.emitter.fire([
+      { type: vscode.FileChangeType.Deleted, uri: oldUri },
+      { type: vscode.FileChangeType.Created, uri: newUri },
+    ]);
+  }
+
+  private isDirectory(path: string): boolean {
+    if (path === '/' || path === '') return true;
+    const prefix = path.endsWith('/') ? path : path + '/';
+    for (const p of this.files.keys()) if (p.startsWith(prefix)) return true;
+    return false;
+  }
+}
+
+/** Read-only before/after snapshots for the "Show Diff" command. */
+export const SNAPSHOT_SCHEME = 'agent-typewriter-snapshot';
+
+export class SnapshotProvider implements vscode.TextDocumentContentProvider {
+  constructor(private readonly lookup: (seq: number) => { before: string; after: string } | undefined) {}
+
+  static uriFor(seq: number, side: 'before' | 'after', relPath: string): vscode.Uri {
+    return vscode.Uri.from({ scheme: SNAPSHOT_SCHEME, path: '/' + relPath, query: `seq=${seq}&side=${side}` });
+  }
+
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    const params = new URLSearchParams(uri.query);
+    const e = this.lookup(Number(params.get('seq')));
+    if (!e) return '(this change is no longer in the buffer)';
+    return params.get('side') === 'before' ? e.before : e.after;
+  }
+}

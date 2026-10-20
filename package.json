@@ -1,0 +1,360 @@
+{
+  "name": "agent-typewriter",
+  "displayName": "Agent Typewriter",
+  "description": "Watches files change on disk (from Claude Code or any agent) and replays each change as if a person were typing it, flipping between files in the order they changed.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "agent",
+    "typing",
+    "replay",
+    "demo",
+    "typewriter"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentTypewriter.start",
+        "title": "Start Watching",
+        "category": "Agent Typewriter",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "agentTypewriter.stop",
+        "title": "Stop Watching",
+        "category": "Agent Typewriter",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "agentTypewriter.togglePause",
+        "title": "Pause / Resume Playback",
+        "category": "Agent Typewriter",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "agentTypewriter.finishCurrent",
+        "title": "Finish Current Change Instantly",
+        "category": "Agent Typewriter",
+        "icon": "$(debug-step-over)"
+      },
+      {
+        "command": "agentTypewriter.catchUp",
+        "title": "Skip to Latest",
+        "category": "Agent Typewriter",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "agentTypewriter.replayAll",
+        "title": "Replay Entire Buffer",
+        "category": "Agent Typewriter",
+        "icon": "$(history)"
+      },
+      {
+        "command": "agentTypewriter.replayFrom",
+        "title": "Replay From Here",
+        "category": "Agent Typewriter",
+        "icon": "$(play)"
+      },
+      {
+        "command": "agentTypewriter.showDiff",
+        "title": "Show Diff",
+        "category": "Agent Typewriter",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "agentTypewriter.clear",
+        "title": "Clear Buffer",
+        "category": "Agent Typewriter",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "agentTypewriter.setExtensions",
+        "title": "Set Watched Extensions...",
+        "category": "Agent Typewriter",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "agentTypewriter.watchOnlyThis",
+        "title": "Agent Typewriter: Watch Only This",
+        "category": "Agent Typewriter"
+      },
+      {
+        "command": "agentTypewriter.addToWatch",
+        "title": "Agent Typewriter: Add to Watch Filter",
+        "category": "Agent Typewriter"
+      },
+      {
+        "command": "agentTypewriter.resetFilters",
+        "title": "Reset Filters",
+        "category": "Agent Typewriter"
+      },
+      {
+        "command": "agentTypewriter.setSpeed",
+        "title": "Set Playback Speed...",
+        "category": "Agent Typewriter",
+        "icon": "$(dashboard)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "agentTypewriter.timeline",
+          "name": "Agent Typewriter"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agentTypewriter.timeline",
+        "when": "!agentTypewriter.watching",
+        "contents": "Not watching yet. Start watching and every matching file change will be recorded here and replayed as typing.\n[Start Watching](command:agentTypewriter.start)\n[Set Watched Extensions](command:agentTypewriter.setExtensions)"
+      },
+      {
+        "view": "agentTypewriter.timeline",
+        "when": "agentTypewriter.watching",
+        "contents": "Watching. Let your agent edit some files and each change will show up here, in order, as it is typed out in the replay editor."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentTypewriter.start",
+          "when": "view == agentTypewriter.timeline && !agentTypewriter.watching",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentTypewriter.stop",
+          "when": "view == agentTypewriter.timeline && agentTypewriter.watching",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentTypewriter.togglePause",
+          "when": "view == agentTypewriter.timeline",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentTypewriter.finishCurrent",
+          "when": "view == agentTypewriter.timeline",
+          "group": "navigation@3"
+        },
+        {
+          "command": "agentTypewriter.catchUp",
+          "when": "view == agentTypewriter.timeline",
+          "group": "navigation@4"
+        },
+        {
+          "command": "agentTypewriter.replayAll",
+          "when": "view == agentTypewriter.timeline",
+          "group": "navigation@5"
+        },
+        {
+          "command": "agentTypewriter.setExtensions",
+          "when": "view == agentTypewriter.timeline",
+          "group": "1_config@1"
+        },
+        {
+          "command": "agentTypewriter.setSpeed",
+          "when": "view == agentTypewriter.timeline",
+          "group": "1_config@2"
+        },
+        {
+          "command": "agentTypewriter.resetFilters",
+          "when": "view == agentTypewriter.timeline",
+          "group": "1_config@3"
+        },
+        {
+          "command": "agentTypewriter.clear",
+          "when": "view == agentTypewriter.timeline",
+          "group": "2_buffer@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentTypewriter.replayFrom",
+          "when": "view == agentTypewriter.timeline && viewItem == changeEvent",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentTypewriter.showDiff",
+          "when": "view == agentTypewriter.timeline && viewItem == changeEvent",
+          "group": "inline@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "agentTypewriter.watchOnlyThis",
+          "group": "z_agentTypewriter@1"
+        },
+        {
+          "command": "agentTypewriter.addToWatch",
+          "group": "z_agentTypewriter@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agentTypewriter.replayFrom",
+          "when": "false"
+        },
+        {
+          "command": "agentTypewriter.showDiff",
+          "when": "false"
+        },
+        {
+          "command": "agentTypewriter.watchOnlyThis",
+          "when": "false"
+        },
+        {
+          "command": "agentTypewriter.addToWatch",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agent Typewriter",
+      "properties": {
+        "agentTypewriter.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start watching automatically when a workspace opens."
+        },
+        "agentTypewriter.include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*"
+          ],
+          "description": "Workspace-relative globs to watch. A pattern without a slash (like *.ts) matches the file name anywhere."
+        },
+        "agentTypewriter.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/.git/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/build/**",
+            "**/target/**",
+            "**/.gradle/**",
+            "**/.idea/**",
+            "**/*.lock",
+            "**/package-lock.json",
+            "**/*.log"
+          ],
+          "description": "Workspace-relative globs to ignore. Exclude wins over include."
+        },
+        "agentTypewriter.extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Only watch these file extensions (for example [\"ts\", \"java\", \"md\"]). Empty means any extension that passes include/exclude."
+        },
+        "agentTypewriter.charsPerSecond": {
+          "type": "number",
+          "default": 35,
+          "minimum": 1,
+          "description": "Base typing speed in characters per second."
+        },
+        "agentTypewriter.jitter": {
+          "type": "number",
+          "default": 0.6,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "How uneven the typing rhythm is. 0 is perfectly even, 1 is very uneven."
+        },
+        "agentTypewriter.catchUpFactor": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0,
+          "description": "Extra speed per queued change, so playback accelerates when the agent gets ahead. Speed = base x (1 + factor x queued), capped at maxSpeedup."
+        },
+        "agentTypewriter.maxSpeedup": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Upper bound on the automatic catch-up multiplier."
+        },
+        "agentTypewriter.maxAnimatedChars": {
+          "type": "number",
+          "default": 6000,
+          "description": "Changes that add more characters than this are applied instantly instead of typed (big generated files, formatter runs)."
+        },
+        "agentTypewriter.fileSwitchDelayMs": {
+          "type": "number",
+          "default": 600,
+          "description": "Pause when playback flips to a different file, so the switch reads like a person changing tabs."
+        },
+        "agentTypewriter.debounceMs": {
+          "type": "number",
+          "default": 200,
+          "description": "Writes to the same file within this window are merged into one change."
+        },
+        "agentTypewriter.maxFileSizeKB": {
+          "type": "number",
+          "default": 512,
+          "description": "Files larger than this are ignored."
+        },
+        "agentTypewriter.historyLimit": {
+          "type": "number",
+          "default": 500,
+          "minimum": 10,
+          "description": "How many changes to keep in the buffer for replay. Oldest are dropped first."
+        },
+        "agentTypewriter.ignoreOwnSaves": {
+          "type": "boolean",
+          "default": true,
+          "description": "Do not replay changes you saved from a VS Code editor yourself. Turn off if your agent applies edits through VS Code's editor buffers and then saves."
+        },
+        "agentTypewriter.viewColumn": {
+          "type": "string",
+          "enum": [
+            "beside",
+            "active"
+          ],
+          "default": "beside",
+          "description": "Where the replay editor opens: in a column beside your current editor, or in the active column."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --outfile=dist/extension.js --sourcemap",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --outdir=.test-out && node --test .test-out/*.test.js",
+    "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies --allow-missing-repository",
+    "vscode:prepublish": "npm run build -- --minify",
+    "it": "npm run build && esbuild it/suite.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && xvfb-run -a node .it-out/runTest.js"
+  },
+  "dependencies": {
+    "diff": "^9.0.0",
+    "minimatch": "^10.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
