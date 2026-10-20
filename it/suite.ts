@@ -22,7 +22,10 @@ export async function run(): Promise<void> {
   const api = await ext.activate();
   const { timeline } = api;
   const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
-  const write = (rel: string, text: string) => fs.writeFileSync(path.join(root, rel), text);
+  const write = (rel: string, text: string) => {
+    console.log(`[diag] +${Date.now() - t0}ms write ${rel}`);
+    fs.writeFileSync(path.join(root, rel), text);
+  };
   const disk = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
   const mirrorText = (rel: string) =>
     vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel)?.getText();
@@ -43,6 +46,16 @@ export async function run(): Promise<void> {
     if (e.document.uri.scheme === 'agent-typewriter' && e.contentChanges.length > 0) mirrorEdits++;
   });
 
+  // DIAG(at-net.4): log raw watcher timing relative to suite start.
+  const t0 = Date.now();
+  const diag = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*'));
+  for (const [name, ev] of [['create', diag.onDidCreate], ['change', diag.onDidChange], ['delete', diag.onDidDelete]] as const) {
+    ev((u) => console.log(`[diag] +${Date.now() - t0}ms watcher ${name} ${vscode.workspace.asRelativePath(u)}`));
+  }
+  timeline.onDidChange(() => {
+    const last = timeline.all().at(-1);
+    if (last) console.log(`[diag] +${Date.now() - t0}ms timeline len=${timeline.all().length} last=${last.relPath} t=+${last.time - t0}`);
+  });
   await vscode.commands.executeCommand('agentTypewriter.start');
   await sleep(500);
 
