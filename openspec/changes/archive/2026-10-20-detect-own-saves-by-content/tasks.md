@@ -13,7 +13,7 @@
 ## 3. Integration checks
 
 - [x] 3.1 Add an `it/suite.ts` section that edits `src/existing.ts` in an editor, saves it, and within 50 ms writes a different version from outside; assert exactly one change with before = saved text and after = disk text, and that the mirror matches disk; verify the section fails on the pre-change recorder and passes now
-- [ ] 3.2 Add an `it/suite.ts` check that a save followed by an outside write 3 s later records the outside write, and verify `npm run it` passes locally and on CI (Ubuntu and Windows)
+- [x] 3.2 Add an `it/suite.ts` check that a save followed by an outside write 3 s later records the outside write, and verify `npm run it` passes locally and on CI (Ubuntu and Windows)
 
 ## Workflow follow-up
 
