@@ -480,14 +480,15 @@ export async function run(): Promise<void> {
 
   // A nested repository that is not a worktree of this one is recorded as usual,
   // once git has said so (its new .git hides it until then).
-  const otherRepo = path.join(root, 'scratch', 'other');
-  fs.mkdirSync(otherRepo, { recursive: true });
+  // One level deep: Linux watchers can miss a directory created inside another new one.
+  const otherRepo = path.join(root, 'otherRepo');
+  fs.mkdirSync(otherRepo);
   await sleep(1000);
   gitIn(otherRepo, 'init', '-q');
   await sleep(2000);
   const atOther = timeline.all().length;
   fs.writeFileSync(path.join(otherRepo, 'other.ts'), 'export const other = 1;\n');
-  await until('nested repository write recorded', () => eventsFor('scratch/other/other.ts', atOther).length === 1, 20000);
+  await until('nested repository write recorded', () => eventsFor('otherRepo/other.ts', atOther).length === 1, 20000);
   await until('nested repository playback', idle);
 
   // Choose the sibling: its first change is a modify from its baseline, under its label.
