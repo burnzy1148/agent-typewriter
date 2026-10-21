@@ -4,8 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
-import { TimelineStore } from '../src/persistence';
-import { Timeline, type NewChangeEvent } from '../src/timeline';
+import { sessionFromBytes, sessionToBytes, TimelineStore } from '../src/persistence';
+import { SessionFormatError, Timeline, toSession, type NewChangeEvent } from '../src/timeline';
 
 function ev(relPath: string, before: string, after: string): NewChangeEvent {
   return { uri: 'file:///w/' + relPath, relPath, time: 1000, kind: 'modify', before, after, eol: '\n', linesAdded: 1, linesRemoved: 0 };
@@ -121,4 +121,34 @@ test('the size cap leaves out the oldest changes and says so once', async () => 
   assert.deepEqual(store.load()?.events.map((e) => e.relPath), ['b', 'c']);
   assert.equal(logs.filter((l) => /leaves out the 1 oldest/.test(l)).length, 1);
   store.stop();
+});
+
+test('session files round trip as plain JSON and as gzip', () => {
+  const t = new Timeline(100);
+  t.push(ev('a.ts', '', 'one\n'));
+  t.push({ ...ev('b.ts', 'x\ny', 'x\nz'), eol: '\r\n' });
+  const { session } = toSession(t);
+  const plain = sessionToBytes(session, { gzip: false });
+  assert.equal(JSON.parse(Buffer.from(plain).toString('utf8')).format, 'agent-typewriter-session');
+  assert.deepEqual(sessionFromBytes(plain).events, t.all());
+  assert.deepEqual(sessionFromBytes(sessionToBytes(session, { gzip: true })).events, t.all());
+});
+
+test('the workspace storage file loads as a session file', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  store.start();
+  t.push(ev('a.ts', '', 'one'));
+  await store.flush();
+  store.stop();
+  assert.deepEqual(sessionFromBytes(fs.readFileSync(store.path)).events, t.all());
+});
+
+test('non-session and damaged files are refused with a reason', () => {
+  const refuses = (bytes: Uint8Array, why: RegExp) =>
+    assert.throws(() => sessionFromBytes(bytes), (e: Error) => e instanceof SessionFormatError && why.test(e.message));
+  refuses(Buffer.from('{"name":"package"}'), /not an Agent Typewriter session/);
+  refuses(Buffer.from('hello'), /not JSON/);
+  refuses(Buffer.from([0x1f, 0x8b, 1, 2, 3]), /damaged/);
 });
