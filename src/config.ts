@@ -23,6 +23,8 @@ export interface Settings extends FilterSettings {
   /** Size budget for in-memory baselines. */
   baselineBudgetMB: number;
   historyLimit: number;
+  /** Keep the timeline in workspace storage across reloads. */
+  persistHistory: boolean;
   ignoreOwnSaves: boolean;
   viewColumn: 'beside' | 'active';
 }
@@ -47,6 +49,7 @@ export function readSettings(): Settings {
     gitBaselines: c.get('gitBaselines', true),
     baselineBudgetMB: Math.max(0, c.get('baselineBudgetMB', 256)),
     historyLimit: Math.max(10, c.get('historyLimit', 500)),
+    persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     viewColumn: c.get('viewColumn', 'beside'),
   };

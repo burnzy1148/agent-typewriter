@@ -47,18 +47,18 @@ async function main() {
   // checkouts such as worktrees, so keep it short.
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
 
-  await runTests({
-    extensionDevelopmentPath,
-    extensionTestsPath,
-    launchArgs: [
-      workspace,
-      `--user-data-dir=${userData}`,
-      '--disable-extensions',
-      '--disable-gpu',
-      '--no-sandbox',
-      '--disable-workspace-trust',
-    ],
-  });
+  const launchArgs = [
+    workspace,
+    `--user-data-dir=${userData}`,
+    '--disable-extensions',
+    '--disable-gpu',
+    '--no-sandbox',
+    '--disable-workspace-trust',
+  ];
+  // The first launch leaves the expected timeline here; the second checks it was restored.
+  const extensionTestsEnv = { IT_EXPECT: path.join(userData, 'expected-timeline.json') };
+  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
+  await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
 }
 
 main().catch((err) => {
