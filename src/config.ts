@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { FilterSettings } from './filter';
 import { resolveReorderWindow } from './reorder';
+import { pickLayer, type RepoValues } from './repoSettings';
 
 export const SECTION = 'agentTypewriter';
 
@@ -27,8 +28,21 @@ export interface Settings extends FilterSettings {
   viewColumn: 'beside' | 'active';
 }
 
-export function readSettings(): Settings {
+/** Values from the repository settings file; they sit between user and workspace settings. */
+let repoValues: RepoValues = {};
+
+export function setRepoValues(values: RepoValues): void {
+  repoValues = values;
+}
+
+/** Of these repository file keys, the ones a workspace setting overrides. */
+export function workspaceOverrides(keys: string[]): string[] {
   const c = vscode.workspace.getConfiguration(SECTION);
+  return keys.filter((k) => c.inspect(k)?.workspaceValue !== undefined);
+}
+
+export function readSettings(): Settings {
+  const c = layered(vscode.workspace.getConfiguration(SECTION));
   return {
     autoStart: c.get('autoStart', false),
     include: c.get('include', ['**/*']),
@@ -58,6 +72,14 @@ export async function updateSetting(key: string, value: unknown): Promise<void> 
     ? vscode.ConfigurationTarget.Workspace
     : vscode.ConfigurationTarget.Global;
   await vscode.workspace.getConfiguration(SECTION).update(key, value, target);
+}
+
+/** Reads like `cfg.get`, with repository file values slotted between user and workspace settings. */
+function layered(cfg: vscode.WorkspaceConfiguration) {
+  return {
+    get: <T>(key: string, fallback: T): T =>
+      pickLayer(cfg.inspect<T>(key)?.workspaceValue, repoValues[key], () => cfg.get<T>(key, fallback)),
+  };
 }
 
 function asRecord(v: unknown): Record<string, unknown> {

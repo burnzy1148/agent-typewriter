@@ -1,6 +1,7 @@
-# Ship only the bundled extension, its manifest, README, and LICENSE.
+# Ship only the bundled extension, its manifest, the repository settings schema, README, and LICENSE.
 **
 !dist/extension.js
 !package.json
+!schemas/agent-typewriter.schema.json
 !README.md
 !LICENSE

@@ -268,4 +268,53 @@ export async function run(): Promise<void> {
   await firstChangeOf('src/committed3.ts', 'toggledOn');
   assert.equal(gitState(), gitBefore, 'git HEAD, ref or index changed');
   console.log('[it] git baseline toggling ok');
+
+  // --- 12. Repository settings file: applies live, sits below workspace
+  // settings, survives a broken save, and goes away with the file.
+  const repoFile = path.join(root, '.agent-typewriter.json');
+  const skipped = vscode.Uri.file(path.join(root, 'src/skip/a.ts'));
+  const watched = () => api.recorder.matches(skipped);
+  await cfg().update('baselineBudgetMB', 256, WS);
+  fs.writeFileSync(repoFile, JSON.stringify({ exclude: ['src/skip/**'] }));
+  await until('file exclude to apply', () => !watched(), 10000);
+  const atRepo = timeline.all().length;
+  fs.mkdirSync(path.join(root, 'src/skip'), { recursive: true });
+  write('src/skip/a.ts', 'export const skip = 1;\n');
+  await sleep(500);
+  write('src/skip/a.ts', 'export const skip = 2;\n');
+  await sleep(1000);
+  assert.equal(timeline.all().length, atRepo, 'a path excluded by the repository file was recorded');
+
+  // A workspace value overrides the file; the newly matching file gets a baseline.
+  await cfg().update('exclude', [], WS);
+  await until('workspace exclude to win', watched, 10000);
+  await sleep(500);
+  write('src/skip/a.ts', 'export const skip = 3;\n');
+  await until('skip/a.ts recorded', () => timeline.all().slice(atRepo).some((e) => e.relPath === 'src/skip/a.ts'), 20000);
+  await until('skip/a.ts playback', idle);
+  const skipEvent = timeline.all().slice(atRepo).find((e) => e.relPath === 'src/skip/a.ts')!;
+  assert.equal(skipEvent.kind, 'modify');
+  assert.equal(skipEvent.before, 'export const skip = 2;\n');
+
+  // Reset Filters clears workspace values, so the file applies again.
+  await vscode.commands.executeCommand('agentTypewriter.resetFilters');
+  await until('reset to fall back to the file', () => !watched(), 10000);
+
+  // A broken save keeps the previous values; deleting the file drops them.
+  fs.writeFileSync(repoFile, '{ "exclude": [');
+  await sleep(1500);
+  assert.equal(watched(), false, 'a broken repository file dropped its previous values');
+  fs.unlinkSync(repoFile);
+  await until('deleted file to stop applying', watched, 10000);
+  console.log('[it] repository settings file ok');
+
+  // --- 13. Opening the settings file when there is none writes nothing.
+  await vscode.commands.executeCommand('agentTypewriter.openRepoSettings');
+  const opened = vscode.window.activeTextEditor?.document;
+  assert.equal(opened?.uri.scheme, 'untitled', 'expected an untitled editor');
+  assert.equal(path.basename(opened!.uri.fsPath), '.agent-typewriter.json');
+  assert.deepEqual(Object.keys(JSON.parse(opened!.getText())), ['include', 'exclude', 'extensions']);
+  assert.equal(fs.existsSync(repoFile), false, 'opening the settings file wrote it');
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  console.log('[it] open repository settings file ok');
 }
