@@ -33,5 +33,6 @@ A VS Code extension that watches files change on disk and replays each change as
 - Pick work with `bd ready --exclude-type epic`, then claim it with `bd update <id> --claim`.
 - Each feature bead becomes one OpenSpec change: explore, then propose. Record the change name on the bead with `bd update <id> --spec-id openspec/changes/<name>`. Then apply, then archive, then `bd close`.
 - Work lands through a PR to `main` on `origin` (GitHub, burnzy1148/agent-typewriter). Archive the OpenSpec change on the PR branch before merging, once its tasks are done and CI is green, so the updated specs land on `main` with the code. Close the bead after the merge.
+- After opening a PR, turn on Auto-fix for it without asking (the user has standing approval for this repo), then let CI events drive fixes instead of polling.
 - Implementation tasks live in the change's `tasks.md`, not as beads. Anything new discovered during implementation becomes a bead with `--deps discovered-from:<id>`.
 - Remove the `needs-spec` label once a change is proposed.
