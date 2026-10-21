@@ -115,10 +115,12 @@ export async function run(): Promise<void> {
   console.log('[it] ignoreOwnSaves ok');
 
   // --- 6. Changing the filter live picks up a new extension.
+  // notes.txt already exists, so wait for its baseline: a write before it lands becomes the baseline.
   await vscode.workspace.getConfiguration('agentTypewriter').update('extensions', ['ts', 'txt'], vscode.ConfigurationTarget.Workspace);
-  await sleep(800);
+  const notes = vscode.Uri.file(path.join(root, 'notes.txt'));
+  await until('notes.txt baseline', () => api.recorder.hasBaseline(notes), 20000);
   write('notes.txt', 'now it is watched\n');
-  await until('txt event after filter change', () => timeline.all().some((e) => e.relPath === 'notes.txt'), 5000);
+  await until('txt event after filter change', () => timeline.all().some((e) => e.relPath === 'notes.txt'), 20000);
   await until('txt playback', idle);
   assert.equal(mirrorText('notes.txt'), 'now it is watched\n');
   console.log('[it] live filter change ok');
