@@ -20,7 +20,7 @@
 ## 4. Integration checks
 
 - [x] 4.1 Add an `it/suite.ts` section that writes `y.ts`, waits for the watcher to report it, writes `x.ts`, sets `x.ts`'s mtime earlier than `y.ts`'s with `fs.utimesSync`, and asserts the timeline and replay order is `x.ts, y.ts`; verify the section fails with `reorderWindowMs` set to `0` and passes with a fixed 5000 ms window (wide enough that the mtime clamp cannot mask slow watchers)
-- [ ] 4.2 Run `npm run it` locally and on CI (Ubuntu and Windows), and verify all sections pass, including the original multi-file order check, on two consecutive Windows runs
+- [x] 4.2 Run `npm run it` locally and on CI (Ubuntu and Windows), and verify all sections pass, including the original multi-file order check, on two consecutive Windows runs
 
 ## Workflow follow-up
 
