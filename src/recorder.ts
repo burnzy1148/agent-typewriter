@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
 import { listCleanTracked, readBlob, selectWithinBudget, type BudgetCandidate } from './gitBaseline';
+import { checkIgnored, listIgnored, type IgnoredPaths } from './gitIgnore';
 import { decideOwnSave } from './ownSave';
 import { ReorderBuffer, clampOrderKey } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
@@ -34,6 +35,11 @@ export class Recorder implements vscode.Disposable {
   private readonly ownSaves = new Map<string, OwnSave>();
   private readonly subscriptions: vscode.Disposable[] = [];
   private filter: PathFilter;
+  /** Gitignored paths per workspace folder (keyed by folder URI) while `respectGitignore` is on and git can tell. */
+  private readonly ignored = new Map<string, IgnoredPaths>();
+  /** Folders already logged as having no gitignore rules this session. */
+  private readonly ignoreNoted = new Set<string>();
+  private ignoreRefresh: NodeJS.Timeout | undefined;
   private running = false;
   private readonly decoder = new TextDecoder('utf-8');
 
@@ -60,12 +66,12 @@ export class Recorder implements vscode.Disposable {
   }
 
   describeFilter(): string {
-    return this.filter.describe();
+    return this.filter.describe() + (this.ignored.size > 0 ? ', not gitignored' : '');
   }
 
   /** True if this workspace path passes the current filters. */
   matches(uri: vscode.Uri): boolean {
-    return this.filter.matches(relPathOf(uri));
+    return this.passes(uri);
   }
 
   async start(): Promise<void> {
@@ -113,6 +119,8 @@ export class Recorder implements vscode.Disposable {
     );
 
     this.gitUnavailable = false;
+    this.ignoreNoted.clear();
+    await this.refreshIgnored();
     await this.captureBaseline();
     this.log.appendLine(`Watching ${this.watchedCount} files (${this.filter.describe()}).`);
   }
@@ -126,19 +134,22 @@ export class Recorder implements vscode.Disposable {
       burst.done();
     }
     this.timers.clear();
+    clearTimeout(this.ignoreRefresh);
+    this.ignored.clear();
     this.reorder.drain();
     this.snapshots.clear();
     this.gitBaselines.clear();
     this.ownSaves.clear();
   }
 
-  /** Re-reads filter settings. Newly matching files get a baseline so their next change is recorded. */
+  /** Re-reads filter settings and gitignore rules. Newly matching files get a baseline so their next change is recorded. */
   async refreshFilter(): Promise<void> {
     this.filter = new PathFilter(this.settings());
     if (!this.running) return;
+    await this.refreshIgnored();
     for (const store of [this.snapshots, this.gitBaselines]) {
       for (const key of [...store.keys()]) {
-        if (!this.filter.matches(relPathOf(vscode.Uri.parse(key)))) store.delete(key);
+        if (!this.passes(vscode.Uri.parse(key))) store.delete(key);
       }
     }
     await this.captureBaseline();
@@ -185,7 +196,7 @@ export class Recorder implements vscode.Disposable {
       for (const uri of found) {
         const key = uri.toString();
         const rel = relPathOf(uri);
-        if (!this.filter.matches(rel) || known(key)) continue;
+        if (!this.passes(uri) || known(key)) continue;
         const sha = clean?.get(rel);
         if (sha !== undefined) this.gitBaselines.set(key, { folder: folder.uri.fsPath, path: rel, sha });
         else candidates.push(uri);
@@ -220,6 +231,51 @@ export class Recorder implements vscode.Disposable {
     }
   }
 
+  /** Path filters plus, while `respectGitignore` is on, the folder's gitignored paths known so far. */
+  private passes(uri: vscode.Uri): boolean {
+    if (!this.filter.matches(relPathOf(uri))) return false;
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    return !(folder && this.ignored.get(folder.uri.toString())?.has(relPathOf(uri)));
+  }
+
+  /** Re-lists gitignored paths for each folder, or clears them when the setting is off. */
+  private async refreshIgnored(): Promise<void> {
+    const next = new Map<string, IgnoredPaths>();
+    if (this.settings().respectGitignore) {
+      for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        const key = folder.uri.toString();
+        const r = folder.uri.scheme === 'file' ? await listIgnored(folder.uri.fsPath) : ({ kind: 'not-repo' } as const);
+        if (r.kind === 'ok') next.set(key, r.ignored);
+        else if (!this.ignoreNoted.has(key)) {
+          this.ignoreNoted.add(key);
+          const why = r.kind === 'unavailable' ? `git could not run (${r.reason})` : 'it is not in a git repository';
+          this.log.appendLine(`respectGitignore has no effect for ${folder.name}: ${why}.`);
+        }
+      }
+    }
+    this.ignored.clear();
+    for (const [k, v] of next) this.ignored.set(k, v);
+  }
+
+  /** A file the ignore snapshot doesn't know yet: asks git once and remembers an ignored answer. */
+  private async newlyIgnored(uri: vscode.Uri): Promise<boolean> {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    const known = folder && this.ignored.get(folder.uri.toString());
+    if (!known) return false;
+    const rel = relPathOf(uri);
+    if (!(await checkIgnored(folder.uri.fsPath, rel))) return false;
+    known.add(rel);
+    return true;
+  }
+
+  /** A `.gitignore` changed: re-apply the rules once the burst of writes settles. */
+  private scheduleIgnoreRefresh(): void {
+    clearTimeout(this.ignoreRefresh);
+    this.ignoreRefresh = setTimeout(() => {
+      this.refreshFilter().catch((err) => this.log.appendLine(`Failed to re-apply .gitignore: ${String(err)}`));
+    }, 300);
+  }
+
   /** Folder-relative path -> index sha for clean tracked files, or undefined when git can't help here. */
   private async cleanTracked(folder: vscode.WorkspaceFolder): Promise<Map<string, string> | undefined> {
     if (this.gitUnavailable || folder.uri.scheme !== 'file') return undefined;
@@ -249,7 +305,8 @@ export class Recorder implements vscode.Disposable {
 
   private schedule(uri: vscode.Uri, created: boolean): void {
     if (!this.running || uri.scheme !== 'file') return;
-    if (!this.filter.matches(relPathOf(uri))) return;
+    if (this.ignored.size > 0 && uri.path.endsWith('/.gitignore')) this.scheduleIgnoreRefresh();
+    if (!this.passes(uri)) return;
     const key = uri.toString();
     const now = Date.now();
     const existing = this.timers.get(key);
@@ -293,6 +350,7 @@ export class Recorder implements vscode.Disposable {
       return;
     }
     if (exists.type !== vscode.FileType.File) return;
+    if (previous === undefined && (await this.newlyIgnored(uri))) return;
     const writtenAt = clampOrderKey(exists.mtime, burst.firstArrival, burst.lastArrival, s.reorderWindowMs);
 
     const snap = await this.readText(uri, s, exists.size);

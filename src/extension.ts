@@ -342,7 +342,9 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
   const applySettingsChange = async (affects: (key: string) => boolean) => {
     if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
-    if (affects('include') || affects('exclude') || affects('extensions')) await recorder.refreshFilter();
+    if (affects('include') || affects('exclude') || affects('extensions') || affects('respectGitignore')) {
+      await recorder.refreshFilter();
+    }
     if (affects('gitBaselines') || affects('baselineBudgetMB')) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
     refreshStatus();

@@ -322,7 +322,46 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
   console.log('[it] open repository settings file ok');
 
-  // --- 14. Leave two queued changes behind for the reload check in restore.ts,
+  // --- 14. respectGitignore: ignored new files are skipped, tracked files are
+  // not, .gitignore edits apply live, and turning it off records from a baseline.
+  const uriOf = (rel: string) => vscode.Uri.file(path.join(root, rel));
+  const eventsFor = (rel: string, from: number) => timeline.all().slice(from).filter((e) => e.relPath === rel);
+  fs.mkdirSync(path.join(root, 'src/later'), { recursive: true });
+  const atLater = timeline.all().length;
+  write('src/later/a.ts', 'export const later = 1;\n');
+  await until('later/a.ts recorded', () => eventsFor('src/later/a.ts', atLater).length === 1, 20000);
+  write('.gitignore', '*.gen.ts\n*.cfg\n');
+  await cfg().update('respectGitignore', true, WS);
+  await until('gitignore rules to apply', () => api.recorder.describeFilter().includes('not gitignored'), 10000);
+  await sleep(500);
+
+  const atIgnore = timeline.all().length;
+  write('src/new.gen.ts', 'export const generated = 1;\n');
+  write('src/tracked.cfg', 'level = 2\n');
+  await until('tracked.cfg recorded', () => eventsFor('src/tracked.cfg', atIgnore).length === 1, 20000);
+  await sleep(1000);
+  assert.equal(eventsFor('src/tracked.cfg', atIgnore)[0].kind, 'modify', 'a tracked file matching a pattern was not recorded as a modify');
+  assert.equal(eventsFor('src/new.gen.ts', atIgnore).length, 0, 'a new gitignored file was recorded');
+
+  write('.gitignore', '*.gen.ts\n*.cfg\nsrc/later/\n');
+  await until('.gitignore edit to apply', () => !api.recorder.matches(uriOf('src/later/a.ts')), 10000);
+  const atLive = timeline.all().length;
+  write('src/later/a.ts', 'export const later = 2;\n');
+  await sleep(1500);
+  assert.equal(eventsFor('src/later/a.ts', atLive).length, 0, 'a path ignored by an edited .gitignore was recorded');
+
+  await cfg().update('respectGitignore', false, WS);
+  await until('gitignore rules to clear', () => api.recorder.matches(uriOf('src/later/a.ts')), 10000);
+  await sleep(500);
+  write('src/later/a.ts', 'export const later = 3;\n');
+  await until('later/a.ts recorded again', () => eventsFor('src/later/a.ts', atLive).length === 1, 20000);
+  const again = eventsFor('src/later/a.ts', atLive)[0];
+  assert.equal(again.kind, 'modify');
+  assert.equal(again.before, 'export const later = 2;\n', 'turning respectGitignore off did not take a baseline');
+  await until('gitignore playback', idle);
+  console.log('[it] respectGitignore ok');
+
+  // --- 15. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.
   await until('idle before reload setup', idle);
   if (!api.player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
