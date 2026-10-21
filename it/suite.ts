@@ -439,8 +439,15 @@ export async function run(): Promise<void> {
   const stored = cfg().inspect('profiles')?.workspaceValue as Record<string, unknown>;
   assert.deepEqual((stored?.mine as { include: string[] })?.include, ['**/*'], 'saved profile does not hold the current include');
   assert.deepEqual({ keep: stored?.keep, draft: stored?.draft }, handWritten, 'saving rewrote other profile entries');
+  // With every file watched, the settings writes above are recorded too, up to a
+  // reorder window later. Wait until nothing new arrives for a full window, so
+  // the reload check below sees only its own queued changes.
+  for (let n = -1; n !== timeline.all().length; ) {
+    n = timeline.all().length;
+    await sleep(reorderWindow + 1500);
+  }
   await until('profile playback', idle);
-  console.log('[it] filter profiles ok');
+  console.log(`[it] filter profiles ok (settled at ${timeline.all().length} changes, last: ${timeline.all().at(-1)?.relPath})`);
 
   // --- 17. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.
