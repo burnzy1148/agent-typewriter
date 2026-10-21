@@ -1,6 +1,7 @@
 // Runs inside a real VS Code instance (see runTest.ts). Simulates an agent
 // writing files from outside the editor and checks what the replay does.
 import * as vscode from 'vscode';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
@@ -451,7 +452,117 @@ export async function run(): Promise<void> {
   await until('profile playback', idle);
   console.log(`[it] filter profiles ok (settled at ${timeline.all().length} changes, last: ${timeline.all().at(-1)?.relPath})`);
 
-  // --- 17. Leave two queued changes behind for the reload check in restore.ts,
+  // --- 17. Worktrees: a nested worktree is not recorded by default, a chosen
+  // sibling worktree is recorded under its label into its own mirror,
+  // switching back keeps queued changes, a worktree added while recording is
+  // skipped, and removing the chosen worktree falls back to the folder's own.
+  const folder = vscode.workspace.workspaceFolders![0];
+  const nestedDir = path.join(root, '.worktrees', 'nested');
+  const siblingDir = `${root}-sibling`;
+  const label = path.basename(siblingDir);
+  const gitIn = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', ...args], { cwd, stdio: 'ignore' });
+  const own = () => api.recorder.checkoutOf(folder)?.own;
+  const choose = (p: string) => vscode.commands.executeCommand('agentTypewriter.chooseCheckout', folder.uri, p);
+  const since = (from: number) => timeline.all().slice(from);
+  await until('nested worktree skipped', () => api.recorder.describeFilter().includes('other worktrees skipped'), 10000);
+
+  const atNested = timeline.all().length;
+  fs.writeFileSync(path.join(nestedDir, 'src', 'committed1.ts'), 'export const inNested = 1;\n');
+  fs.writeFileSync(path.join(nestedDir, 'src', 'brandNew.ts'), 'export const brandNew = 1;\n');
+  write('src/mainSide.ts', 'export const mainSide = 1;\n');
+  await until('main checkout write recorded', () => eventsFor('src/mainSide.ts', atNested).length === 1, 20000);
+  await sleep(1500);
+  assert.deepEqual(
+    since(atNested).map((e) => e.relPath),
+    ['src/mainSide.ts'],
+    'a write inside a nested worktree was recorded',
+  );
+  await until('nested playback', idle);
+
+  // A nested repository that is not a worktree of this one is recorded as usual,
+  // once git has said so (its new .git hides it until then).
+  // One level deep: Linux watchers can miss a directory created inside another new one.
+  const otherRepo = path.join(root, 'otherRepo');
+  fs.mkdirSync(otherRepo);
+  await sleep(1000);
+  gitIn(otherRepo, 'init', '-q');
+  await sleep(2000);
+  const atOther = timeline.all().length;
+  fs.writeFileSync(path.join(otherRepo, 'other.ts'), 'export const other = 1;\n');
+  await until('nested repository write recorded', () => eventsFor('otherRepo/other.ts', atOther).length === 1, 20000);
+  await until('nested repository playback', idle);
+
+  // Choose the sibling: its first change is a modify from its baseline, under its label.
+  await choose(siblingDir);
+  await until('sibling chosen', () => own() === false, 20000);
+  assert.equal(api.recorder.checkoutOf(folder)?.name, 'sibling');
+  const siblingFile = (rel: string) => [siblingDir, fs.realpathSync.native(siblingDir)].map((d) => vscode.Uri.file(path.join(d, rel)));
+  await until('sibling baseline', () => siblingFile('src/committed1.ts').some((u) => api.recorder.hasBaseline(u)), 20000);
+  const committedText = lf(fs.readFileSync(path.join(siblingDir, 'src', 'committed1.ts'), 'utf8'));
+  const atSibling = timeline.all().length;
+  fs.writeFileSync(path.join(siblingDir, 'src', 'committed1.ts'), committedText + "export const inSibling = 'agent';\n");
+  write('src/committed2.ts', lf(disk('src/committed2.ts')) + "export const mainWhileSibling = 1;\n");
+  const siblingRel = `${label}/src/committed1.ts`;
+  await until('sibling change recorded', () => eventsFor(siblingRel, atSibling).length === 1, 20000);
+  await sleep(1500);
+  assert.deepEqual(since(atSibling).map((e) => e.relPath), [siblingRel], 'expected only the sibling change');
+  assert.equal(since(atSibling)[0].kind, 'modify');
+  assert.equal(since(atSibling)[0].before, committedText, 'sibling change does not start from its baseline');
+  await until('sibling playback', idle);
+  assert.equal(mirrorText(siblingRel), fs.readFileSync(path.join(siblingDir, 'src', 'committed1.ts'), 'utf8'));
+  assert.notEqual(mirrorText('src/committed1.ts'), mirrorText(siblingRel), 'checkouts share a mirror');
+
+  // Switch back while a sibling change is queued: it still plays.
+  if (!player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
+  const atQueue = timeline.all().length;
+  fs.writeFileSync(path.join(siblingDir, 'src', 'committed1.ts'), committedText + "export const queuedInSibling = 'agent';\n");
+  await until('queued sibling change', () => eventsFor(siblingRel, atQueue).length === 1, 20000);
+  await choose('');
+  await until('own checkout again', () => own() === true, 20000);
+  assert.equal(timeline.pendingCount(), 1, 'switching checkouts dropped a queued change');
+  await vscode.commands.executeCommand('agentTypewriter.togglePause');
+  await until('queued sibling playback', idle);
+  const atBack = timeline.all().length;
+  write('src/mainSide.ts', 'export const mainSide = 2;\n');
+  await until('main recorded after switching back', () => eventsFor('src/mainSide.ts', atBack).length === 1, 20000);
+  assert.equal(eventsFor('src/mainSide.ts', atBack)[0].kind, 'modify');
+  await until('switch-back playback', idle);
+
+  // A worktree added inside the folder while recording: its checkout and later writes are skipped.
+  const atLate = timeline.all().length;
+  gitIn(root, 'worktree', 'add', '-q', '-b', 'late', '.worktrees/late');
+  await sleep(1500);
+  fs.writeFileSync(path.join(root, '.worktrees', 'late', 'src', 'lateWrite.ts'), 'export const late = 1;\n');
+  await sleep(2000);
+  // Changes are held for the reorder window; release them so a wrongly recorded one shows up here.
+  api.recorder.drainHeld();
+  assert.deepEqual(
+    since(atLate).map((e) => e.relPath),
+    [],
+    'a worktree added while recording was recorded',
+  );
+
+  // Removing the chosen worktree falls back to the folder's own checkout and forgets the choice.
+  await choose(siblingDir);
+  await until('sibling chosen again', () => own() === false, 20000);
+  // A refresh that keeps the same root hands the watcher to a new scope; the fallback must still work.
+  await api.recorder.refreshFilter();
+  const atRemove = timeline.all().length;
+  gitIn(root, 'worktree', 'remove', '--force', siblingDir);
+  await until('fallback to own checkout', () => own() === true, 20000);
+  assert.equal((await api.recorder.checkoutsOf(folder))?.chosen, undefined, 'the removed worktree is still remembered');
+  await sleep(1000);
+  api.recorder.drainHeld();
+  assert.deepEqual(
+    since(atRemove).map((e) => `${e.kind} ${e.relPath}`),
+    [],
+    'removing the chosen worktree recorded its files as deleted',
+  );
+  await until('worktree playback', idle);
+  console.log('[it] worktrees ok');
+
+  // --- 18. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.
   await until('idle before reload setup', idle);
   if (!api.player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
@@ -468,6 +579,9 @@ export async function run(): Promise<void> {
     JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount() }),
   );
   console.log(`[it] left ${timeline.all().length} changes (2 queued) for the reload check`);
+  // Stop first, so choosing only stores the choice; restore.ts checks it survives the reload.
+  await vscode.commands.executeCommand('agentTypewriter.stop');
+  await choose(nestedDir);
 }
 
 /** The recorded fields a restored change must keep. */

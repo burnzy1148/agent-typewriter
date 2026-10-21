@@ -125,6 +125,18 @@ A profile is a named set of any of `include`, `exclude`, `extensions`, and `resp
 - The active profile (`agentTypewriter.activeProfile`) overrides the repository file and user settings; workspace settings, which the filter commands write, still override it. The file can set `activeProfile` as a team default.
 - Profiles with the same name merge by layer: workspace settings over the file over user settings. The panel shows the active profile's name.
 
+### Worktrees
+
+Agent tools often put git worktrees inside the repository, for example `.claude/worktrees/` or `.worktrees/`. A workspace folder records only its own checkout: other worktrees of the same repository inside it are skipped and get no baselines, and the panel says "other worktrees skipped". Worktrees are what `git worktree list` reports, so submodules and other nested repositories are recorded as usual. A worktree added while watching is skipped as soon as git writes its `.git` file.
+
+To watch an agent's worktree instead, run **Choose Checkout...** or click the branch entry next to **Typewriter** in the status bar, which appears when the repository has more than one worktree. It lists the folder's own checkout and every other worktree by branch (or short commit) and path, including worktrees outside the workspace folder.
+
+- The filters apply within the chosen checkout, so `src/**` means that worktree's `src/`. The workspace folder's `.agent-typewriter.json` still applies.
+- Changes from a chosen worktree show up under its directory name, like `feature/src/app.ts`, so the same file in two checkouts never shares a mirror.
+- Switching applies at once while watching. Changes already in the timeline stay and still play.
+- The choice is remembered for the folder across reloads. If that worktree is removed, recording falls back to the folder's own checkout, its files are not replayed as deleted, and the output channel says so.
+- Without git, or outside a repository, there is one checkout and nothing changes. The extension never creates or removes worktrees.
+
 ## Settings
 
 | Setting | Default | |
