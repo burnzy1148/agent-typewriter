@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { promisify } from 'node:util';
-import { parseSession, toSession, type Session, type Timeline } from './timeline';
+import { parseSession, toSession, SessionFormatError, type Session, type Timeline } from './timeline';
 
 const gzip = promisify(zlib.gzip);
 
@@ -10,6 +10,35 @@ const gzip = promisify(zlib.gzip);
 export const MAX_SAVED_TEXT_CHARS = 64 * 1024 * 1024;
 /** How often a changing timeline is saved at most. */
 export const SAVE_INTERVAL_MS = 2000;
+
+/**
+ * A session as file bytes: JSON, gzip-compressed when asked. Session files
+ * the user saves are plain JSON so they can be read and diffed.
+ */
+export function sessionToBytes(session: Session, opts: { gzip: boolean }): Uint8Array {
+  const json = Buffer.from(JSON.stringify(session), 'utf8');
+  return opts.gzip ? zlib.gzipSync(json) : json;
+}
+
+/** Reads a session from plain or gzip-compressed JSON. Throws SessionFormatError saying what is wrong. */
+export function sessionFromBytes(bytes: Uint8Array): Session {
+  return parseSession(parseJson(bytes));
+}
+
+function parseJson(bytes: Uint8Array): unknown {
+  let text: string;
+  try {
+    const gzipped = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+    text = (gzipped ? zlib.gunzipSync(bytes) : Buffer.from(bytes)).toString('utf8');
+  } catch {
+    throw new SessionFormatError('the file is damaged (it could not be decompressed)');
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new SessionFormatError('not an Agent Typewriter session (the file is not JSON)');
+  }
+}
 
 const FILE = 'timeline.json.gz';
 const UNREADABLE = 'timeline.unreadable.json.gz';
@@ -62,7 +91,7 @@ export class TimelineStore {
       return undefined;
     }
     try {
-      return parseSession(JSON.parse(zlib.gunzipSync(bytes).toString('utf8')));
+      return sessionFromBytes(bytes);
     } catch (err) {
       this.log(`Could not restore the saved timeline: ${err instanceof Error ? err.message : String(err)}. Starting empty.`);
       try {

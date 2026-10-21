@@ -1,6 +1,7 @@
 // Second VS Code launch on the workspace suite.ts left behind (see runTest.ts).
 // Checks that the timeline came back from workspace storage like a reload would.
 import * as vscode from 'vscode';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
@@ -51,4 +52,37 @@ export async function run(): Promise<void> {
   assert.deepEqual(order, ['src/queued1.ts', 'src/queued2.ts'], 'restored queue played out of order');
   for (const rel of ['src/queued1.ts', 'src/queued2.ts']) assert.equal(mirrorText(rel), disk(rel), `mirror for ${rel} does not match disk`);
   console.log('[it] resume after restore ok');
+
+  // --- 3. Save the session to a file outside the workspace, clear, load it, replay it.
+  const gitStatus = () => execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
+  const statusBefore = gitStatus();
+  const recorded = timeline.all().map(persisted);
+  const file = path.join(path.dirname(process.env.IT_EXPECT!), 'saved-session.json');
+  await vscode.commands.executeCommand('agentTypewriter.saveSession', vscode.Uri.file(file));
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(onDisk.format, 'agent-typewriter-session');
+  assert.deepEqual(onDisk.events.map(persisted), recorded, 'saved file differs from the buffer');
+  await sleep(800);
+  assert.equal(gitStatus(), statusBefore, 'saving a session changed the workspace');
+
+  await vscode.commands.executeCommand('agentTypewriter.clear');
+  assert.equal(timeline.all().length, 0);
+  await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(file));
+  assert.deepEqual(timeline.all().map(persisted), recorded, 'loaded changes differ from the saved ones');
+  assert.equal(timeline.pendingCount(), recorded.length, 'loaded changes are not all pending');
+  assert.ok(player.isPaused, 'playback is not paused after loading');
+
+  // A file that is not a session is refused and leaves the buffer alone.
+  const bogus = path.join(path.dirname(file), 'not-a-session.json');
+  fs.writeFileSync(bogus, '{"name":"package"}');
+  await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(bogus));
+  assert.equal(timeline.pendingCount(), recorded.length, 'a bad file changed the buffer');
+
+  await vscode.commands.executeCommand('agentTypewriter.togglePause');
+  await until('loaded session to play', idle, 60000);
+  const last = new Map(recorded.map((e) => [e.relPath, e]));
+  for (const [rel, e] of last) {
+    assert.equal(mirrorText(rel)?.replace(/\r\n/g, '\n'), e.after, `mirror for ${rel} does not end at its last recorded text`);
+  }
+  console.log(`[it] save and load session ok: ${recorded.length} changes replayed from ${path.basename(file)}`);
 }
