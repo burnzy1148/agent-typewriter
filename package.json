@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "publisher": "burnzy1148",
   "license": "MIT",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#2F2B63",
+    "theme": "dark"
+  },
   "author": {
     "name": "Eric Burns"
   },

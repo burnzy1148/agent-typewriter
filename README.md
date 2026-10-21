@@ -1,5 +1,7 @@
 # Agent Typewriter
 
+![Agent Typewriter: watch your agent's edits replayed as if a person were typing them](images/banner.png)
+
 Watch Claude Code (or any agent, script, or teammate) write code as if a person were typing it.
 
 Agent Typewriter ignores *how* a file was edited. It watches the workspace for changes on disk, records every change in order with its full before and after text, and replays each one into a side-by-side replay editor at human speed. When the agent touched three files, playback flips between those three tabs in the same order.
