@@ -125,7 +125,7 @@ A profile is a named set of any of `include`, `exclude`, `extensions`, and `resp
 
 ### Worktrees
 
-Agent tools often put git worktrees inside the repository, for example `.claude/worktrees/` or `.worktrees/`. A workspace folder records only its own checkout: other worktrees of the same repository inside it are skipped and get no baselines, and the panel says "other worktrees skipped". Worktrees are what `git worktree list` reports, so submodules and other nested repositories are recorded as usual. A worktree added while watching is skipped from its first file.
+Agent tools often put git worktrees inside the repository, for example `.claude/worktrees/` or `.worktrees/`. A workspace folder records only its own checkout: other worktrees of the same repository inside it are skipped and get no baselines, and the panel says "other worktrees skipped". Worktrees are what `git worktree list` reports, so submodules and other nested repositories are recorded as usual. A worktree added while watching is skipped as soon as git writes its `.git` file.
 
 To watch an agent's worktree instead, run **Choose Checkout...** or click the branch entry next to **Typewriter** in the status bar, which appears when the repository has more than one worktree. It lists the folder's own checkout and every other worktree by branch (or short commit) and path, including worktrees outside the workspace folder.
 

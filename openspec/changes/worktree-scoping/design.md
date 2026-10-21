@@ -54,7 +54,7 @@ Alternative considered: `git ls-files -co` for enumeration. It drops ignored fil
 `displayPathOf` prefixes `label/` when `own` is false, after the existing multi-root folder prefix. This keeps mirror URIs, the timeline view, and persisted sessions distinct per checkout with no change to the player or mirror filesystem. The label is the worktree directory's basename. If two listed worktrees share a basename, the label adds the parent directory name (`parent-name`).
 
 ### Detecting worktrees added or removed
-`git worktree add` writes `<path>/.git` (a file), then checks files out, and agents usually write right after. The folder watcher already sees those events. In `schedule`, before filtering, an event whose basename is `.git` and that is a file (not the folder's own `.git`) does two things:
+`git worktree add` writes `<path>/.git` (a file), then checks files out, and agents usually write right after. The folder watcher already sees those events. When the watcher reports a `.git` created below the root (not the folder's own), and it is a file whose `gitdir:` line points into a repository's `worktrees/` (as a linked worktree's does, unlike a clone's `.git` directory or a submodule's pointer into `modules/`), the recorder does two things:
 1. Adds its directory to `nested` right away, so the checkout's file creates are dropped synchronously instead of being recorded as a burst of creates.
 2. Schedules a debounced `refreshWorktrees()`, which re-lists worktrees, rebuilds `nested` (dropping the provisional prefix if git says it's a submodule or unrelated repository), drops baselines under new prefixes, and baselines anything newly un-excluded.
 
@@ -68,7 +68,7 @@ Alternative considered: watching `<git-common-dir>/worktrees/`. It needs another
 Alternative considered: `workspaceState`. It is flushed lazily, and the integration harness showed it never reached disk before the window closed, so a choice could be lost on a quick reload. The saved timeline uses a file in the same folder for the same reason. Without a folder there is no workspace storage, so choices last for the session only.
 
 ### Choosing and switching
-`agentTypewriter.chooseCheckout` lists the folder's own checkout first, then other worktrees as `branch` (or `HEAD` short sha) with the path as detail. In multi-root workspaces it first asks for a folder among those in a repository. Choosing writes `workspaceState`. If recording is on, it calls `recorder.setCheckout(folder, path)`, which follows the same path as `refreshFilter`:
+`agentTypewriter.chooseCheckout` lists the folder's own checkout first, then other worktrees as `branch` (or `HEAD` short sha) with the path as detail. In multi-root workspaces it first asks for a folder among those in a repository. Choosing writes `checkouts.json`. If recording is on, it calls `recorder.setCheckout(folder, path)`, which follows the same path as `refreshFilter`:
 - bump `baselineGen`
 - drain held changes
 - replace the folder's watcher
@@ -89,7 +89,7 @@ A second status bar item (`$(git-branch) <label>`) runs the command. It shows on
 
 ## Migration Plan
 
-No setting migration. On upgrade, nested worktrees stop being recorded until chosen. Rolling back is reverting the release; the `workspaceState` key is then ignored.
+No setting migration. On upgrade, nested worktrees stop being recorded until chosen. Rolling back is reverting the release; `checkouts.json` is then ignored.
 
 ## Open Questions
 

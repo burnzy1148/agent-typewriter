@@ -71,7 +71,10 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   /** The checkout each folder records (or will record once started), by folder URI; only folders in git. */
   const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+  // Calls overlap (scope events, focus, folder changes); only the newest one's answer is kept.
+  let checkoutsGen = 0;
   const refreshCheckouts = async () => {
+    const gen = ++checkoutsGen;
     const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const live = recorder.checkoutOf(folder);
@@ -85,6 +88,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       const shown = chosen ?? c.own;
       next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: shown ? checkoutName(shown) : '', worktrees: c.worktrees.length });
     }
+    if (gen !== checkoutsGen) return;
     checkouts.clear();
     for (const [k, v] of next) checkouts.set(k, v);
     refreshStatus();
@@ -135,6 +139,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     timeline.onDidChange(refreshStatus),
     recorder.onDidChangeScope(() => void refreshCheckouts()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshCheckouts()),
+    // Worktrees made elsewhere (a sibling directory, or while stopped) send no event here.
+    vscode.window.onDidChangeWindowState((w) => w.focused && void refreshCheckouts()),
   );
   refreshStatus();
   void refreshCheckouts();
@@ -457,8 +463,10 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       if (c && (c.worktrees.length > 1 || pathArg !== undefined)) candidates.push([folder, c]);
     }
     if (candidates.length === 0) {
-      const name = only?.name ?? (folders.length === 1 ? folders[0].name : 'No workspace folder');
-      vscode.window.showInformationMessage(`Agent Typewriter: ${name} has no other checkouts.`);
+      const which = only?.name ?? (folders.length === 1 ? folders[0].name : undefined);
+      vscode.window.showInformationMessage(
+        which ? `Agent Typewriter: ${which} has no other checkouts.` : 'Agent Typewriter: no workspace folder has other checkouts.',
+      );
       return;
     }
     let target = candidates[0];

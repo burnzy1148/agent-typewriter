@@ -56,7 +56,7 @@ The user SHALL be able to choose, per workspace folder, which checkout of its re
 - **THEN** only files under that worktree's `src/` are recorded
 
 #### Scenario: Multi-root workspace
-- **WHEN** two workspace folders are open, each in a git repository, and the user runs the command
+- **WHEN** two workspace folders are open, each in a git repository with more than one worktree, and the user runs the command
 - **THEN** the user first picks which folder the choice is for
 
 ### Requirement: The chosen checkout is shown

@@ -11,6 +11,7 @@ import {
   nestedUnder,
   ownCheckout,
   parseWorktreeList,
+  pointsAtLinkedWorktree,
   relativeInside,
   rootIn,
   worktreeLabels,
@@ -142,4 +143,16 @@ test('CheckoutChoiceFile: survives a reload, forgets cleared choices, tolerates 
   fs.writeFileSync(file, '{ broken');
   assert.equal(new CheckoutChoiceFile(file).get('file:///ws'), undefined);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('pointsAtLinkedWorktree: worktree .git files, not submodules', () => {
+  assert.ok(pointsAtLinkedWorktree('gitdir: /repo/.git/worktrees/feature\n'));
+  assert.ok(pointsAtLinkedWorktree('gitdir: C:/Users/me/repo/.git/worktrees/fix-2\r\n'));
+  assert.ok(!pointsAtLinkedWorktree('gitdir: ../../.git/modules/vendor/lib\n'));
+  assert.ok(!pointsAtLinkedWorktree('gitdir: /repo/.git/worktrees\n'));
+  assert.ok(!pointsAtLinkedWorktree('[core]\n\tbare = false\n'));
+});
+
+test('relativeInside: keeps the child path as written, not case-folded', () => {
+  assert.equal(relativeInside(P('Repo'), P('Repo', '.worktrees', 'Fix-Bug')), '.worktrees/Fix-Bug');
 });

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
 import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
 import { listCleanTracked, readBlob, selectWithinBudget, type BudgetCandidate } from './gitBaseline';
@@ -10,6 +11,7 @@ import {
   nestedUnder,
   ownCheckout,
   pathKey,
+  pointsAtLinkedWorktree,
   rootIn,
   worktreeLabels,
   type Worktree,
@@ -59,7 +61,10 @@ export class Recorder implements vscode.Disposable {
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
   private scopeWork: Promise<void> = Promise.resolve();
   private worktreeRefresh: NodeJS.Timeout | undefined;
-  private goneCheck: NodeJS.Timeout | undefined;
+  /** Pending "is the chosen checkout gone?" checks, per folder URI. */
+  private readonly goneChecks = new Map<string, NodeJS.Timeout>();
+  /** Filter refreshes run one at a time, so an older one never overwrites a newer one's gitignore rules. */
+  private filterWork: Promise<void> = Promise.resolve();
   private readonly scopeEmitter = new vscode.EventEmitter<void>();
   /** Fires when the checkout a folder records, or its worktree list, may have changed. */
   readonly onDidChangeScope = this.scopeEmitter.event;
@@ -199,7 +204,8 @@ export class Recorder implements vscode.Disposable {
     this.timers.clear();
     clearTimeout(this.ignoreRefresh);
     clearTimeout(this.worktreeRefresh);
-    clearTimeout(this.goneCheck);
+    for (const t of this.goneChecks.values()) clearTimeout(t);
+    this.goneChecks.clear();
     this.ignored.clear();
     this.reorder.drain();
     this.snapshots.clear();
@@ -212,18 +218,24 @@ export class Recorder implements vscode.Disposable {
    * Re-reads filter settings, worktrees, and gitignore rules. Newly matching
    * files get a baseline so their next change is recorded.
    */
-  async refreshFilter(reason = 'Filter changed'): Promise<void> {
+  refreshFilter(reason = 'Filter changed'): Promise<void> {
     this.filter = this.buildFilter();
-    if (!this.running) return;
-    await this.refreshScopes();
-    await this.refreshIgnored();
-    for (const store of [this.snapshots, this.gitBaselines]) {
-      for (const key of [...store.keys()]) {
-        if (!this.passes(vscode.Uri.parse(key))) store.delete(key);
+    if (!this.running) return Promise.resolve();
+    const work = this.filterWork.then(async () => {
+      if (!this.running) return;
+      this.filter = this.buildFilter();
+      await this.refreshScopes();
+      await this.refreshIgnored();
+      for (const store of [this.snapshots, this.gitBaselines]) {
+        for (const key of [...store.keys()]) {
+          if (!this.passes(vscode.Uri.parse(key))) store.delete(key);
+        }
       }
-    }
-    await this.captureBaseline();
-    this.log.appendLine(`${reason}: watching ${this.watchedCount} files (${this.describeFilter()}).`);
+      await this.captureBaseline();
+      this.log.appendLine(`${reason}: watching ${this.watchedCount} files (${this.describeFilter()}).`);
+    });
+    this.filterWork = work.catch(() => {});
+    return work;
   }
 
   /**
@@ -336,7 +348,9 @@ export class Recorder implements vscode.Disposable {
     return scope;
   }
 
+  /** A watcher for the scope's root. It outlives the Scope object while the root stays the same, so handlers look the scope up by folder. */
   private watch(scope: Scope): vscode.Disposable[] {
+    const key = scope.folder.uri.toString();
     const pattern = scope.own ? new vscode.RelativePattern(scope.folder, '**/*') : new vscode.RelativePattern(scope.root, '**/*');
     const watcher = vscode.workspace.createFileSystemWatcher(pattern);
     const subs: vscode.Disposable[] = [watcher];
@@ -352,7 +366,8 @@ export class Recorder implements vscode.Disposable {
     watcher.onDidDelete(
       (uri) => {
         this.noteGitEntry(uri, false);
-        if (!scope.own) this.checkCheckoutGone(scope);
+        const current = this.scopes.get(key);
+        if (current && !current.own) this.checkCheckoutGone(current);
         this.schedule(uri, false);
       },
       null,
@@ -367,12 +382,19 @@ export class Recorder implements vscode.Disposable {
    * gone, once the burst of deletes settles.
    */
   private checkCheckoutGone(scope: Scope): void {
-    clearTimeout(this.goneCheck);
-    this.goneCheck = setTimeout(() => {
-      void stat(vscode.Uri.joinPath(scope.checkout, '.git')).then((found) => {
-        if (!found && this.running && this.scopes.get(scope.folder.uri.toString()) === scope) this.scheduleWorktreeRefresh();
-      });
-    }, 300);
+    const key = scope.folder.uri.toString();
+    clearTimeout(this.goneChecks.get(key));
+    this.goneChecks.set(
+      key,
+      setTimeout(() => {
+        this.goneChecks.delete(key);
+        const checkout = this.scopes.get(key)?.checkout;
+        if (!checkout) return;
+        void stat(vscode.Uri.joinPath(checkout, '.git')).then((found) => {
+          if (!found && this.running && this.scopes.get(key)?.checkout.toString() === checkout.toString()) this.scheduleWorktreeRefresh();
+        });
+      }, 300),
+    );
   }
 
   /** The scope that records this path, if any. A chosen worktree inside a folder takes precedence over the folder. */
@@ -396,9 +418,12 @@ export class Recorder implements vscode.Disposable {
   }
 
   /**
-   * A `.git` entry was created or deleted. Below the root it may be a new
-   * worktree: its files are hidden right away and git confirms on refresh. At a
-   * chosen root it may be that worktree going away.
+   * A `.git` entry was created or deleted. Below the root, a created `.git`
+   * file pointing into a repository's `worktrees/` is a new linked worktree:
+   * its files are hidden right away and git confirms on refresh. Clones and
+   * submodules (a `.git` directory, or a file pointing into `modules/`) are left
+   * alone. A deleted nested worktree, or the chosen root's own `.git`, may be a
+   * worktree going away.
    */
   private noteGitEntry(uri: vscode.Uri, created: boolean): void {
     if (!this.running || uri.scheme !== 'file' || !uri.path.endsWith('/.git')) return;
@@ -409,8 +434,14 @@ export class Recorder implements vscode.Disposable {
       if (!scope.own) this.scheduleWorktreeRefresh();
       return;
     }
-    if (created) scope.nested.add(rel.slice(0, -'.git'.length));
-    this.scheduleWorktreeRefresh();
+    const dir = rel.slice(0, -'.git'.length);
+    if (created) {
+      if (!isLinkedWorktreeGitFile(uri.fsPath)) return;
+      scope.nested.add(dir);
+      this.scheduleWorktreeRefresh();
+    } else if (scope.nestedDirs.includes(dir)) {
+      this.scheduleWorktreeRefresh();
+    }
   }
 
   private scheduleWorktreeRefresh(): void {
@@ -824,6 +855,16 @@ export function relPathOf(uri: vscode.Uri): string {
 export function displayPathOf(uri: vscode.Uri): string {
   const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
   return vscode.workspace.asRelativePath(uri, multiRoot).replace(/\\/g, '/');
+}
+
+/** True for a `.git` file of the form a linked worktree has: `gitdir: <repo>/worktrees/<name>`. */
+function isLinkedWorktreeGitFile(file: string): boolean {
+  try {
+    if (!fs.statSync(file).isFile()) return false;
+    return pointsAtLinkedWorktree(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return false;
+  }
 }
 
 /** True when `uri` is strictly inside `root`. Case is ignored on Windows. */

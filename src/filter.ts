@@ -32,11 +32,14 @@ export class PathFilter {
     return this.include.some((g) => globMatch(path, g));
   }
 
-  /** True when the exclude globs rule out everything under this directory, so a directory walk can skip it. */
+  /**
+   * True when an exclude glob rules out everything under this directory, so a
+   * directory walk can skip it. Only `<dir glob>/**` patterns count; anything
+   * else may still leave some files in the directory recorded.
+   */
   excludesDir(relDir: string): boolean {
-    // A NUL name stands for "any file in here": only globs that cover the whole directory match it.
-    const probe = relDir.replace(/\\/g, '/').replace(/\/+$/, '') + '/\u0000';
-    return this.exclude.some((g) => globMatch(probe, g));
+    const dir = relDir.replace(/\\/g, '/').replace(/\/+$/, '');
+    return this.exclude.some((g) => g.endsWith('/**') && minimatch(dir, g.slice(0, -3), { dot: true, nocase: false }));
   }
 
   describe(): string {

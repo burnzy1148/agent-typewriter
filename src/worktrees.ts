@@ -78,23 +78,40 @@ export async function listWorktrees(folder: string, run: GitRunner = runGit): Pr
   }
 }
 
-/** A path in a form two spellings of the same directory share: symlinks resolved, case folded on Windows. */
-export function pathKey(p: string): string {
-  let real = path.resolve(p);
-  try {
-    real = fs.realpathSync.native(real);
-  } catch {
-    // A path that doesn't exist (yet) compares as written.
-  }
-  return process.platform === 'win32' ? real.toLowerCase() : real;
+/** True when a `.git` file's text points into a repository's `worktrees/`, as a linked worktree's does (a submodule's points into `modules/`). */
+export function pointsAtLinkedWorktree(gitFileText: string): boolean {
+  return /^gitdir: .*[\\/]worktrees[\\/][^\\/]+[\\/]?\s*$/m.test(gitFileText);
 }
 
-/** `child` relative to `parent` with forward slashes, '' when they are the same, or undefined when `child` is outside. */
+/** A path as it is on disk: absolute, symlinks and short names resolved, real case kept. */
+function realPath(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    // A path that doesn't exist (yet) compares as written.
+    return resolved;
+  }
+}
+
+const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+
+/** A path in a form two spellings of the same directory share: symlinks resolved, case folded on Windows. */
+export function pathKey(p: string): string {
+  return fold(realPath(p));
+}
+
+/**
+ * `child` relative to `parent` with forward slashes, '' when they are the
+ * same, or undefined when `child` is outside. Containment ignores case on
+ * Windows; the result keeps the child's real case, as VS Code reports paths.
+ */
 export function relativeInside(parent: string, child: string): string | undefined {
-  const rel = path.relative(pathKey(parent), pathKey(child));
-  if (rel === '') return '';
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
-  return rel.replace(/\\/g, '/');
+  const a = realPath(parent).replace(/[\\/]+$/, '');
+  const b = realPath(child).replace(/[\\/]+$/, '');
+  if (fold(a) === fold(b)) return '';
+  if (!fold(b).startsWith(fold(a) + path.sep)) return undefined;
+  return b.slice(a.length + 1).replace(/\\/g, '/');
 }
 
 /** The worktree a folder belongs to: the deepest listed worktree containing it. */

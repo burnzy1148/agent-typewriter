@@ -532,6 +532,8 @@ export async function run(): Promise<void> {
   await sleep(1500);
   fs.writeFileSync(path.join(root, '.worktrees', 'late', 'src', 'lateWrite.ts'), 'export const late = 1;\n');
   await sleep(2000);
+  // Changes are held for the reorder window; release them so a wrongly recorded one shows up here.
+  api.recorder.drainHeld();
   assert.deepEqual(
     since(atLate).map((e) => e.relPath),
     [],
@@ -541,11 +543,14 @@ export async function run(): Promise<void> {
   // Removing the chosen worktree falls back to the folder's own checkout and forgets the choice.
   await choose(siblingDir);
   await until('sibling chosen again', () => own() === false, 20000);
+  // A refresh that keeps the same root hands the watcher to a new scope; the fallback must still work.
+  await api.recorder.refreshFilter();
   const atRemove = timeline.all().length;
   gitIn(root, 'worktree', 'remove', '--force', siblingDir);
   await until('fallback to own checkout', () => own() === true, 20000);
   assert.equal((await api.recorder.checkoutsOf(folder))?.chosen, undefined, 'the removed worktree is still remembered');
   await sleep(1000);
+  api.recorder.drainHeld();
   assert.deepEqual(
     since(atRemove).map((e) => `${e.kind} ${e.relPath}`),
     [],
