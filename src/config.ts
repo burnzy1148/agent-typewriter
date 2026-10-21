@@ -6,6 +6,8 @@ import { pickLayer, type RepoValues } from './repoSettings';
 export const SECTION = 'agentTypewriter';
 
 export interface Settings extends FilterSettings {
+  /** Also skip paths git reports as ignored. */
+  respectGitignore: boolean;
   autoStart: boolean;
   charsPerSecond: number;
   /** Language id → base chars per second. Raw from settings; pace.ts ignores bad entries. */
@@ -50,6 +52,7 @@ export function readSettings(): Settings {
     include: c.get('include', ['**/*']),
     exclude: c.get('exclude', []),
     extensions: c.get('extensions', []),
+    respectGitignore: c.get('respectGitignore', false),
     charsPerSecond: Math.max(1, c.get('charsPerSecond', 35)),
     languageSpeeds: asRecord(c.get<unknown>('languageSpeeds', {})),
     jitter: clamp(c.get('jitter', 0.6), 0, 1),
