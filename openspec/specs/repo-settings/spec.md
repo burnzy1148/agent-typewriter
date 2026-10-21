@@ -17,7 +17,7 @@ The extension SHALL read settings from a file named `.agent-typewriter.json` at 
 - **THEN** settings resolve exactly as VS Code settings alone
 
 ### Requirement: File sits between user and workspace settings
-Each setting SHALL resolve, from highest to lowest priority, to its workspace setting, its value in the repository file, its user setting, then its default. Settings the file does not mention SHALL resolve as if the file did not exist.
+Each setting SHALL resolve, from highest to lowest priority, to its workspace setting, its value in the repository file, its user setting, then its default. Settings the file does not mention SHALL resolve as if the file did not exist. The `profiles` setting is the exception: its layers SHALL be merged by profile name, as the filter-profiles capability defines.
 
 #### Scenario: File overrides user settings
 - **WHEN** the user settings set `charsPerSecond` to 20 and the file sets it to 50, with no workspace value
@@ -30,6 +30,10 @@ Each setting SHALL resolve, from highest to lowest priority, to its workspace se
 #### Scenario: Reset Filters falls back to the file
 - **WHEN** the workspace settings override the file's `include` and the user runs **Reset Filters**
 - **THEN** the file's `include` applies
+
+#### Scenario: Profiles from both layers
+- **WHEN** the file defines profile `docs` and the workspace settings define profile `backend`
+- **THEN** both `docs` and `backend` are available
 
 ### Requirement: File changes apply live
 Creating, changing, or deleting the repository file SHALL take effect without a reload, the same way as changing the corresponding VS Code settings. While watching, files that newly pass the filters SHALL get a baseline so their next change is recorded.
