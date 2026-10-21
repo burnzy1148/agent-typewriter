@@ -198,7 +198,17 @@ export async function run(): Promise<void> {
     await d.save();
     const savedText = lf(d.getText());
     if (gapMs > 0) await sleep(gapMs);
-    write('src/existing.ts', savedText + `export const ${marker} = 'agent';\n`);
+    // Windows can hold the file briefly right after a save (EBUSY); retry like an agent would.
+    for (let tries = 0; ; tries++) {
+      try {
+        write('src/existing.ts', savedText + `export const ${marker} = 'agent';\n`);
+        break;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if ((code !== 'EBUSY' && code !== 'EPERM') || tries >= 50) throw err;
+        await sleep(20);
+      }
+    }
     await until(`${marker} recorded`, () => timeline.all().length > at, 20000);
     await sleep(500);
     await until(`${marker} playback`, idle);
