@@ -7,6 +7,8 @@ import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } fr
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
 import { Recorder, relPathOf } from './recorder';
+import { scrubberState } from './scrubberState';
+import { ScrubberView } from './scrubberView';
 import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { Timeline, toSession } from './timeline';
@@ -17,6 +19,7 @@ export interface AgentTypewriterApi {
   timeline: Timeline;
   player: Player;
   recorder: Recorder;
+  scrubber: ScrubberView;
   /** Undefined when no folder is open (no workspace storage). */
   store: TimelineStore | undefined;
 }
@@ -34,6 +37,9 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  const scrubber = new ScrubberView(() =>
+    scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning }),
+  );
   const store = context.storageUri
     ? new TimelineStore(context.storageUri.fsPath, timeline, (line) => log.appendLine(line))
     : undefined;
@@ -46,6 +52,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     view,
     tree,
     status,
+    scrubber,
+    vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
     { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
@@ -72,6 +80,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       status.command = 'agentTypewriter.togglePause';
     }
     status.show();
+    scrubber.refresh();
     tree.description = watching ? recorder.describeFilter() : 'stopped';
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
@@ -122,12 +131,13 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   register('agentTypewriter.finishCurrent', () => player.finishCurrent());
 
-  register('agentTypewriter.catchUp', async () => {
+  const catchUp = async () => {
     recorder.drainHeld();
     timeline.seekToEnd();
     await player.interrupt();
     await player.snapToLatest();
-  });
+  };
+  register('agentTypewriter.catchUp', catchUp);
 
   register('agentTypewriter.replayAll', async () => {
     if (timeline.all().length === 0) {
@@ -145,6 +155,26 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     timeline.seek(seq);
     await player.interrupt();
     if (player.isPaused) player.togglePause();
+  });
+
+  // Like replayFrom, but keeps the pause state; past the newest change it skips to latest.
+  const seekTo = async (seq: number) => {
+    const events = timeline.all();
+    if (events.length === 0 || seq > events[events.length - 1].seq) {
+      await catchUp();
+      return;
+    }
+    timeline.seek(seq);
+    await player.interrupt();
+  };
+  register('agentTypewriter.seek', async (seq?: number) => {
+    if (typeof seq === 'number') await seekTo(seq);
+  });
+
+  // Drops the change being typed (or the next queued one) and moves on to the one after it.
+  register('agentTypewriter.skipToNext', async () => {
+    const playing = timeline.all().find((e) => timeline.stateOf(e.seq) === 'playing');
+    await seekTo((playing?.seq ?? timeline.cursor) + 1);
   });
 
   register('agentTypewriter.showDiff', async (arg?: ChangeItem) => {
@@ -314,7 +344,11 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     }
   });
 
-  register('agentTypewriter.setSpeed', async () => {
+  register('agentTypewriter.setSpeed', async (multiplier?: number) => {
+    if (typeof multiplier === 'number' && Number.isFinite(multiplier) && multiplier > 0) {
+      player.setSpeed(multiplier);
+      return;
+    }
     const options = [0.5, 1, 1.5, 2, 3, 5].map((m) => ({
       label: `${m}x`,
       description: m === player.speed ? 'current' : undefined,
@@ -402,7 +436,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder, store };
+  return { timeline, player, recorder, store, scrubber };
 }
 
 /** Local time as yyyy-mm-dd-hhmm, for default session file names. */

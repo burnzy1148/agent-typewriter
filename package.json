@@ -55,6 +55,11 @@
         "icon": "$(debug-step-over)"
       },
       {
+        "command": "agentTypewriter.skipToNext",
+        "title": "Skip to Next Change",
+        "category": "Agent Typewriter"
+      },
+      {
         "command": "agentTypewriter.catchUp",
         "title": "Skip to Latest",
         "category": "Agent Typewriter",
@@ -71,6 +76,11 @@
         "title": "Replay From Here",
         "category": "Agent Typewriter",
         "icon": "$(play)"
+      },
+      {
+        "command": "agentTypewriter.seek",
+        "title": "Seek to Change",
+        "category": "Agent Typewriter"
       },
       {
         "command": "agentTypewriter.showDiff",
@@ -132,6 +142,11 @@
     "views": {
       "explorer": [
         {
+          "type": "webview",
+          "id": "agentTypewriter.scrubber",
+          "name": "Playback"
+        },
+        {
           "id": "agentTypewriter.timeline",
           "name": "Agent Typewriter"
         }
@@ -160,26 +175,6 @@
           "command": "agentTypewriter.stop",
           "when": "view == agentTypewriter.timeline && agentTypewriter.watching",
           "group": "navigation@1"
-        },
-        {
-          "command": "agentTypewriter.togglePause",
-          "when": "view == agentTypewriter.timeline",
-          "group": "navigation@2"
-        },
-        {
-          "command": "agentTypewriter.finishCurrent",
-          "when": "view == agentTypewriter.timeline",
-          "group": "navigation@3"
-        },
-        {
-          "command": "agentTypewriter.catchUp",
-          "when": "view == agentTypewriter.timeline",
-          "group": "navigation@4"
-        },
-        {
-          "command": "agentTypewriter.replayAll",
-          "when": "view == agentTypewriter.timeline",
-          "group": "navigation@5"
         },
         {
           "command": "agentTypewriter.setExtensions",
@@ -242,6 +237,10 @@
       "commandPalette": [
         {
           "command": "agentTypewriter.replayFrom",
+          "when": "false"
+        },
+        {
+          "command": "agentTypewriter.seek",
           "when": "false"
         },
         {
