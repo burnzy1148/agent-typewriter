@@ -38,13 +38,20 @@ disk write ──► watcher ──► debounce ──► diff vs snapshot ─�
 - **Catch-up.** Agents write far faster than people type. Speed is `base x (1 + catchUpFactor x queued)` capped at `maxSpeedup`, so playback accelerates when it falls behind and relaxes when it catches up. Changes larger than `maxAnimatedChars` are applied instantly.
 - **Mirror editors.** Each file gets one mirror tab, saved quietly after every change so closing a tab never prompts.
 
-## The panel
+## The panels
+
+**Explorer > Playback** controls replay like a media player:
+
+- Replay from the start, play/pause, finish the current change instantly, skip to the next change, and skip to latest.
+- Drag the slider to any recorded change and let go to seek there. Seeking keeps playback paused or playing as it was; the far end of the slider skips to latest.
+- The speed picker sets a multiplier (0.5x to 5x) on top of the base speed.
+- The line under the slider shows what is typing or next, and how many changes are queued.
 
 **Explorer > Agent Typewriter** lists recorded changes, newest first, with their state (pending, typing, played) and line counts.
 
 - Click an entry to see its diff.
 - Inline **Replay From Here** restarts playback at that change.
-- Title bar: start/stop, pause/resume, finish current change instantly, skip to latest, replay entire buffer. The `...` menu has filters, speed, and clear.
+- Title bar: start/stop watching. The `...` menu has filters, base speed, and clear. Pause, finish current, skip to latest, and replay all are also commands in the Command Palette.
 
 ## Session files
 

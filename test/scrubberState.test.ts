@@ -1,0 +1,103 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Timeline, type NewChangeEvent } from '../src/timeline';
+import { parseScrubberMessage, scrubberState } from '../src/scrubberState';
+
+function ev(relPath: string): NewChangeEvent {
+  return { uri: 'file:///w/' + relPath, relPath, time: 0, kind: 'modify', before: '', after: 'x', eol: '\n', linesAdded: 1, linesRemoved: 0 };
+}
+
+const player = { paused: false, speed: 1, watching: true };
+
+test('slider index follows the cursor from start to caught up', () => {
+  const t = new Timeline(100);
+  assert.equal(scrubberState(t, player).index, 0);
+  const a = t.push(ev('a.ts'));
+  const b = t.push(ev('b.ts'));
+  t.push(ev('c.ts'));
+  assert.equal(scrubberState(t, player).index, 0);
+  t.seek(b.seq);
+  assert.equal(scrubberState(t, player).index, 1);
+  t.seekToEnd();
+  const s = scrubberState(t, player);
+  assert.equal(s.index, 3);
+  assert.equal(s.queued, 0);
+  assert.deepEqual(
+    s.changes.map((c) => c.relPath),
+    ['a.ts', 'b.ts', 'c.ts'],
+  );
+  assert.equal(s.changes[0].seq, a.seq);
+});
+
+test('playing seq and queue count', () => {
+  const t = new Timeline(100);
+  const a = t.push(ev('a.ts'));
+  t.push(ev('b.ts'));
+  t.push(ev('c.ts'));
+  assert.equal(scrubberState(t, player).playingSeq, undefined);
+  assert.equal(scrubberState(t, player).queued, 3);
+  t.begin(a.seq);
+  const s = scrubberState(t, player);
+  assert.equal(s.playingSeq, a.seq);
+  assert.equal(s.queued, 2);
+  assert.equal(s.index, 0);
+});
+
+test('player flags pass through', () => {
+  const s = scrubberState(new Timeline(10), { paused: true, speed: 2.5, watching: false });
+  assert.equal(s.type, 'state');
+  assert.equal(s.paused, true);
+  assert.equal(s.speed, 2.5);
+  assert.equal(s.watching, false);
+});
+
+test('index stays in range when old changes are trimmed', () => {
+  const t = new Timeline(3);
+  for (const p of ['a', 'b', 'c', 'd', 'e']) t.push(ev(p));
+  const s = scrubberState(t, player);
+  assert.deepEqual(
+    s.changes.map((c) => c.relPath),
+    ['c', 'd', 'e'],
+  );
+  assert.equal(s.index, 0);
+  t.seekToEnd();
+  assert.equal(scrubberState(t, player).index, 3);
+});
+
+test('index is 0 after clear', () => {
+  const t = new Timeline(10);
+  t.push(ev('a'));
+  t.clear();
+  const s = scrubberState(t, player);
+  assert.equal(s.index, 0);
+  assert.equal(s.changes.length, 0);
+});
+
+test('valid messages parse', () => {
+  for (const type of ['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll']) {
+    assert.deepEqual(parseScrubberMessage({ type }), { type });
+  }
+  assert.deepEqual(parseScrubberMessage({ type: 'seek', seq: 7, extra: 1 }), { type: 'seek', seq: 7 });
+  assert.deepEqual(parseScrubberMessage({ type: 'speed', value: 0.5 }), { type: 'speed', value: 0.5 });
+});
+
+test('malformed messages are rejected', () => {
+  const bad: unknown[] = [
+    undefined,
+    null,
+    'togglePause',
+    42,
+    {},
+    { type: 'deleteEverything' },
+    { type: 'seek' },
+    { type: 'seek', seq: 1.5 },
+    { type: 'seek', seq: -1 },
+    { type: 'seek', seq: '3' },
+    { type: 'speed', value: 0 },
+    { type: 'speed', value: -2 },
+    { type: 'speed', value: 'fast' },
+    { type: 'speed', value: Infinity },
+    { type: 'speed', value: NaN },
+  ];
+  for (const m of bad) assert.equal(parseScrubberMessage(m), undefined, JSON.stringify(m));
+});
