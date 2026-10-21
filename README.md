@@ -25,12 +25,13 @@ Set `agentTypewriter.autoStart` to `true` to start watching whenever the workspa
 ## How it works
 
 ```
-disk write ──► watcher ──► debounce ──► diff vs snapshot ──► timeline (ordered buffer)
-                                                                   │
-                                     replay editor ◄── player ◄────┘
+disk write ──► watcher ──► debounce ──► diff vs snapshot ──► reorder ──► timeline (ordered buffer)
+                                                                               │
+                                                 replay editor ◄── player ◄────┘
 ```
 
 - **Snapshots.** On start, every matching file is snapshotted. When a file changes, the new text is compared with its snapshot and the event stores both sides. The before side is fixed at record time, so a sequence like A, B, A replays correctly even when playback is minutes behind.
+- **Write order.** Each change is ordered by its file's modification time and held for a short reorder window (`reorderWindowMs`), so a watcher that reports writes late or out of order, as on Windows, still produces the true order.
 - **Timeline buffer.** Events are kept in order (default 500, `historyLimit`). The playback cursor moves through them independently of recording, so you can replay the whole buffer or start from any event.
 - **Diff planning.** Changes are planned line by line, then refined word by word, so renaming one variable retypes only that token. Whole new lines are typed as lines. Leading indentation appears instantly the way an editor auto-indents. Short deletions are backspaced; longer ones are selected and then deleted.
 - **Catch-up.** Agents write far faster than people type. Speed is `base x (1 + catchUpFactor x queued)` capped at `maxSpeedup`, so playback accelerates when it falls behind and relaxes when it catches up. Changes larger than `maxAnimatedChars` are applied instantly.
@@ -74,6 +75,7 @@ Filter changes apply immediately while watching; newly matching files are snapsh
 | `maxAnimatedChars` | 6000 | Bigger changes are applied instantly |
 | `fileSwitchDelayMs` | 600 | Pause when flipping to another file |
 | `debounceMs` | 200 | Writes to one file inside this window merge into one change |
+| `reorderWindowMs` | `"auto"` | Hold each change this long so changes enter the timeline in write order even when the watcher reports them late. `"auto"` is 2500 ms on Windows, 250 ms elsewhere; `0` disables |
 | `maxFileSizeKB` | 512 | Larger files are ignored |
 | `historyLimit` | 500 | Changes kept for replay |
 | `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor |

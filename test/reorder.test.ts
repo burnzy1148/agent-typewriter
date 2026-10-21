@@ -1,0 +1,173 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { ReorderBuffer, clampOrderKey, resolveReorderWindow, type Scheduler } from '../src/reorder';
+
+/** Manual clock: timers fire only when advance() passes them. */
+class FakeClock implements Scheduler {
+  t = 0;
+  private timers = new Map<number, { at: number; fn: () => void }>();
+  private id = 0;
+  now() {
+    return this.t;
+  }
+  setTimeout(fn: () => void, ms: number) {
+    this.timers.set(++this.id, { at: this.t + ms, fn });
+    return this.id;
+  }
+  clearTimeout(h: unknown) {
+    this.timers.delete(h as number);
+  }
+  advance(ms: number) {
+    const end = this.t + ms;
+    for (;;) {
+      const due = [...this.timers.entries()].filter(([, v]) => v.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!due) break;
+      this.timers.delete(due[0]);
+      this.t = due[1].at;
+      due[1].fn();
+    }
+    this.t = end;
+  }
+}
+
+function setup(window = 100) {
+  const clock = new FakeClock();
+  const out: string[] = [];
+  const buf = new ReorderBuffer<string>((items) => out.push(...items), () => window, clock);
+  return { clock, out, buf };
+}
+
+test('reorder: holds items until key + window', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  buf.add('a', 1000, 'a');
+  clock.advance(99);
+  assert.deepEqual(out, []);
+  clock.advance(1);
+  assert.deepEqual(out, ['a']);
+});
+
+test('reorder: releases in key order, not arrival order', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1050;
+  buf.add('b', 1040, 'b');
+  buf.add('a', 1010, 'a');
+  buf.add('c', 1045, 'c');
+  clock.advance(200);
+  assert.deepEqual(out, ['a', 'b', 'c']);
+});
+
+test('reorder: equal keys keep insertion order', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 500;
+  buf.add('x', 500, 'x');
+  buf.add('y', 500, 'y');
+  buf.add('z', 500, 'z');
+  clock.advance(100);
+  assert.deepEqual(out, ['x', 'y', 'z']);
+});
+
+test('reorder: a zero window releases synchronously', () => {
+  const { clock, out, buf } = setup(0);
+  clock.t = 10;
+  buf.add('a', 10, 'a');
+  assert.deepEqual(out, ['a']);
+  assert.equal(buf.size, 0);
+});
+
+test('reorder: a zero window ignores pending bursts', () => {
+  const { clock, out, buf } = setup(0);
+  clock.t = 10;
+  buf.pending(5);
+  buf.add('a', 10, 'a');
+  assert.deepEqual(out, ['a']);
+});
+
+test('reorder: a due item waits for an earlier pending burst', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  const done = buf.pending(1020);
+  buf.add('later', 1010, 'later');
+  clock.advance(150);
+  assert.deepEqual(out, [], 'released while an earlier burst was pending');
+  buf.add('earlier', 1005, 'earlier');
+  done();
+  clock.advance(0);
+  assert.deepEqual(out, ['earlier', 'later']);
+});
+
+test('reorder: a pending burst that arrived after the window does not block', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  buf.pending(1200);
+  buf.add('a', 1000, 'a');
+  clock.advance(100);
+  assert.deepEqual(out, ['a']);
+});
+
+test('reorder: a burst that never finishes blocks only until key + 2 × window', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  buf.pending(1000);
+  buf.add('a', 1000, 'a');
+  clock.advance(199);
+  assert.deepEqual(out, []);
+  clock.advance(1);
+  assert.deepEqual(out, ['a']);
+});
+
+test('reorder: a later same-file item with an earlier key is still released second', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  buf.add('f#1', 1000, 'f');
+  buf.add('g', 990, 'g');
+  buf.add('f#2', 900, 'f');
+  clock.advance(500);
+  assert.deepEqual(out, ['g', 'f#1', 'f#2']);
+});
+
+test('reorder: drain releases everything held, in order', () => {
+  const { clock, out, buf } = setup(10_000);
+  clock.t = 100;
+  buf.add('b', 90, 'b');
+  buf.add('a', 80, 'a');
+  buf.drain();
+  assert.deepEqual(out, ['a', 'b']);
+  assert.equal(buf.size, 0);
+  clock.advance(20_000);
+  assert.deepEqual(out, ['a', 'b'], 'drained items released twice');
+});
+
+test('clampOrderKey: in-range mtime is kept', () => {
+  assert.equal(clampOrderKey(950, 1000, 1100, 250), 950);
+});
+
+test('clampOrderKey: mtime after the last watcher event is capped', () => {
+  assert.equal(clampOrderKey(5000, 1000, 1100, 250), 1100);
+});
+
+test('clampOrderKey: a very old mtime is floored at firstArrival - window', () => {
+  assert.equal(clampOrderKey(1, 1000, 1100, 250), 750);
+});
+
+test('clampOrderKey: a non-finite mtime uses first arrival', () => {
+  assert.equal(clampOrderKey(Number.NaN, 1000, 1100, 250), 1000);
+});
+
+test('resolveReorderWindow: auto by platform', () => {
+  assert.equal(resolveReorderWindow('auto', 'win32'), 2500);
+  assert.equal(resolveReorderWindow('auto', 'darwin'), 250);
+  assert.equal(resolveReorderWindow('auto', 'linux'), 250);
+});
+
+test('resolveReorderWindow: fixed numbers, including zero', () => {
+  assert.equal(resolveReorderWindow(1000, 'win32'), 1000);
+  assert.equal(resolveReorderWindow(0, 'darwin'), 0);
+});
+
+test('resolveReorderWindow: invalid values fall back to auto', () => {
+  for (const v of [-5, 'fast', Number.NaN, Infinity, null, undefined, {}]) {
+    assert.equal(resolveReorderWindow(v, 'linux'), 250, String(v));
+    assert.equal(resolveReorderWindow(v, 'win32'), 2500, String(v));
+  }
+});
