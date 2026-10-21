@@ -1,6 +1,7 @@
-# Ship only the bundled extension, its manifest, README, and LICENSE.
+# Ship only the bundled extension, its manifest, README, CHANGELOG, and LICENSE.
 **
 !dist/extension.js
 !package.json
 !README.md
+!CHANGELOG.md
 !LICENSE

@@ -8,11 +8,13 @@ Your real files are never modified by the extension. Replay happens in mirror do
 
 ## Install
 
+From the Visual Studio Code Marketplace: search for **Agent Typewriter** in the Extensions view, or run
+
 ```
-code --install-extension agent-typewriter-0.1.0.vsix
+code --install-extension burnzy1148.agent-typewriter
 ```
 
-Or in VS Code: Extensions view, `...` menu, **Install from VSIX...**.
+To install a build from a [GitHub release](https://github.com/burnzy1148/agent-typewriter/releases) or a CI artifact instead, download the `.vsix` and run `code --install-extension agent-typewriter-<version>.vsix`, or use the Extensions view, `...` menu, **Install from VSIX...**.
 
 ## Use
 
@@ -108,3 +110,11 @@ npm run package   # typecheck, test, bundle, produce the .vsix
 ```
 
 Press F5 with this folder open to launch an Extension Development Host.
+
+## Contributing
+
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, and how changes are proposed. Release notes are in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE)

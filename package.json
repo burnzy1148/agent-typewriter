@@ -3,11 +3,18 @@
   "displayName": "Agent Typewriter",
   "description": "Watches files change on disk (from Claude Code or any agent) and replays each change as if a person were typing it, flipping between files in the order they changed.",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "burnzy1148",
   "license": "MIT",
+  "author": {
+    "name": "Eric Burns"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/burnzy1148/agent-typewriter.git"
+  },
+  "homepage": "https://github.com/burnzy1148/agent-typewriter#readme",
+  "bugs": {
+    "url": "https://github.com/burnzy1148/agent-typewriter/issues"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -18,11 +25,15 @@
   ],
   "keywords": [
     "claude",
+    "claude code",
+    "ai",
     "agent",
     "typing",
+    "typewriter",
     "replay",
+    "playback",
     "demo",
-    "typewriter"
+    "screencast"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
