@@ -331,8 +331,12 @@ export async function run(): Promise<void> {
   assert.equal(timeline.all().length, atRepo, 'a path excluded by the repository file was recorded');
 
   // A workspace value overrides the file; the newly matching file gets a baseline.
+  // The filter switches before the baseline is read, so wait for the baseline
+  // too: on slow runners a write before it lands only becomes the baseline.
+  const watchedBefore = api.recorder.watchedCount;
   await cfg().update('exclude', [], WS);
   await until('workspace exclude to win', watched, 10000);
+  await until('skip/a.ts baseline', () => api.recorder.watchedCount > watchedBefore, 10000);
   await sleep(500);
   write('src/skip/a.ts', 'export const skip = 3;\n');
   await until('skip/a.ts recorded', () => timeline.all().slice(atRepo).some((e) => e.relPath === 'src/skip/a.ts'), 20000);
