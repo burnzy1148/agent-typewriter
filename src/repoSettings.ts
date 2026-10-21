@@ -9,6 +9,7 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   include: 'stringArray',
   exclude: 'stringArray',
   extensions: 'stringArray',
+  respectGitignore: 'boolean',
   charsPerSecond: 'number',
   languageSpeeds: 'object',
   jitter: 'number',

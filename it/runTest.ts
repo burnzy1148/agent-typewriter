@@ -30,6 +30,8 @@ async function main() {
 
   // Committed files for the git-backed baseline sections, then make the
   // workspace a repository with one commit.
+  // A committed file that the gitignore section's patterns match; tracked files are never ignored.
+  fs.writeFileSync(path.join(workspace, 'src/tracked.cfg'), 'level = 1\n');
   for (const n of [1, 2, 3]) {
     fs.writeFileSync(path.join(workspace, `src/committed${n}.ts`), `export const committed${n} = ${n};\nexport default committed${n};\n`);
   }

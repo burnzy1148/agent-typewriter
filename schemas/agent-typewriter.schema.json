@@ -50,6 +50,11 @@
       "default": [],
       "description": "Only watch these file extensions (for example [\"ts\", \"java\", \"md\"]). Empty means any extension that passes include/exclude."
     },
+    "respectGitignore": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also skip paths git ignores (.gitignore files, .git/info/exclude, and your global excludes). Files git tracks are never skipped. Has no effect without git or outside a git repository."
+    },
     "charsPerSecond": {
       "type": "number",
       "default": 35,
