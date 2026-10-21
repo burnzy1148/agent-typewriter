@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { readSettings, updateSetting, SECTION } from './config';
 import { parseExtensionList, PathFilter } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
+import { TimelineStore } from './persistence';
 import { Player } from './player';
 import { Recorder, relPathOf } from './recorder';
 import { Timeline } from './timeline';
@@ -12,7 +13,12 @@ export interface AgentTypewriterApi {
   timeline: Timeline;
   player: Player;
   recorder: Recorder;
+  /** Undefined when no folder is open (no workspace storage). */
+  store: TimelineStore | undefined;
 }
+
+/** Final save on deactivation, set while active. */
+let finalSave: (() => void) | undefined;
 
 export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const log = vscode.window.createOutputChannel('Agent Typewriter');
@@ -23,6 +29,9 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  const store = context.storageUri
+    ? new TimelineStore(context.storageUri.fsPath, timeline, (line) => log.appendLine(line))
+    : undefined;
 
   context.subscriptions.push(
     log,
@@ -31,6 +40,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     view,
     tree,
     status,
+    { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
   );
@@ -247,13 +257,53 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     }),
   );
 
+  // ------------------------------------------------------------ history
+
+  const applyPersistHistory = () => {
+    if (!store) return;
+    if (readSettings().persistHistory) store.start();
+    else if (store.isRunning) {
+      store.stop();
+      store.deleteSaved();
+    }
+  };
+  // Restore before anything can record. The player is waiting on the empty
+  // timeline, so pausing it first means restored queued changes are not typed
+  // until the user resumes.
+  if (store && readSettings().persistHistory) {
+    const saved = store.load();
+    if (saved && saved.events.length > 0) {
+      const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
+      if (pending > 0 && !player.isPaused) player.togglePause();
+      timeline.restore(saved.events, saved.cursor);
+      const queued = timeline.pendingCount();
+      log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
+      refreshStatus();
+    }
+  } else if (store) {
+    store.deleteSaved();
+  }
+  applyPersistHistory();
+  finalSave = () => {
+    recorder.drainHeld();
+    if (store?.isRunning) store.flushSync();
+  };
+  context.subscriptions.push({ dispose: () => (finalSave = undefined) });
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration(`${SECTION}.persistHistory`)) applyPersistHistory();
+    }),
+  );
+
   void setWatching(false);
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder };
+  return { timeline, player, recorder, store };
 }
 
 export function deactivate(): void {
-  // Disposables registered on the context clean everything up.
+  // Save before the disposables run, with every held change in the timeline.
+  // Disposables registered on the context clean up the rest.
+  finalSave?.();
 }
