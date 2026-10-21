@@ -1,0 +1,11 @@
+{
+    "agentTypewriter.extensions": [
+        "ts",
+        "tsx",
+        "md",
+        "json"
+    ],
+    "agentTypewriter.include": [
+        "node_modules/**"
+    ]
+}
