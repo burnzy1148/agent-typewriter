@@ -20,7 +20,7 @@
 
 - [x] 4.1 Make the `it/runTest.ts` workspace a git repo with an initial commit (including new `src/committed*.ts` files), and verify all existing sections still pass
 - [x] 4.2 Add a section that sets budget 0 and `gitBaselines` on, restarts watching, edits a committed file, and asserts one change with the committed text as before and the mirror matching disk; also assert `.git/index` and `HEAD` are byte-identical before and after; verify it fails with `gitBaselines` off
-- [ ] 4.3 Add a section that toggles `gitBaselines` off (budget restored) and on (budget 0) while watching and asserts the first edit to a committed file is recorded in each case; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
+- [x] 4.3 Add a section that toggles `gitBaselines` off (budget restored) and on (budget 0) while watching and asserts the first edit to a committed file is recorded in each case; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
 
 ## Workflow follow-up
 
