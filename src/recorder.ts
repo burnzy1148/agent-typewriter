@@ -157,6 +157,11 @@ export class Recorder implements vscode.Disposable {
     ].join('\n');
   }
 
+  /** The path `flush` would show for this file, so watcher and outcome lines match. */
+  private traceName(uri: vscode.Uri): string {
+    return this.displayOf(this.scopeOf(uri), uri);
+  }
+
   private note(message: string): void {
     this.activity.push(`${new Date().toISOString().slice(11, 23)} ${message}`);
     if (this.activity.length > ACTIVITY_LIMIT) this.activity.shift();
@@ -643,7 +648,7 @@ export class Recorder implements vscode.Disposable {
     if (!this.running || uri.scheme !== 'file') return;
     if (this.ignored.size > 0 && uri.path.endsWith('/.gitignore')) this.scheduleIgnoreRefresh();
     const passes = this.passes(uri);
-    this.note(`watcher ${event} ${relPathOf(uri)}${passes ? '' : ' (filtered out)'}`);
+    this.note(`watcher ${event} ${this.traceName(uri)}${passes ? '' : ' (filtered out)'}`);
     if (!passes) return;
     const created = event === 'create';
     const key = uri.toString();
@@ -655,7 +660,7 @@ export class Recorder implements vscode.Disposable {
         this.timers.delete(key);
         this.flush(uri, burst)
           .catch((err) => {
-            this.note(`read failed ${relPathOf(uri)}: ${String(err)}`);
+            this.note(`read failed ${this.traceName(uri)}: ${String(err)}`);
             this.log.appendLine(`Failed to record ${relPathOf(uri)}: ${String(err)}`);
           })
           .finally(burst.done);
@@ -670,7 +675,10 @@ export class Recorder implements vscode.Disposable {
 
   private async flush(uri: vscode.Uri, burst: Burst): Promise<void> {
     // The checkout or its worktrees may have changed since the burst started.
-    if (!this.running || !this.passes(uri)) return;
+    if (!this.running || !this.passes(uri)) {
+      this.note(`${this.running ? 'no longer matches the filter' : 'recorder stopped'}, dropped ${this.traceName(uri)}`);
+      return;
+    }
     const key = uri.toString();
     const scope = this.scopeOf(uri);
     const relPath = this.displayOf(scope, uri);
@@ -690,25 +698,32 @@ export class Recorder implements vscode.Disposable {
       // A chosen worktree being removed deletes all its files; that is the
       // checkout going away, not a change to replay.
       if (scope && !scope.own && !(await stat(vscode.Uri.joinPath(scope.checkout, '.git')))) {
+        this.note(`checkout removed, dropped ${relPath}`);
         this.snapshots.delete(key);
         return;
       }
       if (previous !== undefined) {
         this.snapshots.delete(key);
         this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.firstArrival);
-      } else this.note(`gone, no baseline ${relPath}`);
+      } else {
+        this.note(`gone, no baseline ${relPath}`);
+      }
       return;
     }
-    if (exists.type !== vscode.FileType.File) return;
+    if (exists.type !== vscode.FileType.File) {
+      this.note(`not a file ${relPath}`);
+      return;
+    }
     if (previous === undefined && (await this.newlyIgnored(uri))) {
       this.note(`newly ignored ${relPath}`);
       return;
     }
     const writtenAt = clampOrderKey(exists.mtime, burst.firstArrival, burst.lastArrival, s.reorderWindowMs);
 
-    const snap = await this.readText(uri, s, exists.size);
+    let readError: unknown;
+    const snap = await this.readText(uri, s, exists.size, (err) => (readError = err));
     if (snap === undefined) {
-      this.note(`unreadable, binary or too large ${relPath}`);
+      this.note(readError === undefined ? `binary or too large ${relPath}` : `unreadable ${relPath}: ${String(readError)}`);
       this.snapshots.delete(key);
       return;
     }
@@ -776,12 +791,19 @@ export class Recorder implements vscode.Disposable {
     this.reorder.add(event, writtenAt, event.uri);
   }
 
-  private async readText(uri: vscode.Uri, s: Settings, knownSize?: number): Promise<Snapshot | undefined> {
+  /** Undefined for binary, oversized, or unreadable files; `onError` hears why a read failed. */
+  private async readText(
+    uri: vscode.Uri,
+    s: Settings,
+    knownSize?: number,
+    onError?: (err: unknown) => void,
+  ): Promise<Snapshot | undefined> {
     try {
       const size = knownSize ?? (await vscode.workspace.fs.stat(uri)).size;
       if (size > s.maxFileSizeKB * 1024) return undefined;
       return this.decode(await vscode.workspace.fs.readFile(uri), s);
-    } catch {
+    } catch (err) {
+      onError?.(err);
       return undefined;
     }
   }
