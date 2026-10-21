@@ -95,6 +95,18 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "agentTypewriter.saveSession",
+        "title": "Save Session to File...",
+        "category": "Agent Typewriter",
+        "icon": "$(save)"
+      },
+      {
+        "command": "agentTypewriter.loadSession",
+        "title": "Load Session from File...",
+        "category": "Agent Typewriter",
+        "icon": "$(folder-opened)"
+      },
+      {
         "command": "agentTypewriter.setExtensions",
         "title": "Set Watched Extensions...",
         "category": "Agent Typewriter",
@@ -178,6 +190,16 @@
           "command": "agentTypewriter.clear",
           "when": "view == agentTypewriter.timeline",
           "group": "2_buffer@1"
+        },
+        {
+          "command": "agentTypewriter.saveSession",
+          "when": "view == agentTypewriter.timeline",
+          "group": "2_buffer@2"
+        },
+        {
+          "command": "agentTypewriter.loadSession",
+          "when": "view == agentTypewriter.timeline",
+          "group": "2_buffer@3"
         }
       ],
       "view/item/context": [
