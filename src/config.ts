@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { FilterSettings } from './filter';
+import { resolveReorderWindow } from './reorder';
 
 export const SECTION = 'agentTypewriter';
 
@@ -14,6 +15,8 @@ export interface Settings extends FilterSettings {
   maxAnimatedChars: number;
   fileSwitchDelayMs: number;
   debounceMs: number;
+  /** Resolved reorder window in ms ("auto" already mapped to the platform default). */
+  reorderWindowMs: number;
   maxFileSizeKB: number;
   historyLimit: number;
   ignoreOwnSaves: boolean;
@@ -35,6 +38,7 @@ export function readSettings(): Settings {
     maxAnimatedChars: c.get('maxAnimatedChars', 6000),
     fileSwitchDelayMs: Math.max(0, c.get('fileSwitchDelayMs', 600)),
     debounceMs: Math.max(0, c.get('debounceMs', 200)),
+    reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
     maxFileSizeKB: Math.max(1, c.get('maxFileSizeKB', 512)),
     historyLimit: Math.max(10, c.get('historyLimit', 500)),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),

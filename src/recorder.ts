@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
-import type { ChangeKind, Timeline } from './timeline';
+import { ReorderBuffer, clampOrderKey } from './reorder';
+import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
 const BASELINE_MAX_FILES = 5000;
@@ -18,7 +19,9 @@ const OWN_SAVE_WINDOW_MS = 2000;
 export class Recorder implements vscode.Disposable {
   /** LF-normalized text plus the file's real line ending. */
   private readonly snapshots = new Map<string, Snapshot>();
-  private readonly timers = new Map<string, { timer: NodeJS.Timeout; created: boolean }>();
+  private readonly timers = new Map<string, Burst>();
+  /** Holds recorded changes briefly so they reach the timeline in write order. */
+  private readonly reorder: ReorderBuffer<NewChangeEvent>;
   private readonly ownSaves = new Map<string, number>();
   private readonly subscriptions: vscode.Disposable[] = [];
   private filter: PathFilter;
@@ -31,6 +34,12 @@ export class Recorder implements vscode.Disposable {
     private readonly log: vscode.OutputChannel,
   ) {
     this.filter = new PathFilter(settings());
+    this.reorder = new ReorderBuffer(
+      (events) => {
+        for (const e of events) this.timeline.push(e);
+      },
+      () => this.settings().reorderWindowMs,
+    );
   }
 
   get isRunning(): boolean {
@@ -79,8 +88,12 @@ export class Recorder implements vscode.Disposable {
   stop(): void {
     this.running = false;
     for (const d of this.subscriptions.splice(0)) d.dispose();
-    for (const { timer } of this.timers.values()) clearTimeout(timer);
+    for (const burst of this.timers.values()) {
+      clearTimeout(burst.timer);
+      burst.done();
+    }
     this.timers.clear();
+    this.reorder.drain();
     this.snapshots.clear();
     this.ownSaves.clear();
   }
@@ -96,8 +109,14 @@ export class Recorder implements vscode.Disposable {
     this.log.appendLine(`Filter changed: watching ${this.snapshots.size} files (${this.filter.describe()}).`);
   }
 
+  /** Adds every held change to the timeline now, in write order. */
+  drainHeld(): void {
+    this.reorder.drain();
+  }
+
   dispose(): void {
     this.stop();
+    this.reorder.dispose();
   }
 
   private async captureBaseline(): Promise<void> {
@@ -136,18 +155,25 @@ export class Recorder implements vscode.Disposable {
     if (!this.running || uri.scheme !== 'file') return;
     if (!this.filter.matches(relPathOf(uri))) return;
     const key = uri.toString();
+    const now = Date.now();
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing.timer);
-    const timer = setTimeout(() => {
-      this.timers.delete(key);
-      this.flush(uri, created || (existing?.created ?? false)).catch((err) =>
-        this.log.appendLine(`Failed to record ${relPathOf(uri)}: ${String(err)}`),
-      );
-    }, this.settings().debounceMs);
-    this.timers.set(key, { timer, created: created || (existing?.created ?? false) });
+    const burst: Burst = {
+      timer: setTimeout(() => {
+        this.timers.delete(key);
+        this.flush(uri, burst)
+          .catch((err) => this.log.appendLine(`Failed to record ${relPathOf(uri)}: ${String(err)}`))
+          .finally(burst.done);
+      }, this.settings().debounceMs),
+      created: created || (existing?.created ?? false),
+      firstArrival: existing?.firstArrival ?? now,
+      lastArrival: now,
+      done: existing?.done ?? this.reorder.pending(now),
+    };
+    this.timers.set(key, burst);
   }
 
-  private async flush(uri: vscode.Uri, created: boolean): Promise<void> {
+  private async flush(uri: vscode.Uri, burst: Burst): Promise<void> {
     if (!this.running) return;
     const key = uri.toString();
     const relPath = displayPathOf(uri);
@@ -158,11 +184,12 @@ export class Recorder implements vscode.Disposable {
     if (!exists) {
       if (previous !== undefined) {
         this.snapshots.delete(key);
-        this.record(uri, relPath, 'delete', previous.text, '', previous.eol);
+        this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.firstArrival);
       }
       return;
     }
     if (exists.type !== vscode.FileType.File) return;
+    const writtenAt = clampOrderKey(exists.mtime, burst.firstArrival, burst.lastArrival, s.reorderWindowMs);
 
     const snap = await this.readText(uri, s, exists.size);
     if (snap === undefined) {
@@ -183,27 +210,37 @@ export class Recorder implements vscode.Disposable {
     if (previous === undefined) {
       // No baseline: a brand-new file is typed from empty; an unknown existing
       // file just gets its baseline now.
-      if (created) this.record(uri, relPath, 'create', '', snap.text, snap.eol);
+      if (burst.created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt);
       else this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
       return;
     }
     if (previous.text === snap.text) return;
-    this.record(uri, relPath, 'modify', previous.text, snap.text, snap.eol);
+    this.record(uri, relPath, 'modify', previous.text, snap.text, snap.eol, writtenAt);
   }
 
-  private record(uri: vscode.Uri, relPath: string, kind: ChangeKind, before: string, after: string, eol: Eol): void {
+  /** Hands a change to the reorder buffer; `writtenAt` orders it and becomes its recorded time. */
+  private record(
+    uri: vscode.Uri,
+    relPath: string,
+    kind: ChangeKind,
+    before: string,
+    after: string,
+    eol: Eol,
+    writtenAt: number,
+  ): void {
     const { added, removed } = countChanges(before, after);
-    this.timeline.push({
+    const event: NewChangeEvent = {
       uri: uri.toString(),
       relPath,
-      time: Date.now(),
+      time: writtenAt,
       kind,
       before,
       after,
       eol,
       linesAdded: added,
       linesRemoved: removed,
-    });
+    };
+    this.reorder.add(event, writtenAt, event.uri);
   }
 
   private async readText(uri: vscode.Uri, s: Settings, knownSize?: number): Promise<Snapshot | undefined> {
@@ -218,6 +255,17 @@ export class Recorder implements vscode.Disposable {
       return undefined;
     }
   }
+}
+
+/** Watcher events for one file merged by the debounce timer. */
+interface Burst {
+  timer: NodeJS.Timeout;
+  created: boolean;
+  /** When the first and latest watcher events of this burst arrived. */
+  firstArrival: number;
+  lastArrival: number;
+  /** Tells the reorder buffer this burst has been read. */
+  done: () => void;
 }
 
 interface Snapshot {
