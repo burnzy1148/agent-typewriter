@@ -14,6 +14,8 @@
 - [x] 3.2 In `flush`, check a file with no baseline and no snapshot entry with `checkIgnored` before recording or baselining it, and cache the result
 - [x] 3.3 Schedule `refreshFilter` on `.gitignore` events while the setting is on, and call `refreshFilter` from `applySettingsChange` when `respectGitignore` changes
 
+- [x] 3.4 Fix a race the integration section hit on CI: a baseline capture still running when a file is created could snapshot it before its watcher event and swallow the create. `captureBaseline` now skips files modified after it started; verify CI passes on Ubuntu and Windows
+
 ## 4. Integration checks
 
 - [x] 4.1 Add an integration section: with the setting on, a new file matching an ignore pattern is not recorded, a committed file matching a pattern is, appending a directory to `.gitignore` while watching stops recording under it, and turning the setting off records the next change to a previously ignored file as a modify; verify `npm run it` passes locally and on CI (Ubuntu and Windows)

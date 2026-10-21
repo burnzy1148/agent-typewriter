@@ -183,6 +183,9 @@ export class Recorder implements vscode.Disposable {
   }
 
   private async captureBaseline(): Promise<void> {
+    // A file written after this point is a change still on its way through the
+    // watcher; snapshotting it now would swallow that change.
+    const startedAt = Date.now();
     const gen = ++this.baselineGen;
     const stale = () => gen !== this.baselineGen;
     const s = this.settings();
@@ -208,7 +211,9 @@ export class Recorder implements vscode.Disposable {
     const stats: BudgetCandidate[] = [];
     await inBatches(candidates, async (uri) => {
       const st = await stat(uri);
-      if (st && st.type === vscode.FileType.File && st.size <= maxBytes) stats.push({ key: uri.toString(), size: st.size, mtime: st.mtime });
+      if (st && st.type === vscode.FileType.File && st.size <= maxBytes && st.mtime < startedAt) {
+        stats.push({ key: uri.toString(), size: st.size, mtime: st.mtime });
+      }
     });
     if (stale()) return;
     let used = 0;

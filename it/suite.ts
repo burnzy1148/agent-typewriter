@@ -327,6 +327,8 @@ export async function run(): Promise<void> {
   const uriOf = (rel: string) => vscode.Uri.file(path.join(root, rel));
   const eventsFor = (rel: string, from: number) => timeline.all().slice(from).filter((e) => e.relPath === rel);
   fs.mkdirSync(path.join(root, 'src/later'), { recursive: true });
+  // Give the watcher time to pick up the new directory (Linux misses files created right away).
+  await sleep(1000);
   const atLater = timeline.all().length;
   write('src/later/a.ts', 'export const later = 1;\n');
   await until('later/a.ts recorded', () => eventsFor('src/later/a.ts', atLater).length === 1, 20000);
