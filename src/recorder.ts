@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
+import { listCleanTracked, readBlob, selectWithinBudget, type BudgetCandidate } from './gitBaseline';
 import { decideOwnSave } from './ownSave';
 import { ReorderBuffer, clampOrderKey } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
-const BASELINE_MAX_FILES = 5000;
 /** How long a change read mid-save waits for the save to finish. */
 const SAVE_SETTLE_MAX_MS = 1000;
 
@@ -21,6 +21,12 @@ const SAVE_SETTLE_MAX_MS = 1000;
 export class Recorder implements vscode.Disposable {
   /** LF-normalized text plus the file's real line ending. */
   private readonly snapshots = new Map<string, Snapshot>();
+  /** Clean tracked files whose baseline is their git index blob instead of an in-memory snapshot. */
+  private readonly gitBaselines = new Map<string, GitBaselineRef>();
+  /** Set when git cannot run; git baselines stay off until the next start or toggle. */
+  private gitUnavailable = false;
+  /** Bumped by each baseline capture and by stop; an older capture stops writing once it is stale. */
+  private baselineGen = 0;
   private readonly timers = new Map<string, Burst>();
   /** Holds recorded changes briefly so they reach the timeline in write order. */
   private readonly reorder: ReorderBuffer<NewChangeEvent>;
@@ -50,7 +56,7 @@ export class Recorder implements vscode.Disposable {
   }
 
   get watchedCount(): number {
-    return this.snapshots.size;
+    return this.snapshots.size + this.gitBaselines.size;
   }
 
   describeFilter(): string {
@@ -106,12 +112,14 @@ export class Recorder implements vscode.Disposable {
       this.subscriptions,
     );
 
+    this.gitUnavailable = false;
     await this.captureBaseline();
-    this.log.appendLine(`Watching ${this.snapshots.size} files (${this.filter.describe()}).`);
+    this.log.appendLine(`Watching ${this.watchedCount} files (${this.filter.describe()}).`);
   }
 
   stop(): void {
     this.running = false;
+    this.baselineGen++;
     for (const d of this.subscriptions.splice(0)) d.dispose();
     for (const burst of this.timers.values()) {
       clearTimeout(burst.timer);
@@ -120,6 +128,7 @@ export class Recorder implements vscode.Disposable {
     this.timers.clear();
     this.reorder.drain();
     this.snapshots.clear();
+    this.gitBaselines.clear();
     this.ownSaves.clear();
   }
 
@@ -127,11 +136,29 @@ export class Recorder implements vscode.Disposable {
   async refreshFilter(): Promise<void> {
     this.filter = new PathFilter(this.settings());
     if (!this.running) return;
-    for (const key of [...this.snapshots.keys()]) {
-      if (!this.filter.matches(relPathOf(vscode.Uri.parse(key)))) this.snapshots.delete(key);
+    for (const store of [this.snapshots, this.gitBaselines]) {
+      for (const key of [...store.keys()]) {
+        if (!this.filter.matches(relPathOf(vscode.Uri.parse(key)))) store.delete(key);
+      }
     }
     await this.captureBaseline();
-    this.log.appendLine(`Filter changed: watching ${this.snapshots.size} files (${this.filter.describe()}).`);
+    this.log.appendLine(`Filter changed: watching ${this.watchedCount} files (${this.filter.describe()}).`);
+  }
+
+  /**
+   * Rebuilds baselines after `gitBaselines` or `baselineBudgetMB` changes.
+   * Every stored baseline equals the file's current disk text (the recorder
+   * updates it on each change), so baselines can be re-taken from disk and git
+   * for every file not mid-change.
+   */
+  async refreshBaselines(): Promise<void> {
+    if (!this.running) return;
+    this.gitUnavailable = false;
+    for (const store of [this.snapshots, this.gitBaselines]) {
+      for (const key of [...store.keys()]) if (!this.timers.has(key)) store.delete(key);
+    }
+    await this.captureBaseline();
+    this.log.appendLine(`Baselines rebuilt: watching ${this.watchedCount} files.`);
   }
 
   /** Adds every held change to the timeline now, in write order. */
@@ -145,35 +172,79 @@ export class Recorder implements vscode.Disposable {
   }
 
   private async captureBaseline(): Promise<void> {
+    const gen = ++this.baselineGen;
+    const stale = () => gen !== this.baselineGen;
     const s = this.settings();
     const exclude = s.exclude.length > 0 ? `{${s.exclude.join(',')}}` : undefined;
-    const uris: vscode.Uri[] = [];
+    const known = (key: string) => this.snapshots.has(key) || this.gitBaselines.has(key);
+    const candidates: vscode.Uri[] = [];
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      const found = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(folder, '**/*'),
-        exclude,
-        BASELINE_MAX_FILES * 4,
-      );
+      const found = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*'), exclude);
+      const clean = s.gitBaselines ? await this.cleanTracked(folder) : undefined;
+      if (stale()) return;
       for (const uri of found) {
-        if (this.filter.matches(relPathOf(uri)) && !this.snapshots.has(uri.toString())) uris.push(uri);
+        const key = uri.toString();
+        const rel = relPathOf(uri);
+        if (!this.filter.matches(rel) || known(key)) continue;
+        const sha = clean?.get(rel);
+        if (sha !== undefined) this.gitBaselines.set(key, { folder: folder.uri.fsPath, path: rel, sha });
+        else candidates.push(uri);
       }
     }
-    if (uris.length > BASELINE_MAX_FILES) {
+
+    // Everything else gets an in-memory snapshot, newest first, within the budget.
+    const maxBytes = s.maxFileSizeKB * 1024;
+    const stats: BudgetCandidate[] = [];
+    await inBatches(candidates, async (uri) => {
+      const st = await stat(uri);
+      if (st && st.type === vscode.FileType.File && st.size <= maxBytes) stats.push({ key: uri.toString(), size: st.size, mtime: st.mtime });
+    });
+    if (stale()) return;
+    let used = 0;
+    for (const snap of this.snapshots.values()) used += snap.text.length;
+    const chosen = selectWithinBudget(stats, Math.max(0, s.baselineBudgetMB * 1024 * 1024 - used));
+    await inBatches(
+      candidates.filter((u) => chosen.has(u.toString())),
+      async (uri) => {
+        const snap = await this.readText(uri, s);
+        if (snap !== undefined && !stale() && !this.snapshots.has(uri.toString())) this.snapshots.set(uri.toString(), snap);
+      },
+    );
+    if (stale()) return;
+    const uncovered = stats.length - chosen.size;
+    if (uncovered > 0) {
       this.log.appendLine(
-        `Baseline capped at ${BASELINE_MAX_FILES} of ${uris.length} matching files. ` +
-          'Narrow the include or extension filters; changes to files without a baseline are only recorded from their second change on.',
-      );
-      uris.length = BASELINE_MAX_FILES;
-    }
-    const batch = 32;
-    for (let i = 0; i < uris.length; i += batch) {
-      await Promise.all(
-        uris.slice(i, i + batch).map(async (uri) => {
-          const snap = await this.readText(uri, s);
-          if (snap !== undefined) this.snapshots.set(uri.toString(), snap);
-        }),
+        `${uncovered} matching files have no baseline because baselineBudgetMB (${s.baselineBudgetMB}) is reached; ` +
+          'their first change is only captured as a baseline. Raise the budget, enable gitBaselines, or narrow the filters.',
       );
     }
+  }
+
+  /** Folder-relative path -> index sha for clean tracked files, or undefined when git can't help here. */
+  private async cleanTracked(folder: vscode.WorkspaceFolder): Promise<Map<string, string> | undefined> {
+    if (this.gitUnavailable || folder.uri.scheme !== 'file') return undefined;
+    const r = await listCleanTracked(folder.uri.fsPath);
+    if (r.kind === 'unavailable') {
+      this.gitUnavailable = true;
+      this.log.appendLine(`Git-backed baselines are off: git could not run (${r.reason}). Using in-memory baselines.`);
+      return undefined;
+    }
+    if (r.kind === 'not-repo') {
+      this.log.appendLine(`${folder.name} is not in a git repository; using in-memory baselines for it.`);
+      return undefined;
+    }
+    return r.files;
+  }
+
+  /** Takes a file's git baseline, if it has one, and reads it as a snapshot. */
+  private async takeGitBaseline(key: string, s: Settings): Promise<Snapshot | undefined> {
+    const ref = this.gitBaselines.get(key);
+    if (!ref) return undefined;
+    this.gitBaselines.delete(key);
+    const bytes = await readBlob(ref.folder, ref.path, ref.sha);
+    const snap = bytes && this.decode(bytes, s);
+    if (!snap) this.log.appendLine(`Could not read the git baseline of ${ref.path}; its change is only captured as a baseline.`);
+    return snap;
   }
 
   private schedule(uri: vscode.Uri, created: boolean): void {
@@ -203,7 +274,7 @@ export class Recorder implements vscode.Disposable {
     const key = uri.toString();
     const relPath = displayPathOf(uri);
     const s = this.settings();
-    const previous = this.snapshots.get(key);
+    const previous = this.snapshots.get(key) ?? (await this.takeGitBaseline(key, s));
 
     // A change read mid-save waits for the save to finish, so the comparison
     // below sees the final saved text.
@@ -289,13 +360,18 @@ export class Recorder implements vscode.Disposable {
     try {
       const size = knownSize ?? (await vscode.workspace.fs.stat(uri)).size;
       if (size > s.maxFileSizeKB * 1024) return undefined;
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      const text = this.decoder.decode(bytes);
-      if (text.slice(0, 8000).includes('\u0000')) return undefined;
-      return { text: normalizeEol(text), eol: detectEol(text) };
+      return this.decode(await vscode.workspace.fs.readFile(uri), s);
     } catch {
       return undefined;
     }
+  }
+
+  /** Decodes file bytes into a snapshot; undefined for binary or oversized content. */
+  private decode(bytes: Uint8Array, s: Settings): Snapshot | undefined {
+    if (bytes.byteLength > s.maxFileSizeKB * 1024) return undefined;
+    const text = this.decoder.decode(bytes);
+    if (text.slice(0, 8000).includes('\u0000')) return undefined;
+    return { text: normalizeEol(text), eol: detectEol(text) };
   }
 }
 
@@ -316,6 +392,20 @@ interface Burst {
   lastArrival: number;
   /** Tells the reorder buffer this burst has been read. */
   done: () => void;
+}
+
+/** Where a clean tracked file's baseline lives in git. */
+interface GitBaselineRef {
+  /** Workspace folder path git runs in. */
+  folder: string;
+  /** Folder-relative path, forward slashes. */
+  path: string;
+  /** Index blob sha. */
+  sha: string;
+}
+
+async function inBatches<T>(items: T[], fn: (item: T) => Promise<void>, size = 64): Promise<void> {
+  for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn));
 }
 
 interface Snapshot {

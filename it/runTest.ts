@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -26,6 +27,20 @@ async function main() {
       2,
     ),
   );
+
+  // Committed files for the git-backed baseline sections, then make the
+  // workspace a repository with one commit.
+  for (const n of [1, 2, 3]) {
+    fs.writeFileSync(path.join(workspace, `src/committed${n}.ts`), `export const committed${n} = ${n};\nexport default committed${n};\n`);
+  }
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', '-c', 'core.autocrlf=false', ...args], {
+      cwd: workspace,
+      stdio: 'ignore',
+    });
+  git('init', '-q');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'initial');
 
   // VS Code puts an IPC socket in the user-data dir. The default one under
   // .vscode-test/ is too long for macOS's 104-char socket limit in deep
