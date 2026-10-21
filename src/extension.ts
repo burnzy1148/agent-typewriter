@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { readSettings, updateSetting, SECTION } from './config';
 import { parseExtensionList, PathFilter } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
+import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
 import { Recorder, relPathOf } from './recorder';
-import { Timeline } from './timeline';
+import { Timeline, toSession } from './timeline';
 import { ChangeItem, TimelineView } from './timelineView';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
@@ -12,7 +15,12 @@ export interface AgentTypewriterApi {
   timeline: Timeline;
   player: Player;
   recorder: Recorder;
+  /** Undefined when no folder is open (no workspace storage). */
+  store: TimelineStore | undefined;
 }
+
+/** Final save on deactivation, set while active. */
+let finalSave: (() => void) | undefined;
 
 export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const log = vscode.window.createOutputChannel('Agent Typewriter');
@@ -23,6 +31,9 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  const store = context.storageUri
+    ? new TimelineStore(context.storageUri.fsPath, timeline, (line) => log.appendLine(line))
+    : undefined;
 
   context.subscriptions.push(
     log,
@@ -31,6 +42,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     view,
     tree,
     status,
+    { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
   );
@@ -147,6 +159,78 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     await player.interrupt();
   });
 
+  register('agentTypewriter.saveSession', async (target?: vscode.Uri) => {
+    recorder.drainHeld();
+    if (timeline.all().length === 0) {
+      vscode.window.showInformationMessage('Agent Typewriter: the buffer is empty, nothing to save.');
+      return;
+    }
+    // Default outside the workspace: a session saved there would be recorded as a change.
+    const uri =
+      target ??
+      (await vscode.window.showSaveDialog({
+        title: 'Agent Typewriter: save session',
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), `agent-typewriter-${fileStamp(new Date())}.json`)),
+        filters: { 'Agent Typewriter session': ['json'] },
+      }));
+    if (!uri) return;
+    const { session } = toSession(timeline);
+    await vscode.workspace.fs.writeFile(uri, sessionToBytes(session, { gzip: false }));
+    vscode.window.setStatusBarMessage(`Agent Typewriter: saved ${session.events.length} change(s) to ${uri.fsPath}`, 4000);
+  });
+
+  register('agentTypewriter.loadSession', async (target?: vscode.Uri) => {
+    const interactive = !target;
+    const uri =
+      target ??
+      (
+        await vscode.window.showOpenDialog({
+          title: 'Agent Typewriter: load session',
+          defaultUri: vscode.Uri.file(os.homedir()),
+          canSelectMany: false,
+          filters: { 'Agent Typewriter session': ['json', 'gz'] },
+        })
+      )?.[0];
+    if (!uri) return;
+    const session = sessionFromBytes(await vscode.workspace.fs.readFile(uri));
+    const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
+    if (session.events.length === 0) throw new Error(`${name} holds no changes.`);
+    if (interactive && timeline.all().length > 0) {
+      const replace = 'Replace';
+      const pick = await vscode.window.showWarningMessage(
+        `Replace the ${timeline.all().length} recorded change(s) with the ${session.events.length} in ${name}?`,
+        { modal: true },
+        replace,
+      );
+      if (pick !== replace) return;
+    }
+    const limit = readSettings().historyLimit;
+    if (session.events.length > limit) {
+      const raise = `Raise historyLimit to ${session.events.length}`;
+      const pick = interactive
+        ? await vscode.window.showWarningMessage(
+            `${name} has ${session.events.length} changes but historyLimit is ${limit}.`,
+            { modal: true },
+            raise,
+            `Load newest ${limit}`,
+          )
+        : undefined;
+      if (interactive && !pick) return;
+      if (pick === raise) {
+        await updateSetting('historyLimit', session.events.length);
+        timeline.setLimit(session.events.length);
+      } else if (!interactive) {
+        vscode.window.showWarningMessage(`Agent Typewriter: loaded the newest ${limit} of ${session.events.length} changes (historyLimit).`);
+      }
+    }
+    // Loaded sessions start paused at their first change; the user resumes when ready.
+    if (!player.isPaused) player.togglePause();
+    timeline.restore(session.events, session.events[0].seq);
+    await player.interrupt();
+    log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
+    vscode.window.setStatusBarMessage(`Agent Typewriter: loaded ${timeline.all().length} change(s). Resume playback to start.`, 6000);
+  });
+
   register('agentTypewriter.setExtensions', async () => {
     const current = readSettings().extensions.join(', ');
     const input = await vscode.window.showInputBox({
@@ -247,13 +331,59 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     }),
   );
 
+  // ------------------------------------------------------------ history
+
+  const applyPersistHistory = () => {
+    if (!store) return;
+    if (readSettings().persistHistory) store.start();
+    else if (store.isRunning) {
+      store.stop();
+      store.deleteSaved();
+    }
+  };
+  // Restore before anything can record. The player is waiting on the empty
+  // timeline, so pausing it first means restored queued changes are not typed
+  // until the user resumes.
+  if (store && readSettings().persistHistory) {
+    const saved = store.load();
+    if (saved && saved.events.length > 0) {
+      const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
+      if (pending > 0 && !player.isPaused) player.togglePause();
+      timeline.restore(saved.events, saved.cursor);
+      const queued = timeline.pendingCount();
+      log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
+      refreshStatus();
+    }
+  } else if (store) {
+    store.deleteSaved();
+  }
+  applyPersistHistory();
+  finalSave = () => {
+    recorder.drainHeld();
+    if (store?.isRunning) store.flushSync();
+  };
+  context.subscriptions.push({ dispose: () => (finalSave = undefined) });
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration(`${SECTION}.persistHistory`)) applyPersistHistory();
+    }),
+  );
+
   void setWatching(false);
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder };
+  return { timeline, player, recorder, store };
+}
+
+/** Local time as yyyy-mm-dd-hhmm, for default session file names. */
+function fileStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
 
 export function deactivate(): void {
-  // Disposables registered on the context clean everything up.
+  // Save before the disposables run, with every held change in the timeline.
+  // Disposables registered on the context clean up the rest.
+  finalSave?.();
 }
