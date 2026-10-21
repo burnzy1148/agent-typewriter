@@ -367,6 +367,11 @@
           "minimum": 10,
           "description": "How many changes to keep in the buffer for replay. Oldest are dropped first."
         },
+        "agentTypewriter.persistHistory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Up to 64 MB of change text is kept, newest first. Turning this off deletes the saved history."
+        },
         "agentTypewriter.ignoreOwnSaves": {
           "type": "boolean",
           "default": true,
@@ -391,7 +396,7 @@
     "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --outdir=.test-out && node --test .test-out/*.test.js",
     "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
+    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",

@@ -22,6 +22,7 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   gitBaselines: 'boolean',
   baselineBudgetMB: 'number',
   historyLimit: 'number',
+  persistHistory: 'boolean',
   ignoreOwnSaves: 'boolean',
   viewColumn: { enum: ['beside', 'active'] },
 };

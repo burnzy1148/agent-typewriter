@@ -129,6 +129,11 @@
       "minimum": 10,
       "description": "How many changes to keep in the buffer for replay. Oldest are dropped first."
     },
+    "persistHistory": {
+      "type": "boolean",
+      "default": true,
+      "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Up to 64 MB of change text is kept, newest first. Turning this off deletes the saved history."
+    },
     "ignoreOwnSaves": {
       "type": "boolean",
       "default": true,
