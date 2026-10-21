@@ -73,13 +73,13 @@ export class Recorder implements vscode.Disposable {
       watcher.onDidDelete((uri) => this.schedule(uri, false), null, this.subscriptions);
       this.subscriptions.push(watcher);
     }
-    vscode.workspace.onDidSaveTextDocument(
-      (doc) => {
-        if (doc.uri.scheme === 'file') this.ownSaves.set(doc.uri.toString(), Date.now());
-      },
-      null,
-      this.subscriptions,
-    );
+    // Mark before the write as well as after: the watcher can report the write
+    // before onDidSaveTextDocument fires, and the save would then look external.
+    const markOwnSave = (doc: vscode.TextDocument) => {
+      if (doc.uri.scheme === 'file') this.ownSaves.set(doc.uri.toString(), Date.now());
+    };
+    vscode.workspace.onWillSaveTextDocument((e) => markOwnSave(e.document), null, this.subscriptions);
+    vscode.workspace.onDidSaveTextDocument(markOwnSave, null, this.subscriptions);
 
     await this.captureBaseline();
     this.log.appendLine(`Watching ${this.snapshots.size} files (${this.filter.describe()}).`);

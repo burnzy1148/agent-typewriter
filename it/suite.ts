@@ -107,7 +107,11 @@ export async function run(): Promise<void> {
   await ed.edit((b) => b.insert(new vscode.Position(0, 0), '// typed by me\n'));
   await doc.save();
   await sleep(800);
-  assert.equal(timeline.all().length, before, 'own save was recorded');
+  assert.equal(
+    timeline.all().length,
+    before,
+    `own save was recorded: ${timeline.all().slice(before).map((e) => `${e.kind} ${e.relPath}`).join(', ')}`,
+  );
   console.log('[it] ignoreOwnSaves ok');
 
   // --- 6. Changing the filter live picks up a new extension.
