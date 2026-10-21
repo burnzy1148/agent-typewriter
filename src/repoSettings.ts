@@ -1,7 +1,9 @@
+import { parseProfiles } from './profiles';
+
 /** Committable per-repository settings, read from the first workspace folder's root. */
 export const REPO_SETTINGS_FILE = '.agent-typewriter.json';
 
-type Kind = 'boolean' | 'number' | 'stringArray' | 'object' | 'stringOrNumber' | { enum: readonly string[] };
+type Kind = 'boolean' | 'number' | 'string' | 'stringArray' | 'object' | 'stringOrNumber' | 'profiles' | { enum: readonly string[] };
 
 /** Every `agentTypewriter.*` setting, without the prefix, and the JSON shape the file must use for it. */
 export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
@@ -10,6 +12,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   exclude: 'stringArray',
   extensions: 'stringArray',
   respectGitignore: 'boolean',
+  profiles: 'profiles',
+  activeProfile: 'string',
   charsPerSecond: 'number',
   languageSpeeds: 'object',
   jitter: 'number',
@@ -51,7 +55,11 @@ export function parseRepoSettings(text: string): ParseResult {
     const kind = Object.hasOwn(REPO_SETTING_KINDS, key) ? REPO_SETTING_KINDS[key] : undefined;
     if (!kind) problems.push(`"${key}" is not an Agent Typewriter setting; ignored.`);
     else if (!fits(value, kind)) problems.push(`"${key}" should be ${describeKind(kind)}; ignored.`);
-    else values[key] = value;
+    else if (kind === 'profiles') {
+      const p = parseProfiles(value);
+      problems.push(...p.problems);
+      values[key] = p.profiles;
+    } else values[key] = value;
   }
   return { ok: true, values, problems };
 }
@@ -78,9 +86,12 @@ function fits(value: unknown, kind: Kind): boolean {
       return typeof value === 'boolean';
     case 'number':
       return typeof value === 'number' && Number.isFinite(value);
+    case 'string':
+      return typeof value === 'string';
     case 'stringArray':
       return Array.isArray(value) && value.every((v) => typeof v === 'string');
     case 'object':
+    case 'profiles':
       return isObject(value);
     case 'stringOrNumber':
       return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
@@ -95,10 +106,14 @@ function describeKind(kind: Kind): string {
       return 'true or false';
     case 'number':
       return 'a number';
+    case 'string':
+      return 'a string';
     case 'stringArray':
       return 'an array of strings';
     case 'object':
       return 'an object';
+    case 'profiles':
+      return 'an object of named profiles';
     case 'stringOrNumber':
       return 'a string or a number';
     default:

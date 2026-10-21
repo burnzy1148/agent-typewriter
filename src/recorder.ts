@@ -3,6 +3,7 @@ import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
 import { listCleanTracked, readBlob, selectWithinBudget, type BudgetCandidate } from './gitBaseline';
 import { checkIgnored, listIgnored, type IgnoredPaths } from './gitIgnore';
+import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { ReorderBuffer, clampOrderKey } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
@@ -35,6 +36,8 @@ export class Recorder implements vscode.Disposable {
   private readonly ownSaves = new Map<string, OwnSave>();
   private readonly subscriptions: vscode.Disposable[] = [];
   private filter: PathFilter;
+  /** Name of the active filter profile the current filter came from, or ''. */
+  private profileName = '';
   /** Gitignored paths per workspace folder (keyed by folder URI) while `respectGitignore` is on and git can tell. */
   private readonly ignored = new Map<string, IgnoredPaths>();
   /** Folders already logged as having no gitignore rules this session. */
@@ -48,7 +51,7 @@ export class Recorder implements vscode.Disposable {
     private readonly settings: () => Settings,
     private readonly log: vscode.OutputChannel,
   ) {
-    this.filter = new PathFilter(settings());
+    this.filter = this.buildFilter();
     this.reorder = new ReorderBuffer(
       (events) => {
         for (const e of events) this.timeline.push(e);
@@ -66,7 +69,14 @@ export class Recorder implements vscode.Disposable {
   }
 
   describeFilter(): string {
-    return this.filter.describe() + (this.ignored.size > 0 ? ', not gitignored' : '');
+    const profile = this.profileName ? `${this.profileName}: ` : '';
+    return profile + this.filter.describe() + (this.ignored.size > 0 ? ', not gitignored' : '');
+  }
+
+  private buildFilter(): PathFilter {
+    const s = this.settings();
+    this.profileName = activeProfileOf(s) ? s.activeProfile : '';
+    return new PathFilter(s);
   }
 
   /** True if this workspace path passes the current filters. */
@@ -85,7 +95,7 @@ export class Recorder implements vscode.Disposable {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) throw new Error('Open a folder or workspace first.');
     this.running = true;
-    this.filter = new PathFilter(this.settings());
+    this.filter = this.buildFilter();
 
     for (const folder of folders) {
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '**/*'));
@@ -150,7 +160,7 @@ export class Recorder implements vscode.Disposable {
 
   /** Re-reads filter settings and gitignore rules. Newly matching files get a baseline so their next change is recorded. */
   async refreshFilter(): Promise<void> {
-    this.filter = new PathFilter(this.settings());
+    this.filter = this.buildFilter();
     if (!this.running) return;
     await this.refreshIgnored();
     for (const store of [this.snapshots, this.gitBaselines]) {

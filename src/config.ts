@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { FilterSettings } from './filter';
 import { resolveReorderWindow } from './reorder';
+import { mergeProfiles, parseProfiles, type FilterProfile, type Profiles } from './profiles';
 import { pickLayer, type RepoValues } from './repoSettings';
 
 export const SECTION = 'agentTypewriter';
@@ -8,6 +9,10 @@ export const SECTION = 'agentTypewriter';
 export interface Settings extends FilterSettings {
   /** Also skip paths git reports as ignored. */
   respectGitignore: boolean;
+  /** Raw `activeProfile`; it may name no profile (see activeProfileOf). */
+  activeProfile: string;
+  /** Profiles from user settings, the repository file, and workspace settings, merged by name. */
+  profiles: Profiles;
   autoStart: boolean;
   charsPerSecond: number;
   /** Language id → base chars per second. Raw from settings; pace.ts ignores bad entries. */
@@ -46,13 +51,21 @@ export function workspaceOverrides(keys: string[]): string[] {
 }
 
 export function readSettings(): Settings {
-  const c = layered(vscode.workspace.getConfiguration(SECTION));
+  const cfg = vscode.workspace.getConfiguration(SECTION);
+  const c = layered(cfg);
+  const profiles = resolveProfiles(cfg);
+  const rawActive = c.get<unknown>('activeProfile', '');
+  const activeProfile = typeof rawActive === 'string' ? rawActive : '';
+  // The active profile's filters sit between the repository file and workspace settings.
+  const f = layered(cfg, Object.hasOwn(profiles, activeProfile) ? profiles[activeProfile] : undefined);
   return {
     autoStart: c.get('autoStart', false),
-    include: c.get('include', ['**/*']),
-    exclude: c.get('exclude', []),
-    extensions: c.get('extensions', []),
-    respectGitignore: c.get('respectGitignore', false),
+    include: f.get('include', ['**/*']),
+    exclude: f.get('exclude', []),
+    extensions: f.get('extensions', []),
+    respectGitignore: f.get('respectGitignore', false),
+    activeProfile,
+    profiles,
     charsPerSecond: Math.max(1, c.get('charsPerSecond', 35)),
     languageSpeeds: asRecord(c.get<unknown>('languageSpeeds', {})),
     jitter: clamp(c.get('jitter', 0.6), 0, 1),
@@ -72,20 +85,46 @@ export function readSettings(): Settings {
   };
 }
 
+/** True when commands write workspace settings; false when no folder is open and they write user settings. */
+export function writesWorkspace(): boolean {
+  return (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+}
+
 /** Writes to workspace settings when a folder is open, otherwise user settings. */
 export async function updateSetting(key: string, value: unknown): Promise<void> {
-  const target = vscode.workspace.workspaceFolders?.length
-    ? vscode.ConfigurationTarget.Workspace
-    : vscode.ConfigurationTarget.Global;
+  const target = writesWorkspace() ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
   await vscode.workspace.getConfiguration(SECTION).update(key, value, target);
 }
 
-/** Reads like `cfg.get`, with repository file values slotted between user and workspace settings. */
-function layered(cfg: vscode.WorkspaceConfiguration) {
+/**
+ * The `profiles` object exactly as stored where updateSetting writes, unvalidated,
+ * so saving a profile keeps every other entry as the user wrote it.
+ */
+export function storedProfiles(): Record<string, unknown> {
+  const i = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('profiles');
+  return asRecord(writesWorkspace() ? i?.workspaceValue : i?.globalValue);
+}
+
+/**
+ * Reads like `cfg.get`, with repository file values slotted between user and
+ * workspace settings, and the active profile's values just above the file.
+ */
+function layered(cfg: vscode.WorkspaceConfiguration, profile?: FilterProfile) {
+  const above = (profile ?? {}) as Record<string, unknown>;
   return {
     get: <T>(key: string, fallback: T): T =>
-      pickLayer(cfg.inspect<T>(key)?.workspaceValue, repoValues[key], () => cfg.get<T>(key, fallback)),
+      pickLayer(cfg.inspect<T>(key)?.workspaceValue, above[key] ?? repoValues[key], () => cfg.get<T>(key, fallback)),
   };
+}
+
+/** `profiles` is merged by name across layers instead of replaced whole. */
+function resolveProfiles(cfg: vscode.WorkspaceConfiguration): Profiles {
+  const i = cfg.inspect<unknown>('profiles');
+  return mergeProfiles(
+    parseProfiles(i?.globalValue).profiles,
+    repoValues.profiles as Profiles | undefined,
+    parseProfiles(i?.workspaceValue).profiles,
+  );
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
