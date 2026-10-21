@@ -159,6 +159,11 @@
         "category": "Agent Typewriter"
       },
       {
+        "command": "agentTypewriter.chooseCheckout",
+        "title": "Choose Checkout...",
+        "category": "Agent Typewriter"
+      },
+      {
         "command": "agentTypewriter.setSpeed",
         "title": "Set Playback Speed...",
         "category": "Agent Typewriter",

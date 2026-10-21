@@ -87,3 +87,17 @@ test('filter: dotfiles and windows separators', () => {
 test('parseExtensionList accepts loose input', () => {
   assert.deepEqual(parseExtensionList(' .ts, java  *.MD;py '), ['ts', 'java', 'md', 'py']);
 });
+
+test('PathFilter.excludesDir: only globs that cover the whole directory prune it', () => {
+  const f = new PathFilter({ include: ['src/**'], exclude: ['**/node_modules/**', '**/dist/**', '*.log', 'src/**/*.gen.ts'], extensions: ['ts'] });
+  assert.ok(f.excludesDir('node_modules'));
+  assert.ok(f.excludesDir('packages/app/node_modules/'));
+  assert.ok(f.excludesDir('dist'));
+  assert.ok(!f.excludesDir('src'), 'include and extensions never prune');
+  assert.ok(!f.excludesDir('logs'), 'a file-name glob does not prune a directory');
+  assert.ok(!f.excludesDir('src/gen'), 'a glob for some files in a directory does not prune it');
+  const g = new PathFilter({ include: [], exclude: ['foo/*', '**/a/*', '?', 'src/!(*.ts)', 'top/**'], extensions: [] });
+  for (const dir of ['foo', 'x/a', 'x', 'src']) assert.ok(!g.excludesDir(dir), `${dir} still holds recordable files`);
+  assert.ok(g.excludesDir('top'));
+  assert.ok(!g.excludesDir('nested/top'), 'a slashed glob matches from the root only');
+});
