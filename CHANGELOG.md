@@ -12,3 +12,4 @@ First public release.
 - CRLF files keep CRLF in the replay.
 - Clean, git-tracked files use git as their baseline instead of memory (`gitBaselines`); other baselines fit a memory budget (`baselineBudgetMB`) instead of a fixed file cap.
 - Filtering by extension allow-list, include globs, and exclude globs, with Explorer shortcuts.
+- Only the folder's own git checkout is recorded; other worktrees inside it are skipped. **Choose Checkout...** records another worktree instead, inside or outside the workspace.
