@@ -78,14 +78,16 @@ Filter changes apply immediately while watching; newly matching files are snapsh
 | `reorderWindowMs` | `"auto"` | Hold each change this long so changes enter the timeline in write order even when the watcher reports them late. `"auto"` is 2500 ms on Windows, 250 ms elsewhere; `0` disables |
 | `maxFileSizeKB` | 512 | Larger files are ignored |
 | `historyLimit` | 500 | Changes kept for replay |
-| `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor |
+| `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor (matched by content, so an outside write right after your save is still replayed) |
 | `viewColumn` | beside | Replay in a column beside you, or in the active column |
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 
 ### A note on `ignoreOwnSaves`
 
-Claude Code in a terminal writes straight to disk, which is what this extension expects. If an agent instead applies edits through VS Code's own editor buffers and then saves (some IDE integrations do, especially with auto-accept), those saves look like yours and get skipped. Turn `ignoreOwnSaves` off in that case.
+A save is skipped only when the file on disk holds exactly what your editor saved. If something else writes the file right after your save, as the Claude Code VS Code extension does when it saves your unsaved edits before applying its own, only that later write is replayed, starting from the text you saved.
+
+Claude Code in a terminal writes straight to disk, which is what this extension expects. If an agent instead edits VS Code's own editor buffers and then saves them, those saves look like yours and get skipped. Turn `ignoreOwnSaves` off in that case.
 
 ## Limits
 

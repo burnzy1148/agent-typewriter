@@ -343,7 +343,7 @@
         "agentTypewriter.ignoreOwnSaves": {
           "type": "boolean",
           "default": true,
-          "description": "Do not replay changes you saved from a VS Code editor yourself. Turn off if your agent applies edits through VS Code's editor buffers and then saves."
+          "description": "Do not replay changes you saved from a VS Code editor yourself. Saves are matched by content: if something else writes the file right after your save, that write is still replayed. Turn off if your agent edits VS Code's editor buffers and then saves them."
         },
         "agentTypewriter.viewColumn": {
           "type": "string",

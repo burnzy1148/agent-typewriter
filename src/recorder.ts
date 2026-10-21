@@ -1,12 +1,14 @@
 import * as vscode from 'vscode';
 import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
+import { decideOwnSave } from './ownSave';
 import { ReorderBuffer, clampOrderKey } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
 const BASELINE_MAX_FILES = 5000;
-const OWN_SAVE_WINDOW_MS = 2000;
+/** How long a change read mid-save waits for the save to finish. */
+const SAVE_SETTLE_MAX_MS = 1000;
 
 /**
  * Watches the workspace and turns each settled file write into a timeline
@@ -22,7 +24,8 @@ export class Recorder implements vscode.Disposable {
   private readonly timers = new Map<string, Burst>();
   /** Holds recorded changes briefly so they reach the timeline in write order. */
   private readonly reorder: ReorderBuffer<NewChangeEvent>;
-  private readonly ownSaves = new Map<string, number>();
+  /** Text the latest editor save wrote, per file, until the next change of that file is read. */
+  private readonly ownSaves = new Map<string, OwnSave>();
   private readonly subscriptions: vscode.Disposable[] = [];
   private filter: PathFilter;
   private running = false;
@@ -73,13 +76,35 @@ export class Recorder implements vscode.Disposable {
       watcher.onDidDelete((uri) => this.schedule(uri, false), null, this.subscriptions);
       this.subscriptions.push(watcher);
     }
-    // Mark before the write as well as after: the watcher can report the write
-    // before onDidSaveTextDocument fires, and the save would then look external.
-    const markOwnSave = (doc: vscode.TextDocument) => {
-      if (doc.uri.scheme === 'file') this.ownSaves.set(doc.uri.toString(), Date.now());
-    };
-    vscode.workspace.onWillSaveTextDocument((e) => markOwnSave(e.document), null, this.subscriptions);
-    vscode.workspace.onDidSaveTextDocument(markOwnSave, null, this.subscriptions);
+    // Remember what each editor save writes. Will-save covers a watcher that
+    // reports the write before did-save fires; did-save adds edits that save
+    // participants (format on save) make during the save.
+    vscode.workspace.onWillSaveTextDocument(
+      (e) => {
+        if (e.document.uri.scheme !== 'file') return;
+        let resolve!: () => void;
+        const settled = new Promise<void>((r) => (resolve = r));
+        this.ownSaves.set(e.document.uri.toString(), { text: e.document.getText(), settled, resolve, done: false });
+      },
+      null,
+      this.subscriptions,
+    );
+    vscode.workspace.onDidSaveTextDocument(
+      (doc) => {
+        if (doc.uri.scheme !== 'file') return;
+        const key = doc.uri.toString();
+        const entry = this.ownSaves.get(key);
+        if (entry && !entry.done) {
+          entry.text = doc.getText();
+          entry.done = true;
+          entry.resolve();
+        } else {
+          this.ownSaves.set(key, { text: doc.getText(), settled: Promise.resolve(), resolve: () => {}, done: true });
+        }
+      },
+      null,
+      this.subscriptions,
+    );
 
     await this.captureBaseline();
     this.log.appendLine(`Watching ${this.snapshots.size} files (${this.filter.describe()}).`);
@@ -180,8 +205,16 @@ export class Recorder implements vscode.Disposable {
     const s = this.settings();
     const previous = this.snapshots.get(key);
 
+    // A change read mid-save waits for the save to finish, so the comparison
+    // below sees the final saved text.
+    const pendingSave = s.ignoreOwnSaves ? this.ownSaves.get(key) : undefined;
+    if (pendingSave && !pendingSave.done) {
+      await Promise.race([pendingSave.settled, new Promise((r) => setTimeout(r, SAVE_SETTLE_MAX_MS))]);
+    }
+
     const exists = await stat(uri);
     if (!exists) {
+      this.ownSaves.delete(key);
       if (previous !== undefined) {
         this.snapshots.delete(key);
         this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.firstArrival);
@@ -197,10 +230,19 @@ export class Recorder implements vscode.Disposable {
       return;
     }
 
-    const savedAt = this.ownSaves.get(key);
-    if (s.ignoreOwnSaves && savedAt !== undefined && Date.now() - savedAt < OWN_SAVE_WINDOW_MS) {
-      this.ownSaves.delete(key);
+    // Each editor save is matched once, against the next change read for its file.
+    const saved = this.ownSaves.get(key);
+    this.ownSaves.delete(key);
+    const decision = s.ignoreOwnSaves ? decideOwnSave(saved?.text, snap.text) : ({ kind: 'external' } as const);
+    if (decision.kind === 'own') {
       this.snapshots.set(key, snap);
+      return;
+    }
+    if (decision.kind === 'after-own') {
+      // Something wrote after the user's save: replay only that, from the saved text.
+      this.snapshots.set(key, snap);
+      const kind = previous === undefined && burst.created ? 'create' : 'modify';
+      this.record(uri, relPath, kind, decision.before, snap.text, snap.eol, writtenAt);
       return;
     }
 
@@ -255,6 +297,14 @@ export class Recorder implements vscode.Disposable {
       return undefined;
     }
   }
+}
+
+/** What the latest editor save of a file wrote. `done` once did-save has fired. */
+interface OwnSave {
+  text: string;
+  settled: Promise<void>;
+  resolve: () => void;
+  done: boolean;
 }
 
 /** Watcher events for one file merged by the debounce timer. */
