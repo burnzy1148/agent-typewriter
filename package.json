@@ -118,6 +118,11 @@
         "category": "Agent Typewriter"
       },
       {
+        "command": "agentTypewriter.openRepoSettings",
+        "title": "Open Repository Settings File",
+        "category": "Agent Typewriter"
+      },
+      {
         "command": "agentTypewriter.setSpeed",
         "title": "Set Playback Speed...",
         "category": "Agent Typewriter",
@@ -192,6 +197,11 @@
           "group": "1_config@3"
         },
         {
+          "command": "agentTypewriter.openRepoSettings",
+          "when": "view == agentTypewriter.timeline",
+          "group": "1_config@4"
+        },
+        {
           "command": "agentTypewriter.clear",
           "when": "view == agentTypewriter.timeline",
           "group": "2_buffer@1"
@@ -248,6 +258,12 @@
         }
       ]
     },
+    "jsonValidation": [
+      {
+        "fileMatch": ".agent-typewriter.json",
+        "url": "./schemas/agent-typewriter.schema.json"
+      }
+    ],
     "configuration": {
       "title": "Agent Typewriter",
       "properties": {
