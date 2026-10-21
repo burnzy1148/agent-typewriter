@@ -19,7 +19,7 @@ async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
 }
 
 export async function run(): Promise<void> {
-  const ext = vscode.extensions.getExtension<AgentTypewriterApi>('local.agent-typewriter');
+  const ext = vscode.extensions.getExtension<AgentTypewriterApi>('burnzy1148.agent-typewriter');
   assert.ok(ext, 'extension not found');
   const api = await ext.activate();
   const { timeline, player } = api;
