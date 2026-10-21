@@ -8,6 +8,7 @@ dist/
 
 # Personal agent and issue-tracker setup, kept out of the public repo
 .beads/
+*.gate.lock*
 .agents/
 .codex/
 .cursor/

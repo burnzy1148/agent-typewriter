@@ -24,11 +24,11 @@ npm run package   # typecheck, test, bundle, produce the .vsix
 
 `npm run it` downloads a VS Code build into `.vscode-test/` on first run. On Linux without a display it runs itself under `xvfb-run`, so install xvfb first.
 
-Press F5 with the folder open to launch an Extension Development Host with your build loaded.
+Run `npm run build` (or keep `npm run watch` running), then press F5 with the folder open to launch an Extension Development Host with your build loaded.
 
 ## How the code fits together
 
-[CLAUDE.md](CLAUDE.md) has a one-line description of each module in `src/` and the rules that must not break. The two most important:
+[CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
 
 - The extension never writes to the user's real files. Replay only happens in `agent-typewriter:` mirror documents.
 - Applying the planner's hunks to a change's before text must reproduce its after text exactly. The fuzz test in `test/` guards this; keep it passing.
@@ -46,6 +46,11 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 - CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows, then packages the `.vsix`. It must be green before merge.
 - If the PR implements an OpenSpec change, archive the change on the branch once its tasks are done, so the updated specs land with the code.
 - Add a line to the top section of [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
+
+## Releasing (maintainers)
+
+1. In a PR, set `version` in `package.json` and replace the CHANGELOG's `(unreleased)` heading with that version and the date.
+2. After it merges, tag the merge commit `v<version>` and push the tag. CI checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release.
 
 ## License
 

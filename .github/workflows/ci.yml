@@ -103,7 +103,7 @@ jobs:
           name: agent-typewriter-vsix
 
       - name: Publish to the Marketplace
-        run: npx vsce publish --packagePath *.vsix
+        run: npx vsce publish --packagePath *.vsix --skip-duplicate
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 

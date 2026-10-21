@@ -95,7 +95,7 @@ Claude Code in a terminal writes straight to disk, which is what this extension 
 
 ## Limits
 
-- Text files only. Binary files and files over `maxFileSizeKB` are skipped. Line endings are normalized to LF in the replay.
+- Text files only. Binary files and files over `maxFileSizeKB` are skipped.
 - The replay is a reconstruction, not a recording. It shows each change as a person would plausibly type it, not the agent's literal edit sequence (which is always an atomic write anyway).
 - Every matching file needs a baseline for its first change to replay. In a git repository with git installed, clean tracked files use git as their baseline and cost no memory (`gitBaselines`). Other files are kept in memory up to `baselineBudgetMB`, newest first. A file left out starts recording from its second change, and the **Agent Typewriter** output channel says how many files that is.
 - A rename shows up as a delete plus a create.
@@ -104,12 +104,12 @@ Claude Code in a terminal writes straight to disk, which is what this extension 
 
 ```
 npm install
-npm test          # planner fuzz test, timeline and filter unit tests
+npm test          # unit tests plus a fuzz test of the diff planner
 npm run it        # integration tests in a real headless VS Code (needs xvfb on Linux)
 npm run package   # typecheck, test, bundle, produce the .vsix
 ```
 
-Press F5 with this folder open to launch an Extension Development Host.
+Run `npm run build` (or `npm run watch`), then press F5 with this folder open to launch an Extension Development Host.
 
 ## Contributing
 
