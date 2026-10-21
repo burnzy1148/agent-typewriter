@@ -268,4 +268,27 @@ export async function run(): Promise<void> {
   await firstChangeOf('src/committed3.ts', 'toggledOn');
   assert.equal(gitState(), gitBefore, 'git HEAD, ref or index changed');
   console.log('[it] git baseline toggling ok');
+
+  // --- 12. Leave two queued changes behind for the reload check in restore.ts,
+  // which runs in a second VS Code launch on the same workspace.
+  await until('idle before reload setup', idle);
+  if (!api.player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
+  const beforeQueue = timeline.all().length;
+  write('src/queued1.ts', 'export const queued1 = 1;\n');
+  await sleep(300);
+  write('src/queued2.ts', 'export const queued2 = 2;\n');
+  await until('queued changes recorded', () => timeline.all().length >= beforeQueue + 2, 20000);
+  assert.equal(timeline.pendingCount(), 2, 'expected two queued changes');
+  assert.ok(api.store, 'no timeline store');
+  await api.store.flush();
+  fs.writeFileSync(
+    process.env.IT_EXPECT!,
+    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount() }),
+  );
+  console.log(`[it] left ${timeline.all().length} changes (2 queued) for the reload check`);
+}
+
+/** The recorded fields a restored change must keep. */
+export function persisted(e: { relPath: string; uri: string; kind: string; before: string; after: string; eol: string; time: number }) {
+  return { relPath: e.relPath, uri: e.uri, kind: e.kind, before: e.before, after: e.after, eol: e.eol, time: e.time };
 }
