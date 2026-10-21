@@ -107,7 +107,11 @@ export async function run(): Promise<void> {
   await ed.edit((b) => b.insert(new vscode.Position(0, 0), '// typed by me\n'));
   await doc.save();
   await sleep(800);
-  assert.equal(timeline.all().length, before, 'own save was recorded');
+  assert.equal(
+    timeline.all().length,
+    before,
+    `own save was recorded: ${timeline.all().slice(before).map((e) => `${e.kind} ${e.relPath}`).join(', ')}`,
+  );
   console.log('[it] ignoreOwnSaves ok');
 
   // --- 6. Changing the filter live picks up a new extension.
@@ -155,4 +159,32 @@ export async function run(): Promise<void> {
   assert.equal(mirrorDoc('src/lf.ts')?.eol, vscode.EndOfLine.LF, 'LF file took the CRLF default');
   assert.equal(mirrorText('src/lf.ts'), disk('src/lf.ts'));
   console.log('[it] line endings ok');
+
+  // --- 8. Write order comes from modification times, not watcher arrival.
+  // y.ts is written and reported first; x.ts is written after that report but
+  // its mtime says it was written earlier, so the timeline and replay must put
+  // x.ts first. A wide window keeps the mtime clamp out of the way on slow watchers.
+  const reorderWindow = Number(process.env.IT_REORDER_WINDOW_MS ?? 5000);
+  await vscode.workspace.getConfiguration('agentTypewriter').update('reorderWindowMs', reorderWindow, vscode.ConfigurationTarget.Workspace);
+  const beforeOrder = timeline.all().length;
+  const seen = new Set<string>();
+  const probe = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, 'src/*.ts'));
+  probe.onDidCreate((u) => seen.add(path.basename(u.fsPath)));
+  write('src/y.ts', 'export const y = 1;\n');
+  await until('watcher to report y.ts', () => seen.has('y.ts'), 10000);
+  probe.dispose();
+  write('src/x.ts', 'export const x = 1;\n');
+  const xWritten = new Date(fs.statSync(path.join(root, 'src/y.ts')).mtimeMs - 20);
+  fs.utimesSync(path.join(root, 'src/x.ts'), xWritten, xWritten);
+  await until('x and y recorded', () => timeline.all().length >= beforeOrder + 2, 20000);
+  await until('x and y playback', idle);
+  const recorded = timeline.all().slice(beforeOrder).map((e) => e.relPath);
+  assert.deepEqual(recorded, ['src/x.ts', 'src/y.ts'], 'changes not ordered by write time');
+  order.length = 0;
+  lastSeq = -1;
+  await vscode.commands.executeCommand('agentTypewriter.replayFrom', timeline.all()[beforeOrder].seq);
+  await sleep(200);
+  await until('write-order replay', idle);
+  assert.deepEqual(order, ['src/x.ts', 'src/y.ts'], 'replay not in write order');
+  console.log('[it] write order ok');
 }

@@ -106,6 +106,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   register('agentTypewriter.finishCurrent', () => player.finishCurrent());
 
   register('agentTypewriter.catchUp', async () => {
+    recorder.drainHeld();
     timeline.seekToEnd();
     await player.interrupt();
     await player.snapToLatest();

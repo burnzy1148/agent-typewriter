@@ -321,6 +321,14 @@
           "default": 200,
           "description": "Writes to the same file within this window are merged into one change."
         },
+        "agentTypewriter.reorderWindowMs": {
+          "type": [
+            "string",
+            "number"
+          ],
+          "default": "auto",
+          "markdownDescription": "How long each change is held so changes reach the timeline in the order files were written, even when the file watcher reports them late. `\"auto\"` uses 2500 ms on Windows and 250 ms elsewhere. `0` adds changes as soon as they are read."
+        },
         "agentTypewriter.maxFileSizeKB": {
           "type": "number",
           "default": 512,
