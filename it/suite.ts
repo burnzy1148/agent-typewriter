@@ -221,4 +221,51 @@ export async function run(): Promise<void> {
   await saveThenWrite('rightAfter', 0);
   await saveThenWrite('later', 3000);
   console.log('[it] write after own save ok');
+
+  // --- 10. Git-backed baselines: with no memory budget, a committed file's
+  // first change is still replayed, from the committed text. Git is only read.
+  const cfg = () => vscode.workspace.getConfiguration('agentTypewriter');
+  const WS = vscode.ConfigurationTarget.Workspace;
+  const gitState = () => {
+    const head = fs.readFileSync(path.join(root, '.git/HEAD'), 'utf8');
+    const ref = head.startsWith('ref: ') ? fs.readFileSync(path.join(root, '.git', head.slice(5).trim()), 'utf8') : '';
+    return head + ref + fs.readFileSync(path.join(root, '.git/index')).toString('base64');
+  };
+  const gitBefore = gitState();
+  const gitOn = process.env.IT_GIT_BASELINES !== '0';
+  await cfg().update('baselineBudgetMB', 0, WS);
+  await cfg().update('gitBaselines', gitOn, WS);
+  await vscode.commands.executeCommand('agentTypewriter.stop');
+  await vscode.commands.executeCommand('agentTypewriter.start');
+  async function firstChangeOf(rel: string, label: string) {
+    const committed = lf(disk(rel));
+    const at = timeline.all().length;
+    write(rel, committed + `export const ${label} = 'agent';\n`);
+    await until(`${label} recorded`, () => timeline.all().length > at, 20000);
+    await sleep(300);
+    await until(`${label} playback`, idle);
+    const added = timeline.all().slice(at);
+    assert.equal(added.length, 1, `${label}: expected one change, got ${added.length}`);
+    assert.equal(added[0].before, committed, `${label}: before text is not the committed text`);
+    assert.equal(mirrorText(rel), disk(rel), `${label}: mirror does not match disk`);
+  }
+  await firstChangeOf('src/committed1.ts', 'gitFirst');
+  assert.equal(gitState(), gitBefore, 'git HEAD, ref or index changed');
+  console.log('[it] git baselines ok');
+
+  // --- 11. Toggling while watching. Off (with budget): baselines move to memory.
+  // On (no budget): a file with no baseline gets one from git.
+  const settle = () => sleep(1500);
+  await cfg().update('baselineBudgetMB', 256, WS);
+  await settle();
+  await cfg().update('gitBaselines', false, WS);
+  await settle();
+  await firstChangeOf('src/committed2.ts', 'toggledOff');
+  await cfg().update('baselineBudgetMB', 0, WS);
+  await settle();
+  await cfg().update('gitBaselines', true, WS);
+  await settle();
+  await firstChangeOf('src/committed3.ts', 'toggledOn');
+  assert.equal(gitState(), gitBefore, 'git HEAD, ref or index changed');
+  console.log('[it] git baseline toggling ok');
 }

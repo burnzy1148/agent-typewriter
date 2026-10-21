@@ -77,6 +77,8 @@ Filter changes apply immediately while watching; newly matching files are snapsh
 | `debounceMs` | 200 | Writes to one file inside this window merge into one change |
 | `reorderWindowMs` | `"auto"` | Hold each change this long so changes enter the timeline in write order even when the watcher reports them late. `"auto"` is 2500 ms on Windows, 250 ms elsewhere; `0` disables |
 | `maxFileSizeKB` | 512 | Larger files are ignored |
+| `gitBaselines` | true | Use git as the baseline for tracked, unmodified files instead of keeping them in memory. Read-only; turns itself off when git is not available |
+| `baselineBudgetMB` | 256 | Memory for baselines of files git does not cover, newest files first |
 | `historyLimit` | 500 | Changes kept for replay |
 | `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor (matched by content, so an outside write right after your save is still replayed) |
 | `viewColumn` | beside | Replay in a column beside you, or in the active column |
@@ -93,7 +95,7 @@ Claude Code in a terminal writes straight to disk, which is what this extension 
 
 - Text files only. Binary files and files over `maxFileSizeKB` are skipped. Line endings are normalized to LF in the replay.
 - The replay is a reconstruction, not a recording. It shows each change as a person would plausibly type it, not the agent's literal edit sequence (which is always an atomic write anyway).
-- Changes to a file that had no snapshot (only possible when more than 5000 files match) start recording from that file's second change. Narrow the filters if you see this in the **Agent Typewriter** output channel.
+- Every matching file needs a baseline for its first change to replay. In a git repository with git installed, clean tracked files use git as their baseline and cost no memory (`gitBaselines`). Other files are kept in memory up to `baselineBudgetMB`, newest first. A file left out starts recording from its second change, and the **Agent Typewriter** output channel says how many files that is.
 - A rename shows up as a delete plus a create.
 
 ## Develop

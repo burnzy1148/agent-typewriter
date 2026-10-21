@@ -240,6 +240,9 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       ) {
         await recorder.refreshFilter();
       }
+      if (e.affectsConfiguration(`${SECTION}.gitBaselines`) || e.affectsConfiguration(`${SECTION}.baselineBudgetMB`)) {
+        await recorder.refreshBaselines();
+      }
       refreshStatus();
     }),
   );
