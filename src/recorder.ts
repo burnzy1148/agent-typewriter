@@ -74,6 +74,12 @@ export class Recorder implements vscode.Disposable {
     return this.passes(uri);
   }
 
+  /** True once this file has a baseline, so its next change will be recorded. */
+  hasBaseline(uri: vscode.Uri): boolean {
+    const key = uri.toString();
+    return this.snapshots.has(key) || this.gitBaselines.has(key);
+  }
+
   async start(): Promise<void> {
     if (this.running) return;
     const folders = vscode.workspace.workspaceFolders ?? [];

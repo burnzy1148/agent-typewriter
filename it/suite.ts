@@ -288,7 +288,7 @@ export async function run(): Promise<void> {
   // A workspace value overrides the file; the newly matching file gets a baseline.
   await cfg().update('exclude', [], WS);
   await until('workspace exclude to win', watched, 10000);
-  await sleep(500);
+  await until('skip/a.ts baseline', () => api.recorder.hasBaseline(skipped), 20000);
   write('src/skip/a.ts', 'export const skip = 3;\n');
   await until('skip/a.ts recorded', () => timeline.all().slice(atRepo).some((e) => e.relPath === 'src/skip/a.ts'), 20000);
   await until('skip/a.ts playback', idle);
@@ -354,7 +354,7 @@ export async function run(): Promise<void> {
 
   await cfg().update('respectGitignore', false, WS);
   await until('gitignore rules to clear', () => api.recorder.matches(uriOf('src/later/a.ts')), 10000);
-  await sleep(500);
+  await until('later/a.ts baseline', () => api.recorder.hasBaseline(uriOf('src/later/a.ts')), 20000);
   write('src/later/a.ts', 'export const later = 3;\n');
   await until('later/a.ts recorded again', () => eventsFor('src/later/a.ts', atLive).length === 1, 20000);
   const again = eventsFor('src/later/a.ts', atLive)[0];
