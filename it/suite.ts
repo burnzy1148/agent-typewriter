@@ -408,7 +408,40 @@ export async function run(): Promise<void> {
   await until('gitignore playback', idle);
   console.log('[it] respectGitignore ok');
 
-  // --- 16. Leave two queued changes behind for the reload check in restore.ts,
+  // --- 16. Filter profiles: switching to a file-defined profile clears the
+  // workspace values it sets, "No profile" goes back, and saving activates.
+  const profileOn = (name: string) => api.recorder.describeFilter().startsWith(`${name}: `);
+  await cfg().update('extensions', ['ts'], WS);
+  fs.writeFileSync(repoFile, JSON.stringify({ profiles: { docs: { include: ['docs/**'], extensions: ['md'] } } }));
+  // The file is read asynchronously; until then the switch reports an unknown profile.
+  await until('docs profile active', () => {
+    if (!profileOn('docs')) void vscode.commands.executeCommand('agentTypewriter.switchProfile', 'docs');
+    return profileOn('docs');
+  }, 15000);
+  await sleep(500);
+  assert.equal(cfg().inspect('extensions')?.workspaceValue, undefined, 'switching did not clear the workspace extensions');
+  assert.equal(cfg().inspect('activeProfile')?.workspaceValue, 'docs');
+  fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+  await sleep(1000);
+  const atProfile = timeline.all().length;
+  write('src/profiled.ts', 'export const profiled = 1;\n');
+  write('docs/guide.md', '# Guide\n');
+  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).length === 1, 20000);
+  await sleep(1000);
+  assert.equal(eventsFor('src/profiled.ts', atProfile).length, 0, 'a path outside the active profile was recorded');
+
+  await vscode.commands.executeCommand('agentTypewriter.switchProfile', '');
+  await until('no profile', () => !profileOn('docs'), 10000);
+  assert.ok(api.recorder.matches(uriOf('src/profiled.ts')), '"No profile" did not restore the filters');
+
+  await vscode.commands.executeCommand('agentTypewriter.saveProfile', 'mine');
+  await until('saved profile active', () => profileOn('mine'), 10000);
+  const saved = (cfg().inspect('profiles')?.workspaceValue as Record<string, { include: string[] }>)?.mine;
+  assert.deepEqual(saved?.include, ['**/*'], 'saved profile does not hold the current include');
+  await until('profile playback', idle);
+  console.log('[it] filter profiles ok');
+
+  // --- 17. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.
   await until('idle before reload setup', idle);
   if (!api.player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');

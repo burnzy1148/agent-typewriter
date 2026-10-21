@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readSettings, setRepoValues, updateSetting, workspaceOverrides, SECTION } from './config';
+import { readSettings, setRepoValues, updateSetting, workspaceOverrides, workspaceProfiles, SECTION } from './config';
 import { parseExtensionList, PathFilter } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
+import { describeProfile } from './profiles';
 import { Recorder, relPathOf } from './recorder';
 import { scrubberState } from './scrubberState';
 import { ScrubberView } from './scrubberView';
@@ -323,6 +324,48 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     await updateSetting('extensions', undefined);
   });
 
+  register('agentTypewriter.switchProfile', async (arg?: unknown) => {
+    const s = readSettings();
+    let name = typeof arg === 'string' ? arg : undefined;
+    if (name === undefined) {
+      const current = (n: string) => (n === s.activeProfile ? 'current' : undefined);
+      const pick = await vscode.window.showQuickPick(
+        [
+          { label: 'No profile', name: '', description: current('') },
+          ...Object.entries(s.profiles).map(([n, p]) => ({ label: n, name: n, description: current(n), detail: describeProfile(p) })),
+        ],
+        { title: 'Agent Typewriter: filter profile' },
+      );
+      if (!pick) return;
+      name = pick.name;
+    }
+    if (name !== '' && !Object.hasOwn(s.profiles, name)) throw new Error(`No filter profile named "${name}".`);
+    // Clear workspace values the profile sets, or they would hide it.
+    if (name !== '') for (const key of Object.keys(s.profiles[name])) await updateSetting(key, undefined);
+    await updateSetting('activeProfile', name);
+  });
+
+  register('agentTypewriter.saveProfile', async (arg?: unknown) => {
+    const name = (
+      typeof arg === 'string'
+        ? arg
+        : await vscode.window.showInputBox({
+            title: 'Agent Typewriter: save filters as profile',
+            prompt: 'Profile name, for example "backend" or "docs"',
+            validateInput: (v) => (v.trim() ? undefined : 'Enter a name'),
+          })
+    )?.trim();
+    if (!name) return;
+    const existing = workspaceProfiles();
+    if (Object.hasOwn(existing, name)) {
+      const ok = await vscode.window.showWarningMessage(`Replace the filter profile "${name}"?`, { modal: true }, 'Replace');
+      if (ok !== 'Replace') return;
+    }
+    const { include, exclude, extensions, respectGitignore } = readSettings();
+    await updateSetting('profiles', { ...existing, [name]: { include, exclude, extensions, respectGitignore } });
+    await updateSetting('activeProfile', name);
+  });
+
   register('agentTypewriter.openRepoSettings', async () => {
     const uri = repoFile.uri;
     if (!uri) throw new Error('Open a folder or workspace first.');
@@ -373,10 +416,18 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   // ------------------------------------------------------------ settings
 
+  const noteUnknownProfile = () => {
+    const s = readSettings();
+    if (s.activeProfile !== '' && !Object.hasOwn(s.profiles, s.activeProfile)) {
+      log.appendLine(`activeProfile "${s.activeProfile}" names no filter profile; filters apply without one.`);
+    }
+  };
+
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
   const applySettingsChange = async (affects: (key: string) => boolean) => {
     if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
-    if (affects('include') || affects('exclude') || affects('extensions') || affects('respectGitignore')) {
+    if (affects('profiles') || affects('activeProfile')) noteUnknownProfile();
+    if (['include', 'exclude', 'extensions', 'respectGitignore', 'profiles', 'activeProfile'].some(affects)) {
       await recorder.refreshFilter();
     }
     if (affects('gitBaselines') || affects('baselineBudgetMB')) await recorder.refreshBaselines();
@@ -432,6 +483,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   };
   context.subscriptions.push({ dispose: () => (finalSave = undefined) });
 
+  void repoFile.ready.then(noteUnknownProfile);
   void setWatching(false);
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
