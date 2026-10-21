@@ -187,4 +187,38 @@ export async function run(): Promise<void> {
   await until('write-order replay', idle);
   assert.deepEqual(order, ['src/x.ts', 'src/y.ts'], 'replay not in write order');
   console.log('[it] write order ok');
+
+  // --- 9. An outside write right after an own save is still recorded, from the saved text.
+  const lf = (t: string) => t.replace(/\r\n/g, '\n');
+  async function saveThenWrite(marker: string, gapMs: number) {
+    const at = timeline.all().length;
+    const d = await vscode.workspace.openTextDocument(path.join(root, 'src/existing.ts'));
+    const e = await vscode.window.showTextDocument(d);
+    await e.edit((b) => b.insert(new vscode.Position(0, 0), `// ${marker} by me\n`));
+    await d.save();
+    const savedText = lf(d.getText());
+    if (gapMs > 0) await sleep(gapMs);
+    // Windows can hold the file briefly right after a save (EBUSY); retry like an agent would.
+    for (let tries = 0; ; tries++) {
+      try {
+        write('src/existing.ts', savedText + `export const ${marker} = 'agent';\n`);
+        break;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if ((code !== 'EBUSY' && code !== 'EPERM') || tries >= 50) throw err;
+        await sleep(20);
+      }
+    }
+    await until(`${marker} recorded`, () => timeline.all().length > at, 20000);
+    await sleep(500);
+    await until(`${marker} playback`, idle);
+    const added = timeline.all().slice(at);
+    assert.equal(added.length, 1, `expected one change, got ${added.map((x) => `${x.kind} ${x.relPath}`).join(', ')}`);
+    assert.equal(added[0].before, savedText, `${marker}: before text is not the saved text`);
+    assert.equal(added[0].after, lf(disk('src/existing.ts')), `${marker}: after text is not the disk text`);
+    assert.equal(mirrorText('src/existing.ts'), disk('src/existing.ts'), `${marker}: mirror does not match disk`);
+  }
+  await saveThenWrite('rightAfter', 0);
+  await saveThenWrite('later', 3000);
+  console.log('[it] write after own save ok');
 }
