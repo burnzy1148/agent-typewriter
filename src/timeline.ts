@@ -114,6 +114,25 @@ export class Timeline {
     this.emit();
   }
 
+  /**
+   * Replaces the buffer with saved events, oldest first. They get fresh seqs
+   * so seqs stay unique for the life of the timeline; `cursor` (a seq from the
+   * same save) maps by position, so played events stay played. The current
+   * limit applies, newest kept.
+   */
+  restore(events: readonly ChangeEvent[], cursor: number): void {
+    const kept = events.slice(Math.max(0, events.length - this.limit));
+    const played = kept.filter((e) => e.seq < cursor).length;
+    const first = this.nextSeq;
+    this.events = kept.map((e, i) => ({ ...e, seq: first + i }));
+    this.nextSeq = first + kept.length;
+    this.cursorSeq = first + played;
+    this.generation++;
+    this.playingSeq = undefined;
+    this.droppedUnplayed = 0;
+    this.emit();
+  }
+
   get(seq: number): ChangeEvent | undefined {
     const idx = this.indexOfSeq(seq);
     return idx === -1 ? undefined : this.events[idx];
@@ -183,4 +202,100 @@ export class Timeline {
       }
     }
   }
+}
+
+// ------------------------------------------------------------------ sessions
+
+/**
+ * The on-disk form of a timeline, shared by workspace persistence and session
+ * files. Bump SESSION_VERSION when the shape or the set of kinds changes, and
+ * teach parseSession to read every older version.
+ */
+export const SESSION_FORMAT = 'agent-typewriter-session';
+export const SESSION_VERSION = 1;
+
+export interface Session {
+  format: typeof SESSION_FORMAT;
+  version: number;
+  /** Epoch millis when the session was written. */
+  savedAt: number;
+  /** Seq of the next event to play; events below it were played. */
+  cursor: number;
+  /** Oldest first, seqs increasing. */
+  events: ChangeEvent[];
+}
+
+export class SessionFormatError extends Error {}
+
+const KINDS: readonly ChangeKind[] = ['create', 'modify', 'delete'];
+
+/**
+ * The newest events whose before and after text fit in `maxTextChars`, as a
+ * session, plus how many older events were left out to fit.
+ */
+export function toSession(timeline: Timeline, maxTextChars = Infinity): { session: Session; omitted: number } {
+  const events = timeline.all();
+  let start = events.length;
+  let used = 0;
+  while (start > 0) {
+    const e = events[start - 1];
+    used += e.before.length + e.after.length;
+    if (used > maxTextChars) break;
+    start--;
+  }
+  return {
+    session: { format: SESSION_FORMAT, version: SESSION_VERSION, savedAt: Date.now(), cursor: timeline.cursor, events: events.slice(start) },
+    omitted: start,
+  };
+}
+
+/** Validates a parsed session of any supported version. Throws SessionFormatError saying what is wrong. */
+export function parseSession(raw: unknown): Session {
+  const fail = (why: string): never => {
+    throw new SessionFormatError(why);
+  };
+  if (!isObject(raw) || raw.format !== SESSION_FORMAT) fail('not an Agent Typewriter session');
+  const s = raw as Record<string, unknown>;
+  const version = s.version;
+  if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) fail('missing or invalid version');
+  if ((version as number) > SESSION_VERSION) {
+    fail(`saved by a newer version of Agent Typewriter (session version ${version}, this one reads up to ${SESSION_VERSION})`);
+  }
+  if (!isInt(s.cursor)) fail('missing or invalid cursor');
+  if (!Array.isArray(s.events)) fail('missing events');
+  const events: ChangeEvent[] = [];
+  let lastSeq = -Infinity;
+  for (const [i, e] of (s.events as unknown[]).entries()) {
+    const at = `event ${i + 1}`;
+    if (!isObject(e)) fail(`${at} is not an object`);
+    const r = e as Record<string, unknown>;
+    if (!isInt(r.seq) || (r.seq as number) <= lastSeq) fail(`${at} has a missing or out-of-order seq`);
+    lastSeq = r.seq as number;
+    for (const k of ['uri', 'relPath', 'before', 'after'] as const) if (typeof r[k] !== 'string') fail(`${at} has no ${k}`);
+    if (!KINDS.includes(r.kind as ChangeKind)) fail(`${at} has unknown kind ${JSON.stringify(r.kind)}`);
+    if (r.eol !== '\n' && r.eol !== '\r\n') fail(`${at} has an invalid eol`);
+    for (const k of ['time', 'linesAdded', 'linesRemoved'] as const) if (typeof r[k] !== 'number') fail(`${at} has no ${k}`);
+    events.push({
+      seq: r.seq as number,
+      uri: r.uri as string,
+      relPath: r.relPath as string,
+      time: r.time as number,
+      kind: r.kind as ChangeKind,
+      before: r.before as string,
+      after: r.after as string,
+      eol: r.eol as '\n' | '\r\n',
+      linesAdded: r.linesAdded as number,
+      linesRemoved: r.linesRemoved as number,
+    });
+  }
+  const savedAt = typeof s.savedAt === 'number' ? s.savedAt : 0;
+  return { format: SESSION_FORMAT, version: SESSION_VERSION, savedAt, cursor: s.cursor as number, events };
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isInt(v: unknown): boolean {
+  return typeof v === 'number' && Number.isInteger(v);
 }
