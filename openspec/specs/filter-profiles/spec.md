@@ -52,7 +52,7 @@ The **Switch Filter Profile...** command SHALL list every available profile and 
 - **THEN** filters resolve as without a profile
 
 ### Requirement: Saving the current filters as a profile
-The **Save Filters as Profile...** command SHALL ask for a name, store the current effective `include`, `exclude`, `extensions`, and `respectGitignore` under that name in the workspace settings' `agentTypewriter.profiles`, and make it the active profile. Saving under an existing workspace profile's name SHALL replace it after confirmation. The repository file SHALL NOT be written.
+The **Save Filters as Profile...** command SHALL ask for a name, store the current effective `include`, `exclude`, `extensions`, and `respectGitignore` under that name in `agentTypewriter.profiles` (workspace settings, or user settings when no folder is open), and make it the active profile. Other stored entries SHALL be kept exactly as written. Saving under an existing name SHALL replace it after confirmation. The name `__proto__` SHALL be rejected. The repository file SHALL NOT be written.
 
 #### Scenario: Save and reuse
 - **WHEN** the user narrows filters with **Watch Only This** on `docs/` and saves them as `docs`

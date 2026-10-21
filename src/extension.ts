@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readSettings, setRepoValues, updateSetting, workspaceOverrides, workspaceProfiles, SECTION } from './config';
+import { readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
-import { describeProfile } from './profiles';
+import { describeProfile, isValidProfileName } from './profiles';
 import { Recorder, relPathOf } from './recorder';
 import { scrubberState } from './scrubberState';
 import { ScrubberView } from './scrubberView';
@@ -325,7 +325,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   });
 
   register('agentTypewriter.switchProfile', async (arg?: unknown) => {
-    const s = readSettings();
+    await repoFile.ready;
+    let s = readSettings();
     let name = typeof arg === 'string' ? arg : undefined;
     if (name === undefined) {
       const current = (n: string) => (n === s.activeProfile ? 'current' : undefined);
@@ -339,10 +340,20 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       if (!pick) return;
       name = pick.name;
     }
-    if (name !== '' && !Object.hasOwn(s.profiles, name)) throw new Error(`No filter profile named "${name}".`);
-    // Clear workspace values the profile sets, or they would hide it.
-    if (name !== '') for (const key of Object.keys(s.profiles[name])) await updateSetting(key, undefined);
+    if (name !== '' && !Object.hasOwn(s.profiles, name)) {
+      // The repository file may have just been written; read it before giving up.
+      await repoFile.reload();
+      s = readSettings();
+      if (!Object.hasOwn(s.profiles, name)) throw new Error(`No filter profile named "${name}".`);
+    }
+    // Activate first, so the filter never passes through a wider state while
+    // values are cleared below.
     await updateSetting('activeProfile', name);
+    // Workspace values the profile sets would hide it, so clear them. Without a
+    // folder, settings are written to user settings, which already sit below the profile.
+    if (name !== '' && writesWorkspace()) {
+      for (const key of Object.keys(s.profiles[name])) await updateSetting(key, undefined);
+    }
   });
 
   register('agentTypewriter.saveProfile', async (arg?: unknown) => {
@@ -352,11 +363,13 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
         : await vscode.window.showInputBox({
             title: 'Agent Typewriter: save filters as profile',
             prompt: 'Profile name, for example "backend" or "docs"',
-            validateInput: (v) => (v.trim() ? undefined : 'Enter a name'),
+            validateInput: (v) => (isValidProfileName(v.trim()) ? undefined : 'Enter a name other than __proto__'),
           })
     )?.trim();
-    if (!name) return;
-    const existing = workspaceProfiles();
+    if (name === undefined || name === '') return;
+    if (!isValidProfileName(name)) throw new Error(`"${name}" cannot be used as a profile name.`);
+    await repoFile.ready;
+    const existing = storedProfiles();
     if (Object.hasOwn(existing, name)) {
       const ok = await vscode.window.showWarningMessage(`Replace the filter profile "${name}"?`, { modal: true }, 'Replace');
       if (ok !== 'Replace') return;
@@ -416,11 +429,15 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   // ------------------------------------------------------------ settings
 
+  /** The unknown name last logged, so startup and the file's first load don't log it twice. */
+  let loggedUnknown = '';
   const noteUnknownProfile = () => {
     const s = readSettings();
-    if (s.activeProfile !== '' && !Object.hasOwn(s.profiles, s.activeProfile)) {
-      log.appendLine(`activeProfile "${s.activeProfile}" names no filter profile; filters apply without one.`);
+    const unknown = s.activeProfile !== '' && !Object.hasOwn(s.profiles, s.activeProfile) ? s.activeProfile : '';
+    if (unknown !== '' && unknown !== loggedUnknown) {
+      log.appendLine(`activeProfile "${unknown}" names no filter profile; filters apply without one.`);
     }
+    loggedUnknown = unknown;
   };
 
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
@@ -442,7 +459,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     }),
     repoFile.onDidChange(async (changed) => {
       setRepoValues(repoFile.values);
-      const overridden = workspaceOverrides(Object.keys(repoFile.values));
+      // profiles merge by name instead of being overridden.
+      const overridden = workspaceOverrides(Object.keys(repoFile.values).filter((k) => k !== 'profiles'));
       if (overridden.length > 0) {
         log.appendLine(`Workspace settings override ${REPO_SETTINGS_FILE} for: ${overridden.join(', ')}.`);
       }

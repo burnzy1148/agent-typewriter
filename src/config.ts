@@ -54,7 +54,8 @@ export function readSettings(): Settings {
   const cfg = vscode.workspace.getConfiguration(SECTION);
   const c = layered(cfg);
   const profiles = resolveProfiles(cfg);
-  const activeProfile = c.get('activeProfile', '');
+  const rawActive = c.get<unknown>('activeProfile', '');
+  const activeProfile = typeof rawActive === 'string' ? rawActive : '';
   // The active profile's filters sit between the repository file and workspace settings.
   const f = layered(cfg, Object.hasOwn(profiles, activeProfile) ? profiles[activeProfile] : undefined);
   return {
@@ -84,17 +85,24 @@ export function readSettings(): Settings {
   };
 }
 
+/** True when commands write workspace settings; false when no folder is open and they write user settings. */
+export function writesWorkspace(): boolean {
+  return (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+}
+
 /** Writes to workspace settings when a folder is open, otherwise user settings. */
 export async function updateSetting(key: string, value: unknown): Promise<void> {
-  const target = vscode.workspace.workspaceFolders?.length
-    ? vscode.ConfigurationTarget.Workspace
-    : vscode.ConfigurationTarget.Global;
+  const target = writesWorkspace() ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
   await vscode.workspace.getConfiguration(SECTION).update(key, value, target);
 }
 
-/** Profiles defined in workspace settings only, as saved by Save Filters as Profile. */
-export function workspaceProfiles(): Record<string, FilterProfile> {
-  return parseProfiles(vscode.workspace.getConfiguration(SECTION).inspect('profiles')?.workspaceValue).profiles;
+/**
+ * The `profiles` object exactly as stored where updateSetting writes, unvalidated,
+ * so saving a profile keeps every other entry as the user wrote it.
+ */
+export function storedProfiles(): Record<string, unknown> {
+  const i = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('profiles');
+  return asRecord(writesWorkspace() ? i?.workspaceValue : i?.globalValue);
 }
 
 /**

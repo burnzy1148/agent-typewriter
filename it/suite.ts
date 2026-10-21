@@ -413,12 +413,9 @@ export async function run(): Promise<void> {
   const profileOn = (name: string) => api.recorder.describeFilter().startsWith(`${name}: `);
   await cfg().update('extensions', ['ts'], WS);
   fs.writeFileSync(repoFile, JSON.stringify({ profiles: { docs: { include: ['docs/**'], extensions: ['md'] } } }));
-  // The file is read asynchronously; until then the switch reports an unknown profile.
-  await until('docs profile active', () => {
-    if (!profileOn('docs')) void vscode.commands.executeCommand('agentTypewriter.switchProfile', 'docs');
-    return profileOn('docs');
-  }, 15000);
-  await sleep(500);
+  // The switch reads a just-written file itself when it doesn't know the profile yet.
+  await vscode.commands.executeCommand('agentTypewriter.switchProfile', 'docs');
+  await until('docs profile active', () => profileOn('docs'), 10000);
   assert.equal(cfg().inspect('extensions')?.workspaceValue, undefined, 'switching did not clear the workspace extensions');
   assert.equal(cfg().inspect('activeProfile')?.workspaceValue, 'docs');
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
@@ -434,10 +431,14 @@ export async function run(): Promise<void> {
   await until('no profile', () => !profileOn('docs'), 10000);
   assert.ok(api.recorder.matches(uriOf('src/profiled.ts')), '"No profile" did not restore the filters');
 
+  // Saving keeps other stored entries exactly as written, even ones that don't validate.
+  const handWritten = { keep: { include: ['x/**'], exlude: ['typo'] }, draft: 'tbd' };
+  await cfg().update('profiles', handWritten, WS);
   await vscode.commands.executeCommand('agentTypewriter.saveProfile', 'mine');
   await until('saved profile active', () => profileOn('mine'), 10000);
-  const saved = (cfg().inspect('profiles')?.workspaceValue as Record<string, { include: string[] }>)?.mine;
-  assert.deepEqual(saved?.include, ['**/*'], 'saved profile does not hold the current include');
+  const stored = cfg().inspect('profiles')?.workspaceValue as Record<string, unknown>;
+  assert.deepEqual((stored?.mine as { include: string[] })?.include, ['**/*'], 'saved profile does not hold the current include');
+  assert.deepEqual({ keep: stored?.keep, draft: stored?.draft }, handWritten, 'saving rewrote other profile entries');
   await until('profile playback', idle);
   console.log('[it] filter profiles ok');
 

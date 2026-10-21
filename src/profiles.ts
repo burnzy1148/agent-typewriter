@@ -17,6 +17,10 @@ export function parseProfiles(raw: unknown): { profiles: Record<string, FilterPr
   if (raw === undefined) return { profiles, problems };
   if (!isObject(raw)) return { profiles, problems: ['"profiles" should be an object of named profiles; ignored.'] };
   for (const [name, value] of Object.entries(raw)) {
+    if (!isValidProfileName(name)) {
+      problems.push(`"${name}" cannot be used as a profile name; ignored.`);
+      continue;
+    }
     if (!isObject(value)) {
       problems.push(`profile "${name}" should be an object; ignored.`);
       continue;
@@ -34,6 +38,11 @@ export function parseProfiles(raw: unknown): { profiles: Record<string, FilterPr
     profiles[name] = profile as FilterProfile;
   }
   return { profiles, problems };
+}
+
+/** `__proto__` would set an object's prototype instead of naming a profile. */
+export function isValidProfileName(name: string): boolean {
+  return name.trim() !== '' && name !== '__proto__';
 }
 
 /** Combines layers by name, lowest priority first; a higher layer's profile replaces a lower one's whole. */

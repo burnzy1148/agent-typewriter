@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { activeProfileOf, describeProfile, mergeProfiles, parseProfiles } from '../src/profiles';
+import { activeProfileOf, describeProfile, isValidProfileName, mergeProfiles, parseProfiles } from '../src/profiles';
 import { parseRepoSettings } from '../src/repoSettings';
 
 test('parseProfiles: valid profiles pass through', () => {
@@ -61,4 +61,14 @@ test('repository file: profiles are validated entry by entry, activeProfile is a
   assert.ok(bad.ok);
   assert.deepEqual(bad.values, {});
   assert.equal(bad.problems.length, 2);
+});
+
+test('parseProfiles: __proto__ and blank names are rejected and reported', () => {
+  const r = parseProfiles(JSON.parse('{"__proto__": {"include": ["x/**"]}, " ": {}, "ok": {}}'));
+  assert.deepEqual(Object.keys(r.profiles), ['ok']);
+  assert.equal(Object.getPrototypeOf(r.profiles), Object.prototype);
+  assert.equal(r.problems.length, 2);
+  assert.match(r.problems[0], /"__proto__" cannot be used as a profile name/);
+  assert.equal(isValidProfileName('docs'), true);
+  assert.equal(isValidProfileName('__proto__'), false);
 });
