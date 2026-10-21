@@ -7,7 +7,8 @@ import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } fr
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
 import { describeProfile, isValidProfileName } from './profiles';
-import { Recorder, relPathOf } from './recorder';
+import { Recorder, relPathOf, type CheckoutChoices, type CheckoutInfo, type FolderCheckouts } from './recorder';
+import { CheckoutChoiceFile, checkoutName, pathKey } from './worktrees';
 import { scrubberState } from './scrubberState';
 import { ScrubberView } from './scrubberView';
 import { REPO_SETTINGS_FILE } from './repoSettings';
@@ -33,11 +34,16 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const repoFile = new RepoSettingsFile(log);
   const timeline = new Timeline(readSettings().historyLimit);
   const mirror = new MirrorFileSystem();
-  const recorder = new Recorder(timeline, readSettings, log);
+  // Without a folder there is no workspace storage; choices then last for the session.
+  const choices: CheckoutChoices = context.storageUri
+    ? new CheckoutChoiceFile(path.join(context.storageUri.fsPath, 'checkouts.json'))
+    : new Map<string, string>();
+  const recorder = new Recorder(timeline, readSettings, log, choices);
   const player = new Player(timeline, mirror, readSettings, log);
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
   const scrubber = new ScrubberView(() =>
     scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning }),
   );
@@ -53,6 +59,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     view,
     tree,
     status,
+    checkoutStatus,
     scrubber,
     vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
     { dispose: () => store?.dispose() },
@@ -62,11 +69,44 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   // ------------------------------------------------------------ status
 
+  /** The checkout each folder records (or will record once started), by folder URI; only folders in git. */
+  const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+  const refreshCheckouts = async () => {
+    const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const live = recorder.checkoutOf(folder);
+      if (live) {
+        if (live.worktrees > 0) next.set(folder.uri.toString(), live);
+        continue;
+      }
+      const c = await recorder.checkoutsOf(folder);
+      if (!c) continue;
+      const chosen = c.chosen !== undefined ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.chosen!)) : undefined;
+      const shown = chosen ?? c.own;
+      next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: shown ? checkoutName(shown) : '', worktrees: c.worktrees.length });
+    }
+    checkouts.clear();
+    for (const [k, v] of next) checkouts.set(k, v);
+    refreshStatus();
+  };
+
   let lastDropped = 0;
   const refreshStatus = () => {
     const pending = timeline.pendingCount();
     const watching = recorder.isRunning;
     const speed = player.speed === 1 ? '' : ` ${player.speed}x`;
+    const elsewhere = [...checkouts.values()].filter((c) => !c.own).map((c) => c.name);
+    const inCheckout = elsewhere.length > 0 ? ` in checkout ${elsewhere.join(', ')}` : '';
+    const choosable = [...checkouts.values()].filter((c) => c.worktrees > 1);
+    if (choosable.length > 0) {
+      const names = choosable.map((c) => c.name);
+      checkoutStatus.text = `$(git-branch) ${names.join(', ')}`;
+      checkoutStatus.tooltip = `Agent Typewriter ${watching ? 'records' : 'will record'} checkout ${names.join(', ')}. Click to choose another.`;
+      checkoutStatus.command = 'agentTypewriter.chooseCheckout';
+      checkoutStatus.show();
+    } else {
+      checkoutStatus.hide();
+    }
     if (!watching && pending === 0) {
       status.text = '$(keyboard) Typewriter';
       status.tooltip = 'Agent Typewriter is not watching. Click to start.';
@@ -77,12 +117,12 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       status.command = 'agentTypewriter.togglePause';
     } else {
       status.text = `$(${watching ? 'record' : 'play'}) Typewriter${pending ? ` · ${pending} queued` : ''}${speed}`;
-      status.tooltip = `${watching ? `Watching ${recorder.watchedCount} files (${recorder.describeFilter()})` : 'Not watching; draining the buffer'}. Click to pause.`;
+      status.tooltip = `${watching ? `Watching ${recorder.watchedCount} files${inCheckout} (${recorder.describeFilter()})` : 'Not watching; draining the buffer'}. Click to pause.`;
       status.command = 'agentTypewriter.togglePause';
     }
     status.show();
     scrubber.refresh();
-    tree.description = watching ? recorder.describeFilter() : 'stopped';
+    tree.description = watching ? (elsewhere.length > 0 ? `${elsewhere.join(', ')} · ` : '') + recorder.describeFilter() : 'stopped';
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
       tree.message = `${lastDropped} queued change(s) were dropped because the buffer is full (historyLimit).`;
@@ -91,8 +131,13 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       tree.message = undefined;
     }
   };
-  context.subscriptions.push(timeline.onDidChange(refreshStatus));
+  context.subscriptions.push(
+    timeline.onDidChange(refreshStatus),
+    recorder.onDidChangeScope(() => void refreshCheckouts()),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshCheckouts()),
+  );
   refreshStatus();
+  void refreshCheckouts();
 
   const setWatching = (on: boolean) => vscode.commands.executeCommand('setContext', 'agentTypewriter.watching', on);
 
@@ -398,6 +443,55 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
       const text = JSON.stringify({ include, exclude, extensions }, null, 2) + '\n';
       await editor.edit((b) => b.insert(new vscode.Position(0, 0), text));
     }
+  });
+
+  // Tests pass (folder, worktree path); an empty or null path means the folder's own checkout.
+  register('agentTypewriter.chooseCheckout', async (folderArg?: vscode.Uri | string, pathArg?: string | null) => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) throw new Error('Open a folder or workspace first.');
+    const only = folderArg ? vscode.workspace.getWorkspaceFolder(typeof folderArg === 'string' ? vscode.Uri.file(folderArg) : folderArg) : undefined;
+    if (folderArg && !only) throw new Error(`${String(folderArg)} is not in a workspace folder.`);
+    const candidates: Array<[vscode.WorkspaceFolder, FolderCheckouts]> = [];
+    for (const folder of only ? [only] : folders) {
+      const c = await recorder.checkoutsOf(folder);
+      if (c && (c.worktrees.length > 1 || pathArg !== undefined)) candidates.push([folder, c]);
+    }
+    if (candidates.length === 0) {
+      const name = only?.name ?? (folders.length === 1 ? folders[0].name : 'No workspace folder');
+      vscode.window.showInformationMessage(`Agent Typewriter: ${name} has no other checkouts.`);
+      return;
+    }
+    let target = candidates[0];
+    if (candidates.length > 1) {
+      const pick = await vscode.window.showQuickPick(
+        candidates.map(([folder, c]) => ({ label: folder.name, detail: `${c.worktrees.length} checkouts`, entry: [folder, c] as const })),
+        { title: 'Agent Typewriter: choose a checkout for which folder?' },
+      );
+      if (!pick) return;
+      target = [pick.entry[0], pick.entry[1]];
+    }
+    const [folder, c] = target;
+    if (pathArg !== undefined) {
+      await recorder.setCheckout(folder, pathArg || undefined);
+      return;
+    }
+    const current = pathKey(c.chosen ?? c.own?.path ?? folder.uri.fsPath);
+    const mark = (p: string) => (pathKey(p) === current ? 'current' : undefined);
+    const others = c.worktrees.filter((w) => w !== c.own);
+    const pick = await vscode.window.showQuickPick(
+      [
+        {
+          label: c.own ? checkoutName(c.own) : folder.name,
+          description: ["this folder's checkout", mark(c.own?.path ?? folder.uri.fsPath)].filter(Boolean).join(' · '),
+          detail: c.own?.path ?? folder.uri.fsPath,
+          path: undefined as string | undefined,
+        },
+        ...others.map((w) => ({ label: checkoutName(w), description: mark(w.path), detail: w.path, path: w.path as string | undefined })),
+      ],
+      { title: `Agent Typewriter: record which checkout of ${folder.name}?` },
+    );
+    if (!pick) return;
+    await recorder.setCheckout(folder, pick.path);
   });
 
   register('agentTypewriter.setSpeed', async (multiplier?: number) => {

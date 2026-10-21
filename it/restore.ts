@@ -85,4 +85,18 @@ export async function run(): Promise<void> {
     assert.equal(mirrorText(rel)?.replace(/\r\n/g, '\n'), e.after, `mirror for ${rel} does not end at its last recorded text`);
   }
   console.log(`[it] save and load session ok: ${recorded.length} changes replayed from ${path.basename(file)}`);
+
+  // --- 4. The checkout chosen before the reload is still the one recorded.
+  const folder = vscode.workspace.workspaceFolders![0];
+  await vscode.commands.executeCommand('agentTypewriter.start');
+  assert.equal(api.recorder.checkoutOf(folder)?.own, false, 'the chosen checkout was not remembered');
+  assert.equal(api.recorder.checkoutOf(folder)?.name, 'nested');
+  const nestedFile = path.join(root, '.worktrees', 'nested', 'src', 'afterReload.ts');
+  const at = timeline.all().length;
+  await sleep(500);
+  fs.writeFileSync(nestedFile, 'export const afterReload = 1;\n');
+  await until('nested change after reload', () => timeline.all().slice(at).some((e) => e.relPath === 'nested/src/afterReload.ts'), 20000);
+  await until('nested playback after reload', idle);
+  await vscode.commands.executeCommand('agentTypewriter.stop');
+  console.log('[it] chosen checkout survives reload ok');
 }

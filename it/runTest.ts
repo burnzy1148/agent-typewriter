@@ -43,6 +43,10 @@ async function main() {
   git('init', '-q');
   git('add', '-A');
   git('commit', '-q', '-m', 'initial');
+  // Worktrees for the checkout-scope section: one inside the workspace, the
+  // way agent tools make them, and one next to it.
+  git('worktree', 'add', '-q', '-b', 'nested', '.worktrees/nested');
+  git('worktree', 'add', '-q', '-b', 'sibling', `${workspace}-sibling`);
 
   // VS Code puts an IPC socket in the user-data dir. The default one under
   // .vscode-test/ is too long for macOS's 104-char socket limit in deep
