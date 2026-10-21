@@ -334,6 +334,17 @@
           "default": 512,
           "description": "Files larger than this are ignored."
         },
+        "agentTypewriter.gitBaselines": {
+          "type": "boolean",
+          "default": true,
+          "description": "For files git reports as tracked and unmodified, read the first change's before text from git instead of keeping a copy in memory. Needs the git command; turns itself off when git is not available. The watched repository is only read, never changed."
+        },
+        "agentTypewriter.baselineBudgetMB": {
+          "type": "number",
+          "default": 256,
+          "minimum": 0,
+          "description": "Memory budget for in-memory baselines (files not covered by git). Most recently modified files are covered first; a file without a baseline has its first change captured only as a baseline."
+        },
         "agentTypewriter.historyLimit": {
           "type": "number",
           "default": 500,

@@ -18,6 +18,10 @@ export interface Settings extends FilterSettings {
   /** Resolved reorder window in ms ("auto" already mapped to the platform default). */
   reorderWindowMs: number;
   maxFileSizeKB: number;
+  /** Use git index blobs as baselines for clean tracked files when git is available. */
+  gitBaselines: boolean;
+  /** Size budget for in-memory baselines. */
+  baselineBudgetMB: number;
   historyLimit: number;
   ignoreOwnSaves: boolean;
   viewColumn: 'beside' | 'active';
@@ -40,6 +44,8 @@ export function readSettings(): Settings {
     debounceMs: Math.max(0, c.get('debounceMs', 200)),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
     maxFileSizeKB: Math.max(1, c.get('maxFileSizeKB', 512)),
+    gitBaselines: c.get('gitBaselines', true),
+    baselineBudgetMB: Math.max(0, c.get('baselineBudgetMB', 256)),
     historyLimit: Math.max(10, c.get('historyLimit', 500)),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     viewColumn: c.get('viewColumn', 'beside'),
