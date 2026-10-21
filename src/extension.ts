@@ -1,12 +1,14 @@
 import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readSettings, updateSetting, SECTION } from './config';
+import { readSettings, setRepoValues, updateSetting, workspaceOverrides, SECTION } from './config';
 import { parseExtensionList, PathFilter } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
 import { Recorder, relPathOf } from './recorder';
+import { REPO_SETTINGS_FILE } from './repoSettings';
+import { RepoSettingsFile } from './repoSettingsFile';
 import { Timeline, toSession } from './timeline';
 import { ChangeItem, TimelineView } from './timelineView';
 
@@ -24,6 +26,7 @@ let finalSave: (() => void) | undefined;
 
 export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const log = vscode.window.createOutputChannel('Agent Typewriter');
+  const repoFile = new RepoSettingsFile(log);
   const timeline = new Timeline(readSettings().historyLimit);
   const mirror = new MirrorFileSystem();
   const recorder = new Recorder(timeline, readSettings, log);
@@ -37,6 +40,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   context.subscriptions.push(
     log,
+    repoFile,
     recorder,
     player,
     view,
@@ -98,6 +102,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     );
 
   register('agentTypewriter.start', async () => {
+    await repoFile.ready;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Window, title: 'Agent Typewriter: snapshotting files' },
       () => recorder.start(),
@@ -288,6 +293,27 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     await updateSetting('extensions', undefined);
   });
 
+  register('agentTypewriter.openRepoSettings', async () => {
+    const uri = repoFile.uri;
+    if (!uri) throw new Error('Open a folder or workspace first.');
+    const exists = await vscode.workspace.fs.stat(uri).then(
+      () => true,
+      () => false,
+    );
+    if (exists) {
+      await vscode.window.showTextDocument(uri);
+      return;
+    }
+    // An untitled editor bound to the path: the user's own save creates the file.
+    const doc = await vscode.workspace.openTextDocument(uri.with({ scheme: 'untitled' }));
+    const editor = await vscode.window.showTextDocument(doc);
+    if (doc.getText() === '') {
+      const { include, exclude, extensions } = readSettings();
+      const text = JSON.stringify({ include, exclude, extensions }, null, 2) + '\n';
+      await editor.edit((b) => b.insert(new vscode.Position(0, 0), text));
+    }
+  });
+
   register('agentTypewriter.setSpeed', async () => {
     const options = [0.5, 1, 1.5, 2, 3, 5].map((m) => ({
       label: `${m}x`,
@@ -313,21 +339,27 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   // ------------------------------------------------------------ settings
 
+  /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
+  const applySettingsChange = async (affects: (key: string) => boolean) => {
+    if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
+    if (affects('include') || affects('exclude') || affects('extensions')) await recorder.refreshFilter();
+    if (affects('gitBaselines') || affects('baselineBudgetMB')) await recorder.refreshBaselines();
+    if (affects('persistHistory')) applyPersistHistory();
+    refreshStatus();
+  };
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(async (e) => {
       if (!e.affectsConfiguration(SECTION)) return;
-      if (e.affectsConfiguration(`${SECTION}.historyLimit`)) timeline.setLimit(readSettings().historyLimit);
-      if (
-        e.affectsConfiguration(`${SECTION}.include`) ||
-        e.affectsConfiguration(`${SECTION}.exclude`) ||
-        e.affectsConfiguration(`${SECTION}.extensions`)
-      ) {
-        await recorder.refreshFilter();
+      await applySettingsChange((key) => e.affectsConfiguration(`${SECTION}.${key}`));
+    }),
+    repoFile.onDidChange(async (changed) => {
+      setRepoValues(repoFile.values);
+      const overridden = workspaceOverrides(Object.keys(repoFile.values));
+      if (overridden.length > 0) {
+        log.appendLine(`Workspace settings override ${REPO_SETTINGS_FILE} for: ${overridden.join(', ')}.`);
       }
-      if (e.affectsConfiguration(`${SECTION}.gitBaselines`) || e.affectsConfiguration(`${SECTION}.baselineBudgetMB`)) {
-        await recorder.refreshBaselines();
-      }
-      refreshStatus();
+      await applySettingsChange((key) => changed.includes(key));
     }),
   );
 
@@ -363,11 +395,6 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     if (store?.isRunning) store.flushSync();
   };
   context.subscriptions.push({ dispose: () => (finalSave = undefined) });
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration(`${SECTION}.persistHistory`)) applyPersistHistory();
-    }),
-  );
 
   void setWatching(false);
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {

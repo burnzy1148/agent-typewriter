@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent Typewriter repository settings",
+  "description": "Agent Typewriter settings for this repository. Workspace settings override these; these override user settings.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "autoStart": {
+      "type": "boolean",
+      "default": false,
+      "description": "Start watching automatically when a workspace opens."
+    },
+    "include": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "**/*"
+      ],
+      "description": "Workspace-relative globs to watch. A pattern without a slash (like *.ts) matches the file name anywhere."
+    },
+    "exclude": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "**/.git/**",
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/out/**",
+        "**/build/**",
+        "**/target/**",
+        "**/.gradle/**",
+        "**/.idea/**",
+        "**/*.lock",
+        "**/package-lock.json",
+        "**/*.log"
+      ],
+      "description": "Workspace-relative globs to ignore. Exclude wins over include."
+    },
+    "extensions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Only watch these file extensions (for example [\"ts\", \"java\", \"md\"]). Empty means any extension that passes include/exclude."
+    },
+    "charsPerSecond": {
+      "type": "number",
+      "default": 35,
+      "minimum": 1,
+      "description": "Base typing speed in characters per second."
+    },
+    "languageSpeeds": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "default": {},
+      "markdownDescription": "Base typing speed per language, in characters per second, keyed by VS Code language ID (for example `{ \"markdown\": 60, \"json\": 120 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerSecond#`."
+    },
+    "jitter": {
+      "type": "number",
+      "default": 0.6,
+      "minimum": 0,
+      "maximum": 1,
+      "description": "How uneven the typing rhythm is. 0 is perfectly even, 1 is very uneven."
+    },
+    "catchUpFactor": {
+      "type": "number",
+      "default": 0.5,
+      "minimum": 0,
+      "description": "Extra speed per queued change, so playback accelerates when the agent gets ahead. Speed = base x (1 + factor x queued), capped at maxSpeedup."
+    },
+    "maxSpeedup": {
+      "type": "number",
+      "default": 8,
+      "minimum": 1,
+      "description": "Upper bound on the automatic catch-up multiplier."
+    },
+    "maxAnimatedChars": {
+      "type": "number",
+      "default": 6000,
+      "description": "Changes that add more characters than this are applied instantly instead of typed (big generated files, formatter runs)."
+    },
+    "fileSwitchDelayMs": {
+      "type": "number",
+      "default": 600,
+      "description": "Pause when playback flips to a different file, so the switch reads like a person changing tabs."
+    },
+    "debounceMs": {
+      "type": "number",
+      "default": 200,
+      "description": "Writes to the same file within this window are merged into one change."
+    },
+    "reorderWindowMs": {
+      "type": [
+        "string",
+        "number"
+      ],
+      "default": "auto",
+      "markdownDescription": "How long each change is held so changes reach the timeline in the order files were written, even when the file watcher reports them late. `\"auto\"` uses 2500 ms on Windows and 250 ms elsewhere. `0` adds changes as soon as they are read."
+    },
+    "maxFileSizeKB": {
+      "type": "number",
+      "default": 512,
+      "description": "Files larger than this are ignored."
+    },
+    "gitBaselines": {
+      "type": "boolean",
+      "default": true,
+      "description": "For files git reports as tracked and unmodified, read the first change's before text from git instead of keeping a copy in memory. Needs the git command; turns itself off when git is not available. The watched repository is only read, never changed."
+    },
+    "baselineBudgetMB": {
+      "type": "number",
+      "default": 256,
+      "minimum": 0,
+      "description": "Memory budget for in-memory baselines (files not covered by git). Most recently modified files are covered first; a file without a baseline has its first change captured only as a baseline."
+    },
+    "historyLimit": {
+      "type": "number",
+      "default": 500,
+      "minimum": 10,
+      "description": "How many changes to keep in the buffer for replay. Oldest are dropped first."
+    },
+    "persistHistory": {
+      "type": "boolean",
+      "default": true,
+      "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Up to 64 MB of change text is kept, newest first. Turning this off deletes the saved history."
+    },
+    "ignoreOwnSaves": {
+      "type": "boolean",
+      "default": true,
+      "description": "Do not replay changes you saved from a VS Code editor yourself. Saves are matched by content: if something else writes the file right after your save, that write is still replayed. Turn off if your agent edits VS Code's editor buffers and then saves them."
+    },
+    "viewColumn": {
+      "type": "string",
+      "enum": [
+        "beside",
+        "active"
+      ],
+      "default": "beside",
+      "description": "Where the replay editor opens: in a column beside your current editor, or in the active column."
+    }
+  },
+  "additionalProperties": false
+}
