@@ -268,4 +268,49 @@ export async function run(): Promise<void> {
   await firstChangeOf('src/committed3.ts', 'toggledOn');
   assert.equal(gitState(), gitBefore, 'git HEAD, ref or index changed');
   console.log('[it] git baseline toggling ok');
+
+  // --- 12. Playback panel: locked-down HTML, seek keeps pause state, end of
+  // the slider skips to latest, speed, and malformed messages do nothing.
+  const { player, scrubber } = api;
+  await vscode.commands.executeCommand('agentTypewriter.scrubber.focus');
+  await until('playback panel to resolve', () => scrubber.isResolved, 10000);
+  assert.match(scrubber.html, /default-src 'none'; style-src 'nonce-[0-9a-f]+'; script-src 'nonce-[0-9a-f]+';/);
+  assert.doesNotMatch(scrubber.html, /https?:\/\//, 'panel HTML references remote content');
+  await until('idle before panel checks', idle);
+  if (!player.isPaused) await scrubber.receive({ type: 'togglePause' });
+  assert.equal(player.isPaused, true, 'panel pause did not pause');
+  const events = timeline.all();
+  const target = events[1].seq;
+  await scrubber.receive({ type: 'seek', seq: target });
+  await sleep(300);
+  assert.equal(timeline.cursor, target, 'seek did not move the cursor');
+  assert.equal(player.isPaused, true, 'seek changed the pause state');
+  assert.equal(timeline.stateOf(target), 'pending', 'played while paused');
+  await scrubber.receive({ type: 'seek', seq: 'nope' });
+  await scrubber.receive({ type: 'launchMissiles' });
+  assert.equal(timeline.cursor, target, 'malformed message moved the cursor');
+  await scrubber.receive({ type: 'togglePause' });
+  assert.equal(player.isPaused, false);
+  await until('playback after panel seek', () => timeline.stateOf(target) === 'played', 20000);
+  await until('panel replay to drain', idle);
+  await scrubber.receive({ type: 'togglePause' });
+  await scrubber.receive({ type: 'seek', seq: target });
+  await scrubber.receive({ type: 'seek', seq: events[events.length - 1].seq + 1 });
+  assert.equal(timeline.pendingCount(), 0, 'seek to end left changes queued');
+  assert.equal(mirrorText('src/a.ts'), disk('src/a.ts'), 'seek to end did not snap mirrors');
+  // Skip to next while paused moves one change on; skipping the newest one is skip to latest.
+  await scrubber.receive({ type: 'seek', seq: target });
+  await scrubber.receive({ type: 'skipToNext' });
+  assert.equal(timeline.cursor, events[2].seq, 'skip did not move to the next change');
+  assert.equal(player.isPaused, true, 'skip changed the pause state');
+  await scrubber.receive({ type: 'seek', seq: events[events.length - 1].seq });
+  await scrubber.receive({ type: 'skipToNext' });
+  assert.equal(timeline.pendingCount(), 0, 'skipping the newest change left changes queued');
+  await scrubber.receive({ type: 'togglePause' });
+  await scrubber.receive({ type: 'speed', value: 2 });
+  assert.equal(player.speed, 2);
+  await scrubber.receive({ type: 'speed', value: -1 });
+  assert.equal(player.speed, 2, 'negative speed accepted');
+  await scrubber.receive({ type: 'speed', value: 1 });
+  console.log('[it] playback panel ok');
 }
