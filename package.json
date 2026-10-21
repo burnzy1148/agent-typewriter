@@ -144,6 +144,16 @@
         "category": "Agent Typewriter"
       },
       {
+        "command": "agentTypewriter.switchProfile",
+        "title": "Switch Filter Profile...",
+        "category": "Agent Typewriter"
+      },
+      {
+        "command": "agentTypewriter.saveProfile",
+        "title": "Save Filters as Profile...",
+        "category": "Agent Typewriter"
+      },
+      {
         "command": "agentTypewriter.setSpeed",
         "title": "Set Playback Speed...",
         "category": "Agent Typewriter",
@@ -206,6 +216,16 @@
           "command": "agentTypewriter.openRepoSettings",
           "when": "view == agentTypewriter.timeline",
           "group": "1_config@4"
+        },
+        {
+          "command": "agentTypewriter.switchProfile",
+          "when": "view == agentTypewriter.timeline",
+          "group": "1_config@5"
+        },
+        {
+          "command": "agentTypewriter.saveProfile",
+          "when": "view == agentTypewriter.timeline",
+          "group": "1_config@6"
         },
         {
           "command": "agentTypewriter.clear",
@@ -324,6 +344,43 @@
           "type": "boolean",
           "default": false,
           "description": "Also skip paths git ignores (.gitignore files, .git/info/exclude, and your global excludes). Files git tracks are never skipped. Has no effect without git or outside a git repository."
+        },
+        "agentTypewriter.profiles": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "include": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "extensions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "respectGitignore": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "markdownDescription": "Named filter sets, for example `{ \"docs\": { \"include\": [\"docs/**\"], \"extensions\": [\"md\"] } }`. Profiles merge by name with those in `.agent-typewriter.json`. Switch with **Switch Filter Profile...**."
+        },
+        "agentTypewriter.activeProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the active filter profile. Its filters override the repository settings file and user settings; workspace settings still override it. Empty means no profile."
         },
         "agentTypewriter.charsPerSecond": {
           "type": "number",

@@ -55,6 +55,43 @@
       "default": false,
       "description": "Also skip paths git ignores (.gitignore files, .git/info/exclude, and your global excludes). Files git tracks are never skipped. Has no effect without git or outside a git repository."
     },
+    "profiles": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "respectGitignore": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "markdownDescription": "Named filter sets, for example `{ \"docs\": { \"include\": [\"docs/**\"], \"extensions\": [\"md\"] } }`. Profiles merge by name with those in `.agent-typewriter.json`. Switch with **Switch Filter Profile...**."
+    },
+    "activeProfile": {
+      "type": "string",
+      "default": "",
+      "description": "Name of the active filter profile. Its filters override the repository settings file and user settings; workspace settings still override it. Empty means no profile."
+    },
     "charsPerSecond": {
       "type": "number",
       "default": 35,
