@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="bannerBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2F2B63"/>
+      <stop offset="1" stop-color="#121026"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.45" r="0.55">
+      <stop offset="0" stop-color="#7C6CF0" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#7C6CF0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bannerBg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- logo and title -->
+  <svg x="96" y="140" width="160" height="160" viewBox="0 0 256 256">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#2F2B63"/>
+          <stop offset="1" stop-color="#16142E"/>
+        </linearGradient>
+        <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#FFFDF7"/>
+          <stop offset="1" stop-color="#ECE6D6"/>
+        </linearGradient>
+        <linearGradient id="platen" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#5A5F80"/>
+          <stop offset="0.45" stop-color="#2E3250"/>
+          <stop offset="1" stop-color="#1C1F36"/>
+        </linearGradient>
+        <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#FF9A4D"/>
+          <stop offset="1" stop-color="#E9672A"/>
+        </linearGradient>
+        <linearGradient id="knob" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#D9DCEB"/>
+          <stop offset="1" stop-color="#8A8FAD"/>
+        </linearGradient>
+      </defs>
+
+      <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+      <!-- paper rising out of the platen -->
+      <rect x="62" y="30" width="132" height="128" rx="8" fill="url(#paper)"/>
+      <!-- code being typed -->
+      <rect x="78" y="50" width="30" height="11" rx="5.5" fill="#7C6CF0"/>
+      <rect x="114" y="50" width="56" height="11" rx="5.5" fill="#B9B4CF"/>
+      <rect x="92" y="73" width="44" height="11" rx="5.5" fill="#3FA7E0"/>
+      <rect x="142" y="73" width="28" height="11" rx="5.5" fill="#B9B4CF"/>
+      <rect x="92" y="96" width="26" height="11" rx="5.5" fill="#35B87A"/>
+      <!-- caret -->
+      <rect x="124" y="92" width="6" height="19" rx="2" fill="#E9672A"/>
+
+      <!-- platen roller with knobs -->
+      <rect x="44" y="134" width="168" height="30" rx="15" fill="url(#platen)"/>
+      <rect x="56" y="140" width="144" height="4" rx="2" fill="#8C91B5" opacity="0.55"/>
+      <circle cx="44" cy="149" r="15" fill="url(#knob)"/>
+      <circle cx="212" cy="149" r="15" fill="url(#knob)"/>
+      <circle cx="44" cy="149" r="5" fill="#5A5F80"/>
+      <circle cx="212" cy="149" r="5" fill="#5A5F80"/>
+
+      <!-- body -->
+      <path d="M60 170 H196 L214 222 Q216 228 210 228 H46 Q40 228 42 222 Z" fill="url(#body)"/>
+      <!-- keys -->
+      <g fill="#16142E">
+        <circle cx="76" cy="193" r="9"/>
+        <circle cx="102" cy="193" r="9"/>
+        <circle cx="128" cy="193" r="9"/>
+        <circle cx="154" cy="193" r="9"/>
+        <circle cx="180" cy="193" r="9"/>
+      </g>
+      <g fill="#FFE2CC">
+        <circle cx="76" cy="191" r="5"/>
+        <circle cx="102" cy="191" r="5"/>
+        <circle cx="128" cy="191" r="5"/>
+        <circle cx="154" cy="191" r="5"/>
+        <circle cx="180" cy="191" r="5"/>
+      </g>
+      <rect x="84" y="210" width="88" height="8" rx="4" fill="#16142E" opacity="0.85"/>
+  </svg>
+  <text x="96" y="388" font-family="-apple-system, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="60" font-weight="700" fill="#FFFDF7" letter-spacing="-1">Agent Typewriter</text>
+  <text x="98" y="440" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#B9B4CF">Watch your agent's edits replayed</text>
+  <text x="98" y="476" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#B9B4CF">as if a person were typing them.</text>
+
+  <!-- replay editor mock -->
+  <g transform="translate(640 110)">
+    <rect width="560" height="420" rx="16" fill="#1B1934" stroke="#3A3670" stroke-width="2"/>
+    <path d="M0 16 A16 16 0 0 1 16 0 H544 A16 16 0 0 1 560 16 V48 H0 Z" fill="#24214A"/>
+    <circle cx="26" cy="24" r="7" fill="#FF5F57"/>
+    <circle cx="48" cy="24" r="7" fill="#FEBC2E"/>
+    <circle cx="70" cy="24" r="7" fill="#28C840"/>
+    <!-- tabs -->
+    <rect x="100" y="8" width="150" height="40" rx="8" fill="#1B1934"/>
+    <text x="118" y="34" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="15" fill="#FFFDF7">greet.ts</text>
+    <circle cx="232" cy="29" r="4" fill="#E9672A"/>
+    <text x="270" y="34" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="15" fill="#6E6A93">index.ts</text>
+    <text x="362" y="34" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="15" fill="#6E6A93">README.md</text>
+
+    <g font-family="'SF Mono', Menlo, Consolas, monospace" font-size="20">
+      <g fill="#4F4B7A" text-anchor="end">
+        <text x="44" y="96">1</text>
+        <text x="44" y="130">2</text>
+        <text x="44" y="164">3</text>
+        <text x="44" y="198">4</text>
+        <text x="44" y="232">5</text>
+        <text x="44" y="266">6</text>
+        <text x="44" y="300">7</text>
+      </g>
+      <text x="68" y="96" xml:space="preserve"><tspan fill="#A99CFF">export function</tspan><tspan fill="#FFFDF7"> </tspan><tspan fill="#5CC4F5">greet</tspan><tspan fill="#FFFDF7">(name: </tspan><tspan fill="#5ED39A">string</tspan><tspan fill="#FFFDF7">) {</tspan></text>
+      <text x="68" y="130" xml:space="preserve"><tspan fill="#FFFDF7">  </tspan><tspan fill="#A99CFF">const</tspan><tspan fill="#FFFDF7"> hour = </tspan><tspan fill="#A99CFF">new</tspan><tspan fill="#FFFDF7"> </tspan><tspan fill="#5CC4F5">Date</tspan><tspan fill="#FFFDF7">().</tspan><tspan fill="#5CC4F5">getHours</tspan><tspan fill="#FFFDF7">();</tspan></text>
+      <text x="68" y="164" xml:space="preserve"><tspan fill="#FFFDF7">  </tspan><tspan fill="#A99CFF">const</tspan><tspan fill="#FFFDF7"> part = hour &lt; </tspan><tspan fill="#FFB27A">12</tspan></text>
+      <text x="68" y="198" xml:space="preserve"><tspan fill="#FFFDF7">    ? </tspan><tspan fill="#FFD27A">"morning"</tspan></text>
+      <text x="68" y="232" xml:space="preserve"><tspan fill="#FFFDF7">    : </tspan><tspan fill="#FFD27A">"after</tspan></text>
+    </g>
+    <!-- typing line highlight and caret -->
+    <rect x="2" y="210" width="556" height="32" fill="#7C6CF0" opacity="0.10"/>
+    <rect x="213" y="212" width="3" height="28" rx="1" fill="#E9672A"/>
+
+    <!-- playback bar -->
+    <rect x="24" y="356" width="512" height="6" rx="3" fill="#3A3670"/>
+    <rect x="24" y="356" width="330" height="6" rx="3" fill="#E9672A"/>
+    <circle cx="354" cy="359" r="9" fill="#FFFDF7"/>
+    <text x="24" y="396" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#8C88B5">Typing greet.ts · 3 changes queued</text>
+    <text x="536" y="396" text-anchor="end" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#8C88B5">1.5×</text>
+  </g>
+</svg>

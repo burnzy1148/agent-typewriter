@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2F2B63"/>
+      <stop offset="1" stop-color="#16142E"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#ECE6D6"/>
+    </linearGradient>
+    <linearGradient id="platen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5A5F80"/>
+      <stop offset="0.45" stop-color="#2E3250"/>
+      <stop offset="1" stop-color="#1C1F36"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FF9A4D"/>
+      <stop offset="1" stop-color="#E9672A"/>
+    </linearGradient>
+    <linearGradient id="knob" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D9DCEB"/>
+      <stop offset="1" stop-color="#8A8FAD"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <!-- paper rising out of the platen -->
+  <rect x="62" y="30" width="132" height="128" rx="8" fill="url(#paper)"/>
+  <!-- code being typed -->
+  <rect x="78" y="50" width="30" height="11" rx="5.5" fill="#7C6CF0"/>
+  <rect x="114" y="50" width="56" height="11" rx="5.5" fill="#B9B4CF"/>
+  <rect x="92" y="73" width="44" height="11" rx="5.5" fill="#3FA7E0"/>
+  <rect x="142" y="73" width="28" height="11" rx="5.5" fill="#B9B4CF"/>
+  <rect x="92" y="96" width="26" height="11" rx="5.5" fill="#35B87A"/>
+  <!-- caret -->
+  <rect x="124" y="92" width="6" height="19" rx="2" fill="#E9672A"/>
+
+  <!-- platen roller with knobs -->
+  <rect x="44" y="134" width="168" height="30" rx="15" fill="url(#platen)"/>
+  <rect x="56" y="140" width="144" height="4" rx="2" fill="#8C91B5" opacity="0.55"/>
+  <circle cx="44" cy="149" r="15" fill="url(#knob)"/>
+  <circle cx="212" cy="149" r="15" fill="url(#knob)"/>
+  <circle cx="44" cy="149" r="5" fill="#5A5F80"/>
+  <circle cx="212" cy="149" r="5" fill="#5A5F80"/>
+
+  <!-- body -->
+  <path d="M60 170 H196 L214 222 Q216 228 210 228 H46 Q40 228 42 222 Z" fill="url(#body)"/>
+  <!-- keys -->
+  <g fill="#16142E">
+    <circle cx="76" cy="193" r="9"/>
+    <circle cx="102" cy="193" r="9"/>
+    <circle cx="128" cy="193" r="9"/>
+    <circle cx="154" cy="193" r="9"/>
+    <circle cx="180" cy="193" r="9"/>
+  </g>
+  <g fill="#FFE2CC">
+    <circle cx="76" cy="191" r="5"/>
+    <circle cx="102" cy="191" r="5"/>
+    <circle cx="128" cy="191" r="5"/>
+    <circle cx="154" cy="191" r="5"/>
+    <circle cx="180" cy="191" r="5"/>
+  </g>
+  <rect x="84" y="210" width="88" height="8" rx="4" fill="#16142E" opacity="0.85"/>
+</svg>
