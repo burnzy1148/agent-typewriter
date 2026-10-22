@@ -1,6 +1,7 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import nodeFs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -13,6 +14,38 @@ function ev(relPath: string, before: string, after: string): NewChangeEvent {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'at-store-'));
+const loadFrom = (dir: string) => new TimelineStore(dir, new Timeline(100), () => {}).load();
+
+/** Slows async writes down so a save stays in flight; resolves once the next one has started. */
+function holdWrites(t: TestContext, ms: number): Promise<void> {
+  const real = fs.promises.writeFile.bind(fs.promises);
+  return new Promise((started) => {
+    t.mock.method(fs.promises, 'writeFile', async (...args: Parameters<typeof real>) => {
+      started();
+      await sleep(ms);
+      return real(...args);
+    });
+  });
+}
+
+/** Makes reads (and, when asked, renames) of one file fail as if another process held it. */
+function lockFile(t: TestContext, file: string, ops: Array<'readFileSync' | 'renameSync'>): void {
+  const busy = () => Object.assign(new Error(`EBUSY: resource busy or locked, '${file}'`), { code: 'EBUSY' });
+  if (ops.includes('readFileSync')) {
+    const real = nodeFs.readFileSync;
+    t.mock.method(nodeFs, 'readFileSync', (p: fs.PathOrFileDescriptor, o?: unknown) => {
+      if (p === file) throw busy();
+      return real(p, o as undefined);
+    });
+  }
+  if (ops.includes('renameSync')) {
+    const real = nodeFs.renameSync;
+    t.mock.method(nodeFs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+      if (from === file) throw busy();
+      real(from, to);
+    });
+  }
+}
 
 test('save then load restores the timeline in a new store', async () => {
   const dir = path.join(tempDir(), 'nested');
@@ -151,4 +184,121 @@ test('non-session and damaged files are refused with a reason', () => {
   refuses(Buffer.from('{"name":"package"}'), /not an Agent Typewriter session/);
   refuses(Buffer.from('hello'), /not JSON/);
   refuses(Buffer.from([0x1f, 0x8b, 1, 2, 3]), /damaged/);
+});
+
+test('flushSync during an in-flight save writes the newest state, once', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  store.start();
+  tl.push(ev('a', '', '1'));
+  await store.flush();
+
+  const started = holdWrites(t, 100);
+  tl.push(ev('b', '', '2'));
+  tl.complete(1);
+  await started;
+  // Deactivation: the final save, then the context disposables, in the same tick.
+  const syncWrites = t.mock.method(nodeFs, 'writeFileSync');
+  store.flushSync();
+  store.dispose();
+  assert.equal(syncWrites.mock.callCount(), 1);
+  const saved = loadFrom(dir);
+  assert.equal(saved?.events.length, 2);
+  assert.equal(saved?.cursor, tl.cursor);
+
+  // The overtaken write finishes later without replacing the file or leaving its temp copy.
+  await store.flush();
+  assert.equal(loadFrom(dir)?.events.length, 2);
+  assert.deepEqual(fs.readdirSync(dir), ['timeline.json.gz']);
+
+  // Nothing in flight and nothing changed: no write.
+  store.flushSync();
+  assert.equal(syncWrites.mock.callCount(), 1);
+});
+
+test('stop and deleteSaved during an in-flight save leave nothing saved', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  store.start();
+  tl.push(ev('a', '', 'secret one'));
+  await store.flush();
+
+  const started = holdWrites(t, 50);
+  tl.push(ev('b', '', 'secret two'));
+  await started;
+  store.stop();
+  store.deleteSaved();
+  await store.flush();
+  assert.deepEqual(fs.readdirSync(dir), []);
+
+  // Turned back on, it saves the current buffer again.
+  t.mock.restoreAll();
+  store.start();
+  tl.push(ev('c', '', 'three'));
+  await store.flush();
+  assert.equal(loadFrom(dir)?.events.length, 3);
+  store.stop();
+});
+
+test('a saved timeline that cannot be read is reported and moved aside, not overwritten', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const first = new TimelineStore(dir, tl, () => {}, 10);
+  first.start();
+  for (const f of ['a', 'b', 'c']) tl.push(ev(f, '', f));
+  await first.flush();
+  first.stop();
+
+  const logs: string[] = [];
+  const store = new TimelineStore(dir, new Timeline(100), (l) => logs.push(l), 10);
+  lockFile(t, store.path, ['readFileSync']);
+  assert.equal(store.load(), undefined);
+  assert.match(logs.join('\n'), /could not read the saved timeline \(EBUSY/i);
+  t.mock.restoreAll();
+
+  store.start();
+  await store.flush();
+  store.stop();
+  const aside = path.join(dir, 'timeline.unreadable.json.gz');
+  assert.equal(sessionFromBytes(fs.readFileSync(aside)).events.length, 3);
+  assert.equal(loadFrom(dir)?.events.length, 0);
+
+  // A missing file is not worth a log line.
+  const quiet: string[] = [];
+  assert.equal(new TimelineStore(tempDir(), new Timeline(100), (l) => quiet.push(l)).load(), undefined);
+  assert.deepEqual(quiet, []);
+});
+
+test('an unreadable saved timeline that cannot be moved aside is not saved over', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const first = new TimelineStore(dir, tl, () => {}, 10);
+  first.start();
+  for (const f of ['a', 'b', 'c']) tl.push(ev(f, '', f));
+  await first.flush();
+  first.stop();
+  const original = fs.readFileSync(path.join(dir, 'timeline.json.gz'));
+
+  const logs: string[] = [];
+  const t2 = new Timeline(100);
+  const store = new TimelineStore(dir, t2, (l) => logs.push(l), 10);
+  lockFile(t, store.path, ['readFileSync', 'renameSync']);
+  assert.equal(store.load(), undefined);
+  assert.match(logs.join('\n'), /will not be saved/);
+  store.start();
+  t2.push(ev('new', '', 'x'));
+  await store.flush();
+  store.flushSync();
+  t.mock.restoreAll();
+  assert.deepEqual(fs.readFileSync(store.path), original);
+
+  // Once the file can be moved, it is kept aside and saving resumes.
+  t2.push(ev('newer', '', 'y'));
+  await store.flush();
+  store.stop();
+  assert.match(logs.join('\n'), /Moved the unreadable saved timeline/);
+  assert.deepEqual(fs.readFileSync(path.join(dir, 'timeline.unreadable.json.gz')), original);
+  assert.equal(loadFrom(dir)?.events.length, 2);
 });
