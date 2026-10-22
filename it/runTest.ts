@@ -17,7 +17,7 @@ async function main() {
     JSON.stringify(
       {
         'agentTypewriter.extensions': ['ts'],
-        'agentTypewriter.charsPerSecond': 600,
+        'agentTypewriter.charsPerMinute': 36000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.fileSwitchDelayMs': 30,
         'agentTypewriter.debounceMs': 100,

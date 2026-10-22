@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { MirrorFileSystem } from './mirrorFs';
-import { baseCharsPerSecond } from './pace';
+import { baseCharsPerMinute } from './pace';
 import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
 import type { ChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
@@ -290,7 +290,7 @@ export class Player implements vscode.Disposable {
   }
 
   private cps(s: Settings, doc: vscode.TextDocument): number {
-    return baseCharsPerSecond(doc.languageId, s.charsPerSecond, s.languageSpeeds) * this.speedMultiplier(s);
+    return (baseCharsPerMinute(doc.languageId, s.charsPerMinute, s.languageSpeeds) / 60) * this.speedMultiplier(s);
   }
 
   private delayAfter(chunk: string, cps: number, s: Settings): number {

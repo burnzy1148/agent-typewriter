@@ -14,6 +14,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   respectGitignore: 'boolean',
   profiles: 'profiles',
   activeProfile: 'string',
+  charsPerMinute: 'number',
+  /** Deprecated; read as charsPerMinute / 60 where charsPerMinute is not set. */
   charsPerSecond: 'number',
   languageSpeeds: 'object',
   jitter: 'number',

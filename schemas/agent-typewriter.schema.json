@@ -92,11 +92,17 @@
       "default": "",
       "description": "Name of the active filter profile. Its filters override the repository settings file and user settings; workspace settings still override it. Empty means no profile."
     },
+    "charsPerMinute": {
+      "type": "number",
+      "default": 350,
+      "minimum": 1,
+      "description": "Base typing speed in characters per minute."
+    },
     "charsPerSecond": {
       "type": "number",
-      "default": 35,
       "minimum": 1,
-      "description": "Base typing speed in characters per second."
+      "description": "Deprecated: use charsPerMinute. Base typing speed in characters per second; applies times 60 where charsPerMinute is not set.",
+      "deprecated": true
     },
     "languageSpeeds": {
       "type": "object",
@@ -105,7 +111,7 @@
         "exclusiveMinimum": 0
       },
       "default": {},
-      "markdownDescription": "Base typing speed per language, in characters per second, keyed by VS Code language ID (for example `{ \"markdown\": 60, \"json\": 120 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerSecond#`."
+      "markdownDescription": "Base typing speed per language, in characters per minute, keyed by VS Code language ID (for example `{ \"markdown\": 600, \"json\": 1200 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerMinute#`."
     },
     "jitter": {
       "type": "number",

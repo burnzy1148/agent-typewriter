@@ -96,8 +96,8 @@ export async function run(): Promise<void> {
   console.log('[it] replayAll ok');
 
   // --- 3. Skip to latest while a long change is mid-typing.
-  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerSecond', 20, vscode.ConfigurationTarget.Workspace);
-  write('src/b.ts', disk('src/b.ts') + '\n' + '// slow line that would take ages to type at 20 cps\n'.repeat(5));
+  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerMinute', 1200, vscode.ConfigurationTarget.Workspace);
+  write('src/b.ts', disk('src/b.ts') + '\n' + '// slow line that would take ages to type at 1200 cpm\n'.repeat(5));
   await until('slow change to start playing', () => timeline.all().some((e) => timeline.stateOf(e.seq) === 'playing'));
   await sleep(300);
   await vscode.commands.executeCommand('agentTypewriter.catchUp');
@@ -106,7 +106,7 @@ export async function run(): Promise<void> {
   console.log('[it] catchUp ok');
 
   // --- 4. Deletion is recorded and replayed.
-  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerSecond', 4000, vscode.ConfigurationTarget.Workspace);
+  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerMinute', 240000, vscode.ConfigurationTarget.Workspace);
   fs.unlinkSync(path.join(root, 'src/b.ts'));
   await until('delete event', () => timeline.all().some((e) => e.kind === 'delete'));
   await sleep(300);
