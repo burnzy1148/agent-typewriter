@@ -1484,7 +1484,8 @@ export async function run(): Promise<void> {
     await until('baseline of a file hidden from the watcher dropped', () => !api.recorder.hasBaseline(uriOf('src/wx/w.ts')), 10000);
     await filesCfg().update('watcherExclude', undefined, WS);
     await until('watcherExclude removal to apply', () => api.recorder.matches(uriOf('src/wx/w.ts')), 10000);
-    await sleep(1000);
+    // The replaced watchers need a moment to start reporting.
+    await sleep(2000);
     await firstEdit('src/wx/w.ts', 'export const w = 1;\n', 'export const w = 2;\n', 'watcherExclude removed');
     console.log('[it] REC2: files.watcherExclude ok');
 

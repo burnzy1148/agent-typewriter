@@ -160,6 +160,28 @@ test('rebuild: a write just before the rebuild, reported after it, is recorded f
   assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'src/app.ts', before: 'one\n', after: 'one\ntwo\n' }]);
 });
 
+test('rebuild: a write between the stat and the read of a file is recorded from the old baseline', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/app.ts': 'one\n' });
+  const hourAgo = new Date(Date.now() - 3_600_000);
+  fs.utimesSync(path.join(repo, 'src/app.ts'), hourAgo, hourAgo);
+  const s = settings();
+  const t = recorderOn(s, repo);
+  await t.recorder.start();
+  s.gitBaselines = false;
+  let open!: () => void;
+  mock.readFileGate = new Promise<void>((r) => (open = r));
+  const reading = new Promise<void>((r) => (mock.onReadFile = () => r()));
+  const rebuilt = t.recorder.refreshBaselines();
+  await reading;
+  fs.writeFileSync(path.join(repo, 'src/app.ts'), 'one\ntwo\n');
+  mock.readFileGate = undefined;
+  open();
+  await rebuilt;
+  mock.fire('change', path.join(repo, 'src/app.ts'));
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'src/app.ts', before: 'one\n', after: 'one\ntwo\n' }]);
+});
+
 test('rebuild: turning gitBaselines off moves untouched files to memory, within the budget', { skip: noGit }, async () => {
   const repo = committedRepo({ 'a.ts': 'a\n', 'b.ts': 'b\n' });
   // Files written moments ago keep their baseline through a rebuild.
@@ -314,6 +336,39 @@ test('files hidden by files.watcherExclude get no baseline, and the setting appl
   assert.equal(t.recorder.hasBaseline(w), false, 'adding a path entry kept baselines under it');
 });
 
+test('a files.watcherExclude glob without a slash names a path at the root, as VS Code reads it', async () => {
+  const dir = tempDir('at-rec-wx2-');
+  write(dir, 'build/a.ts', 'a\n');
+  write(dir, 'src/build/gen.ts', 'gen\n');
+  write(dir, 'top.js', 'top\n');
+  write(dir, 'src/deep.js', 'deep\n');
+  const t = recorderOn(settings({ gitBaselines: false }), dir);
+  mock.config.set('files.watcherExclude', { build: true, '*.js': true });
+  await t.recorder.start();
+  const has = (rel: string) => t.recorder.hasBaseline(t.uri(path.join(dir, rel)));
+  assert.deepEqual(
+    ['build/a.ts', 'src/build/gen.ts', 'top.js', 'src/deep.js'].map(has),
+    [false, true, false, true],
+  );
+});
+
+test('a chosen worktree outside the folder is hidden only by files.watcherExclude globs that start with **', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n', 'wx/w.ts': 'w\n', 'top/t.ts': 't\n' });
+  const side = `${repo}-side`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', side);
+  mock.open(repo);
+  const timeline = new Timeline(100);
+  const log = { appendLine: () => {} } as unknown as vscode.OutputChannel;
+  const choices = new Map<string, string>([[vscode.Uri.file(repo).toString(), side]]);
+  const recorder = new Recorder(timeline, () => settings(), log, choices);
+  current = recorder;
+  mock.config.set('files.watcherExclude', { '**/wx/**': true, top: true });
+  await recorder.start();
+  assert.equal(recorder.checkoutOf(mock.folders[0] as unknown as vscode.WorkspaceFolder)?.own, false, 'the worktree was not chosen');
+  const has = (rel: string) => recorder.hasBaseline(vscode.Uri.file(path.join(side, rel)));
+  assert.deepEqual(['src/a.ts', 'wx/w.ts', 'top/t.ts'].map(has), [true, false, true]);
+});
+
 // --- at-l3q.9.7: exclude globs are applied as PathFilter reads them.
 
 test('malformed, braced, comma and directory-name exclude globs leave matching files their baselines', { skip: noGit }, async () => {
@@ -342,7 +397,8 @@ test('a file with a future mtime gets a baseline after start, refreshFilter and 
     write(dir, 'src/future.ts', 'f1\n');
     const future = new Date('2035-01-01T00:00:00Z');
     fs.utimesSync(path.join(dir, 'src/future.ts'), future, future);
-    const t = recorderOn(settings({ gitBaselines }), dir);
+    const s = settings({ gitBaselines });
+    const t = recorderOn(s, dir);
     const f = t.uri(path.join(dir, 'src/future.ts'));
     await t.recorder.start();
     assert.ok(t.recorder.hasBaseline(f), 'no baseline after start');
@@ -353,6 +409,15 @@ test('a file with a future mtime gets a baseline after start, refreshFilter and 
     t.change(path.join(dir, 'src/future.ts'), 'f2\n');
     await t.settle();
     assert.deepEqual(t.events().map((e) => [e.kind, e.before]), [['modify', 'f1\n']]);
+    if (!gitBaselines) {
+      // A rebuild treats it like any other file: with no budget, its baseline goes.
+      const a = t.uri(path.join(dir, 'src/a.ts'));
+      fs.utimesSync(a.fsPath, future, future);
+      assert.ok(t.recorder.hasBaseline(a));
+      s.baselineBudgetMB = 0;
+      await t.recorder.refreshBaselines();
+      assert.equal(t.recorder.hasBaseline(a), false, 'a future-dated file kept its baseline over budget');
+    }
     t.recorder.dispose();
     mock.reset();
   }

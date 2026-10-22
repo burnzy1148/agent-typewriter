@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { PathFilter } from './filter';
+import { PathFilter, RootGlobs } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
-import { fillBudget, listCleanTracked, readBlob, writtenDuringCapture, type BudgetCandidate } from './gitBaseline';
+import { CAPTURE_SKEW_MS, fillBudget, listCleanTracked, readBlob, writtenDuringCapture, type BudgetCandidate } from './gitBaseline';
 import { checkIgnored, IgnoredPaths, listIgnored } from './gitIgnore';
 import { decodeBytes, isAscii, isBinaryText, looksBinary } from './textDecode';
 import {
@@ -40,6 +40,9 @@ const IGNORE_RETRY_MS = 2000;
  * the watcher, and the current baseline is what that change starts from.
  */
 const REBUILD_RECENT_MS = 10_000;
+
+/** At most this many files left out for the budget are opened to tell text from binary for the log. */
+const PROBE_LIMIT = 1000;
 
 /** How many recent watcher events and read outcomes the recorder keeps for diagnostics. */
 const ACTIVITY_LIMIT = 200;
@@ -82,6 +85,8 @@ export class Recorder implements vscode.Disposable {
   /** Folders already logged as having no gitignore rules this session. */
   private readonly ignoreNoted = new Set<string>();
   private ignoreRefresh: NodeJS.Timeout | undefined;
+  /** The last gitignore listing failed for some folder and a retry was scheduled for it. */
+  private ignoreRetried = false;
   /** The checkout each workspace folder records while running, keyed by folder URI. */
   private readonly scopes = new Map<string, Scope>();
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
@@ -97,8 +102,8 @@ export class Recorder implements vscode.Disposable {
   private running = false;
   /** Set by refreshBaselines until a capture has rebuilt every baseline; a capture started meanwhile does the rebuild. */
   private rebuildPending = false;
-  /** Per folder URI, what `files.watcherExclude` hides from the folder's watcher, so it is never recorded. */
-  private watcherExcludes = new Map<string, PathFilter>();
+  /** Per folder URI, what `files.watcherExclude` hides from the folder's watchers, so it is never recorded. */
+  private watcherExcludes = new Map<string, WatcherExcludes>();
   /** The watcherExclude patterns last logged as skipping recording. */
   private watcherExcludeNoted = '';
   /** Recent watcher events and what reading each one did, oldest first. */
@@ -175,17 +180,20 @@ export class Recorder implements vscode.Disposable {
    * baseline and are not counted. Patterns set beyond VS Code's defaults are
    * logged once while recording.
    */
-  private readWatcherExcludes(): Map<string, PathFilter> {
-    const out = new Map<string, PathFilter>();
+  private readWatcherExcludes(): Map<string, WatcherExcludes> {
+    const out = new Map<string, WatcherExcludes>();
     const userSet = new Set<string>();
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const cfg = vscode.workspace.getConfiguration('files', folder.uri);
       const on = (value: unknown) =>
         value && typeof value === 'object' ? Object.entries(value as Record<string, unknown>).filter(([, v]) => v === true).map(([g]) => g) : [];
+      // VS Code resolves a relative pattern against the workspace folder, so
+      // only one that starts with ** also applies to a checkout outside it.
       const globs = on(cfg.get('watcherExclude'))
         .map((g) => (path.isAbsolute(g) ? path.relative(folder.uri.fsPath, g).split(path.sep).join('/') : g))
         .filter((g) => g && !g.startsWith('..'));
-      if (globs.length > 0) out.set(folder.uri.toString(), new PathFilter({ include: [], exclude: globs, extensions: [] }));
+      const own = new RootGlobs(globs);
+      if (own.size > 0) out.set(folder.uri.toString(), { own, anywhere: new RootGlobs(globs.filter((g) => g.startsWith('**'))) });
       const set = cfg.inspect('watcherExclude');
       for (const value of [set?.globalValue, set?.workspaceValue, set?.workspaceFolderValue]) for (const g of on(value)) userSet.add(g);
     }
@@ -197,13 +205,10 @@ export class Recorder implements vscode.Disposable {
     return out;
   }
 
-  /** True when `files.watcherExclude` hides this root-relative file or directory, or a directory above it, from the scope's watcher. */
-  private watcherHides(scope: Scope, rel: string, isDir = false): boolean {
+  /** True when `files.watcherExclude` hides this root-relative path, or a directory above it, from the scope's watcher. */
+  private watcherHides(scope: Scope, rel: string): boolean {
     const hidden = this.watcherExcludes.get(scope.folder.uri.toString());
-    if (!hidden) return false;
-    const hidesDir = (dir: string) => hidden.excludesDir(dir) || hidden.blockedBy(dir) === 'exclude';
-    for (let end = rel.indexOf('/'); end !== -1; end = rel.indexOf('/', end + 1)) if (hidesDir(rel.slice(0, end))) return true;
-    return isDir ? hidesDir(rel) : hidden.blockedBy(rel) === 'exclude';
+    return !!hidden && (scope.own ? hidden.own : hidden.anywhere).covers(rel);
   }
 
   /** True if this workspace path passes the current filters. */
@@ -311,6 +316,7 @@ export class Recorder implements vscode.Disposable {
 
     this.gitUnavailable = false;
     this.ignoreNoted.clear();
+    this.ignoreRetried = false;
     await this.refreshIgnored();
     await this.captureBaseline();
     this.log.appendLine(`Watching ${this.watchedCount} files (${this.filter.describe()}).`);
@@ -640,7 +646,7 @@ export class Recorder implements vscode.Disposable {
   /** True when nothing under this root-relative directory is recorded: a nested worktree, gitignored, excluded, or hidden from the watcher. */
   private skipsDir(scope: Scope, rel: string, ignored = this.ignored.get(scope.folder.uri.toString())): boolean {
     const asDir = rel + '/';
-    return scope.nested.has(asDir) || !!ignored?.has(asDir) || this.filter.excludesDir(rel) || this.watcherHides(scope, rel, true);
+    return scope.nested.has(asDir) || !!ignored?.has(asDir) || this.filter.excludesDir(rel) || this.watcherHides(scope, rel);
   }
 
   /** Like `skipsDir`, for the directory or any directory above it, such as anything under node_modules/. */
@@ -757,12 +763,17 @@ export class Recorder implements vscode.Disposable {
     // Everything else gets an in-memory snapshot, newest first, within the budget.
     const stats: BudgetCandidate[] = [];
     const writtenMeanwhile = new Set<string>();
+    // In a rebuild, a file with a baseline written just before or during it keeps that baseline.
+    const recentlyWritten = (key: string, mtime: number) =>
+      !!before &&
+      (before.snapshots.has(key) || before.gitBaselines.has(key)) &&
+      mtime >= startedAt - REBUILD_RECENT_MS &&
+      mtime <= Date.now() + CAPTURE_SKEW_MS;
     await inBatches(candidates, async (uri) => {
       const st = await stat(uri);
       if (!isFile(st)) return;
       const key = uri.toString();
-      const recent = before && st.mtime >= startedAt - REBUILD_RECENT_MS && (before.snapshots.has(key) || before.gitBaselines.has(key));
-      if (recent || writtenDuringCapture(st.mtime, startedAt, Date.now())) writtenMeanwhile.add(key);
+      if (recentlyWritten(key, st.mtime) || writtenDuringCapture(st.mtime, startedAt, Date.now())) writtenMeanwhile.add(key);
       // A file stamped in the future counts as the newest.
       else stats.push({ key, size: st.size, mtime: Math.min(st.mtime, startedAt) });
     });
@@ -772,15 +783,26 @@ export class Recorder implements vscode.Disposable {
     const uris = new Map(candidates.map((u) => [u.toString(), u]));
     const left = await fillBudget(stats, Math.max(0, s.baselineBudgetMB * 1024 * 1024 - used), async ({ key }) => {
       if (stale()) return undefined;
-      const snap = await this.readText(uris.get(key)!, s);
+      const uri = uris.get(key)!;
+      const snap = await this.readText(uri, s);
       if (snap === undefined || stale() || known(key)) return undefined;
+      if (before) {
+        // Written between its stat and this read: the current baseline is what that change starts from.
+        const old = before.snapshots.get(key);
+        const st = await stat(uri);
+        if ((old && old.text !== snap.text) || !st || recentlyWritten(key, st.mtime)) {
+          writtenMeanwhile.add(key);
+          return undefined;
+        }
+      }
       snapshots.set(key, snap);
       return snap.text.length;
     });
     if (stale()) return;
-    // Files left out for the budget, not counting binaries, which never get a baseline.
-    let uncovered = 0;
-    await inBatches(left, async ({ key }) => {
+    // Files left out for the budget, not counting binaries, which never get a
+    // baseline. Past the first PROBE_LIMIT, files are counted without a look.
+    let uncovered = Math.max(0, left.length - PROBE_LIMIT);
+    await inBatches(left.slice(0, PROBE_LIMIT), async ({ key }) => {
       if (await isTextFile(uris.get(key)!)) uncovered++;
     });
     if (stale()) return;
@@ -822,8 +844,8 @@ export class Recorder implements vscode.Disposable {
 
   /**
    * Re-lists gitignored paths for each folder's recorded checkout, or clears
-   * them when the setting is off. When git could not run for a folder that
-   * had rules, the listing is tried once more a little later.
+   * them when the setting is off. When git could not run for a folder, the
+   * listing is tried once more a little later.
    */
   private async refreshIgnored(): Promise<void> {
     const next = new Map<string, IgnoredPaths>();
@@ -837,7 +859,7 @@ export class Recorder implements vscode.Disposable {
           this.ignoreNoted.delete(key);
           continue;
         }
-        if (r.kind === 'unavailable' && this.ignored.has(key)) lost = true;
+        if (r.kind === 'unavailable') lost = true;
         if (!this.ignoreNoted.has(key)) {
           this.ignoreNoted.add(key);
           const why = r.kind === 'unavailable' ? `git could not run (${r.reason})` : 'it is not in a git repository';
@@ -847,8 +869,9 @@ export class Recorder implements vscode.Disposable {
     }
     this.ignored.clear();
     for (const [k, v] of next) this.ignored.set(k, v);
-    // The rules are dropped now, so a second failure does not retry again.
-    if (lost) this.scheduleIgnoreRefresh(IGNORE_RETRY_MS);
+    // One retry per failure: it stops once git keeps failing, and starts over after a listing that works.
+    if (lost && !this.ignoreRetried) this.scheduleIgnoreRefresh(IGNORE_RETRY_MS);
+    this.ignoreRetried = lost;
   }
 
   /** A file the ignore snapshot doesn't know yet: asks git once and remembers an ignored answer. */
@@ -1261,6 +1284,12 @@ interface Scope {
   repo: boolean;
   worktrees: number;
   watcher: vscode.Disposable[];
+}
+
+/** A folder's `files.watcherExclude`: all of it for the folder's own checkout, the `**` globs for a chosen worktree. */
+interface WatcherExcludes {
+  own: RootGlobs;
+  anywhere: RootGlobs;
 }
 
 /** Where a clean tracked file's baseline lives in git. */

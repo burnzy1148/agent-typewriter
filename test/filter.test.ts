@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { literalGlob, PathFilter, selectionGlob, stillFiltered } from '../src/filter';
+import { literalGlob, PathFilter, RootGlobs, selectionGlob, stillFiltered } from '../src/filter';
 
 const only = (include: string[]) => new PathFilter({ include, exclude: [], extensions: [] });
 
@@ -112,4 +112,16 @@ test('stillFiltered: folders never warn; files name the rule a selection cannot 
     ]),
     { rel: 'notes.md', by: 'extension' },
   );
+});
+
+test('RootGlobs: globs match from the root, and a covered directory covers what is under it', () => {
+  const g = new RootGlobs(['build', '*.js', '**/wx/**', 'out/gen', '!keep/**', '/abs']);
+  assert.ok(g.covers('build') && g.covers('build/a/b.ts'));
+  assert.ok(!g.covers('src/build/gen.ts'), 'a slashless glob names a path at the root, not a name anywhere');
+  assert.ok(g.covers('a.js') && !g.covers('src/a.js'));
+  assert.ok(g.covers('wx/w.ts') && g.covers('a/b/wx/w.ts') && !g.covers('wxy/w.ts'));
+  assert.ok(g.covers('out/gen/x.ts') && !g.covers('out/x.ts'));
+  assert.ok(!g.covers('keep/x.ts') && !g.covers('other.ts'), 'negated globs are ignored');
+  assert.ok(g.covers('abs/x.ts'), 'a leading slash anchors at the root');
+  assert.equal(new RootGlobs(['!x', '  ']).size, 0);
 });

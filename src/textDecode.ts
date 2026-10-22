@@ -51,7 +51,13 @@ export function decoderLabel(encoding: string | undefined): string | undefined {
 
 /** Text of the bytes: by their byte order mark, else in `encoding` (a VS Code id), else UTF-8. The mark is dropped. */
 export function decodeBytes(bytes: Uint8Array, encoding?: string): string {
-  const label = bomEncoding(bytes) ?? decoderLabel(encoding) ?? 'utf-8';
+  const bom = bomEncoding(bytes);
+  // TextDecoder reads ISO-8859-1 as windows-1252, where VS Code reads Latin-1,
+  // and some Node versions read windows-1252 as Latin-1 too.
+  const id = bom ? undefined : encoding?.toLowerCase();
+  if (id === 'iso88591') return latin1(bytes);
+  if (id === 'windows1252') return latin1(bytes).replace(/[\u0080-\u009f]/g, (c) => WINDOWS_1252[c.charCodeAt(0) - 0x80]);
+  const label = bom ?? decoderLabel(encoding) ?? 'utf-8';
   try {
     return new TextDecoder(label).decode(bytes);
   } catch {
@@ -77,6 +83,13 @@ export function looksBinary(bytes: Uint8Array): boolean {
 export function isAscii(bytes: Uint8Array): boolean {
   for (let i = 0; i < bytes.length; i++) if (bytes[i] > 0x7f) return false;
   return true;
+}
+
+/** Characters of windows-1252 bytes 0x80 to 0x9F; the five it leaves undefined stay as the C1 control of that code. */
+const WINDOWS_1252 = [...'\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178'];
+
+function latin1(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('latin1');
 }
 
 function swapBytes(bytes: Uint8Array): Uint8Array {

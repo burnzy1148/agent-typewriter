@@ -96,6 +96,9 @@ export const mock = {
   watchers: [] as MockWatcher[],
   /** While set, every readDirectory waits for it. */
   readDirectoryGate: undefined as Promise<void> | undefined,
+  /** While set, every readFile waits for it; `onReadFile` hears each read as it starts waiting. */
+  readFileGate: undefined as Promise<void> | undefined,
+  onReadFile: undefined as ((fsPath: string) => void) | undefined,
   configEmitter: new EventEmitter<{ affectsConfiguration(section: string): boolean }>(),
   /** Sets the folders, as a window opened on them. */
   open(...dirs: string[]): void {
@@ -106,6 +109,8 @@ export const mock = {
     this.config.clear();
     this.watchers = [];
     this.readDirectoryGate = undefined;
+    this.readFileGate = undefined;
+    this.onReadFile = undefined;
   },
   /** Fires a watcher event on every live watcher whose base holds the file. */
   fire(kind: 'create' | 'change' | 'delete', fsPath: string): void {
@@ -172,6 +177,8 @@ export const workspace = {
       return { type: typeOf(uri.fsPath), size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs };
     },
     async readFile(uri: Uri): Promise<Uint8Array> {
+      mock.onReadFile?.(uri.fsPath);
+      await mock.readFileGate;
       return new Uint8Array(fs.readFileSync(uri.fsPath));
     },
     async readDirectory(uri: Uri): Promise<[string, FileType][]> {

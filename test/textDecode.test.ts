@@ -36,6 +36,8 @@ test('decodeBytes: the file encoding setting, else UTF-8', () => {
   const latin1 = Uint8Array.from(Buffer.from('café = 1\n', 'latin1'));
   assert.equal(decodeBytes(latin1, 'windows1252'), 'café = 1\n');
   assert.equal(decodeBytes(latin1, 'iso88591'), 'café = 1\n');
+  assert.equal(decodeBytes(Uint8Array.from([0x80, 0x9f]), 'iso88591'), '\u0080\u009f', 'ISO-8859-1 is Latin-1, not windows-1252');
+  assert.equal(decodeBytes(Uint8Array.from([0x80]), 'windows1252'), '€');
   assert.equal(decodeBytes(Uint8Array.from([0x82, 0xa0]), 'shiftjis'), 'あ');
   assert.equal(decodeBytes(Uint8Array.from(Buffer.from('café\n')), undefined), 'café\n');
   assert.equal(decodeBytes(Uint8Array.from(Buffer.from('café\n')), 'cp437'), 'café\n', 'an unknown encoding falls back to UTF-8');
