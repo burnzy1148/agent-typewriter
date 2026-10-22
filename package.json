@@ -498,7 +498,7 @@
     "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --outfile=dist/extension.js --sourcemap",
     "watch": "npm run build -- --watch",
     "typecheck": "tsc --noEmit -p .",
-    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --outdir=.test-out && node --test .test-out/*.test.js",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --alias:vscode=./test/vscode-mock.ts --outdir=.test-out && node --test .test-out/*.test.js",
     "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --minify",
     "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
