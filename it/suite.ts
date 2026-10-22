@@ -1287,11 +1287,16 @@ export async function run(): Promise<void> {
     console.log('[it] own saves of unrecorded files ok');
 
     // R5. Saving through a symlink is an own save of the file it leads to.
+    // Let the filter refresh R4's setting change started finish first: a
+    // refresh queued now runs after it.
+    await api.recorder.refreshFilter();
+    await settled();
     await created('src/linkTarget.ts', 'export const target = 1;\n');
     fs.mkdirSync(path.join(root, 'src/linkDirReal'));
     await sleep(1000);
     await created('src/linkDirReal/a.ts', 'export const inLinkedDir = 1;\n');
     let linked = true;
+    const atLinks = timeline.all().length;
     try {
       fs.symlinkSync('linkTarget.ts', path.join(root, 'src/linkFile.ts'), 'file');
       fs.symlinkSync('linkDirReal', path.join(root, 'src/linkDir'), 'dir');
@@ -1300,6 +1305,11 @@ export async function run(): Promise<void> {
       console.log(`[it] symlinks unavailable here (${(err as NodeJS.ErrnoException).code}); skipping the symlink save check`);
     }
     if (linked) {
+      // A new link to a file is recorded as created. The Windows watcher can
+      // report it seconds later, so wait for it before saving through the link.
+      const linkCreated = () => eventsFor('src/linkFile.ts', atLinks).length > 0;
+      for (const start = Date.now(); !linkCreated() && Date.now() - start < 20000; ) await sleep(100);
+      if (!linkCreated()) console.log('[it] the watcher did not report the new file link; checking the save anyway');
       await settled();
       const saveVia = async (rel: string) => {
         const d = await vscode.workspace.openTextDocument(path.join(root, rel));
@@ -1314,7 +1324,9 @@ export async function run(): Promise<void> {
       const linkSaved = await saveVia('src/linkFile.ts');
       await saveVia('src/linkDir/a.ts');
       await settled();
-      assert.deepEqual(relEvents(atLink), [], 'a save through a symlink was recorded');
+      const linkEvents = relEvents(atLink);
+      if (linkEvents.length > 0) console.log(`[it] recorder activity:\n${api.recorder.describeActivity()}`);
+      assert.deepEqual(linkEvents, [], 'a save through a symlink was recorded');
       write('src/linkTarget.ts', linkSaved + "export const agent = 'agent';\n");
       await until('write to the link target recorded', () => eventsFor('src/linkTarget.ts', atLink).length > 0);
       await settled();
@@ -1673,6 +1685,187 @@ export async function run(): Promise<void> {
       ['modify', 'export const wide = 1;\n'],
     ]);
     console.log('[it] REC2: file encodings ok');
+
+    await cfg().update('reorderWindowMs', restoreReorder, WS);
+    await sleep(500);
+  }
+
+  // REC3: worktree lifecycle and scope refresh. Worktrees are made here, each
+  // next to the workspace or under .worktrees/, and removed again.
+  {
+    const restoreReorder = cfg().inspect('reorderWindowMs')?.workspaceValue;
+    await cfg().update('reorderWindowMs', 0, WS);
+    // Windows can briefly hold a directory git renames or removes; retry the command.
+    const gitRetry = async (cwd: string, ...args: string[]) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return gitIn(cwd, ...args);
+        } catch (err) {
+          if (attempt >= 20) throw err;
+          await sleep(250);
+        }
+      }
+    };
+    const writeAt = (file: string, text: string) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          return fs.writeFileSync(file, text);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if ((code !== 'EBUSY' && code !== 'EPERM') || attempt >= 100) throw err;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        }
+      }
+    };
+    const rm = async (p: string) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return fs.rmSync(p, { recursive: true, force: true });
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if ((code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY') || attempt >= 100) throw err;
+          await sleep(100);
+        }
+      }
+    };
+    const skipped = (dir: string) => !api.recorder.matches(vscode.Uri.file(path.join(dir, 'src', 'probe.ts')));
+    /** Waits past the debounce, the worktree refresh and a chosen worktree's delete hold, then checks nothing was recorded. */
+    const nothingSince = async (from: number, what: string) => {
+      await sleep(4500);
+      api.recorder.drainHeld();
+      assert.deepEqual(
+        since(from).map((e) => `${e.kind} ${e.relPath}`),
+        [],
+        what,
+      );
+    };
+
+    // W1. A worktree moved into the folder, then within it, is skipped right
+    // away, with or without a .git event; removing it records nothing.
+    const outsideWt = `${root}-rec3-out`;
+    await gitRetry(root, 'worktree', 'add', '-q', '-b', 'rec3-out', outsideWt);
+    await sleep(1000);
+    const atMove = timeline.all().length;
+    const movedIn = path.join(root, '.worktrees', 'moved');
+    await gitRetry(root, 'worktree', 'move', outsideWt, movedIn);
+    await until('moved-in worktree skipped', () => skipped(movedIn), 20000);
+    writeAt(path.join(movedIn, 'src', 'movedNew.ts'), 'export const movedNew = 1;\n');
+    writeAt(path.join(movedIn, 'src', 'committed1.ts'), "export const moved = 'in';\n");
+    await nothingSince(atMove, 'a worktree moved into the folder was recorded');
+    const movedOn = path.join(root, '.worktrees', 'moved2');
+    await gitRetry(root, 'worktree', 'move', movedIn, movedOn);
+    await until('worktree moved within the folder skipped', () => skipped(movedOn), 20000);
+    writeAt(path.join(movedOn, 'src', 'committed1.ts'), "export const moved = 'on';\n");
+    await nothingSince(atMove, 'a worktree moved within the folder was recorded');
+    await gitRetry(root, 'worktree', 'remove', '--force', movedOn);
+    await nothingSince(atMove, 'removing a nested worktree recorded its files');
+    console.log('[it] REC3: moved worktrees ok');
+
+    // W2. A nested worktree whose .git file is deleted, the first step of
+    // removing it on Windows, is still skipped: no baselines, no deletes.
+    const pruneDir = path.join(root, '.worktrees', 'prune');
+    await gitRetry(root, 'worktree', 'add', '-q', '-b', 'rec3-prune', '.worktrees/prune');
+    await until('new nested worktree skipped', () => skipped(pruneDir), 20000);
+    await sleep(1500);
+    const atPrune = timeline.all().length;
+    await rm(path.join(pruneDir, '.git'));
+    await sleep(2000);
+    assert.equal(api.recorder.hasBaseline(vscode.Uri.file(path.join(pruneDir, 'src', 'committed1.ts'))), false, 'a worktree without its .git got baselines');
+    assert.ok(skipped(pruneDir), 'a worktree without its .git is no longer skipped');
+    await rm(path.join(pruneDir, 'src', 'committed1.ts'));
+    await nothingSince(atPrune, 'a file deleted in a worktree without its .git was recorded');
+    await rm(pruneDir);
+    await gitRetry(root, 'worktree', 'prune');
+    await nothingSince(atPrune, 'removing the rest of a worktree without its .git was recorded');
+    console.log('[it] REC3: worktree without its .git ok');
+
+    // W3. Another repository's worktree, and a submodule whose path ends in
+    // worktrees/<name>, are not this repository's checkouts: they are recorded.
+    const otherRepo2 = `${root}-rec3-other`;
+    fs.mkdirSync(otherRepo2);
+    gitIn(otherRepo2, 'init', '-q');
+    fs.writeFileSync(path.join(otherRepo2, 'foreign.ts'), 'export const foreign = 1;\n');
+    gitIn(otherRepo2, 'add', '-A');
+    gitIn(otherRepo2, 'commit', '-q', '-m', 'initial');
+    // One level deep: Linux watchers can miss a directory created inside another new one.
+    fs.mkdirSync(path.join(root, 'rec3'));
+    await sleep(1000);
+    fs.mkdirSync(path.join(root, 'rec3', 'worktrees'));
+    await sleep(1000);
+    const atForeign = timeline.all().length;
+    await gitRetry(otherRepo2, 'worktree', 'add', '-q', '-b', 'bwt', path.join(root, 'rec3', 'bwt'));
+    await until('foreign worktree checkout recorded', () => eventsFor('rec3/bwt/foreign.ts', atForeign).some((e) => e.kind === 'create'), 20000);
+    await gitRetry(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', otherRepo2, 'rec3/worktrees/foo');
+    await until('submodule checkout recorded', () => eventsFor('rec3/worktrees/foo/foreign.ts', atForeign).some((e) => e.kind === 'create'), 20000);
+    await until('foreign checkout playback', idle);
+    await gitRetry(otherRepo2, 'worktree', 'remove', '--force', path.join(root, 'rec3', 'bwt'));
+    await gitRetry(root, 'rm', '-q', '-f', 'rec3/worktrees/foo');
+    await gitRetry(root, 'rm', '-q', '-f', '.gitmodules');
+    // The submodule's repository stays under .git/modules: git's object files are read-only, which Windows won't delete.
+    await sleep(2000);
+    api.recorder.drainHeld();
+    await until('foreign removal playback', idle);
+    console.log('[it] REC3: foreign worktree and submodule ok');
+
+    // W4. In a chosen worktree, a real delete is recorded from its baseline;
+    // removing the worktree records nothing, even for a file deleted well
+    // before git got to its .git.
+    const rec3Side = `${root}-rec3-side`;
+    const sideLabel = path.basename(rec3Side);
+    const sideFile = (rel: string) => [rec3Side, fs.realpathSync.native(rec3Side)].map((d) => vscode.Uri.file(path.join(d, rel)));
+    await gitRetry(root, 'worktree', 'add', '-q', '-b', 'rec3-side', rec3Side);
+    await choose(rec3Side);
+    await until('rec3 sibling chosen', () => own() === false, 20000);
+    await until('rec3 sibling baselines', () => sideFile('src/committed3.ts').some((u) => api.recorder.hasBaseline(u)), 20000);
+    const committed3 = lf(fs.readFileSync(path.join(rec3Side, 'src', 'committed3.ts'), 'utf8'));
+    const atRealDelete = timeline.all().length;
+    await rm(path.join(rec3Side, 'src', 'committed3.ts'));
+    const deleted3 = `${sideLabel}/src/committed3.ts`;
+    await until('delete in the chosen worktree recorded', () => eventsFor(deleted3, atRealDelete).length > 0, 20000);
+    assert.deepEqual(eventsFor(deleted3, atRealDelete).map((e) => [e.kind, e.before]), [['delete', committed3]]);
+    await until('chosen worktree delete playback', idle);
+    const atRemoval = timeline.all().length;
+    await rm(path.join(rec3Side, 'src', 'committed2.ts'));
+    await sleep(800);
+    await gitRetry(root, 'worktree', 'remove', '--force', rec3Side);
+    await until('fallback after removing the rec3 sibling', () => own() === true, 20000);
+    await nothingSince(atRemoval, 'removing the chosen worktree recorded its files as deleted');
+    console.log('[it] REC3: chosen worktree deletes ok');
+
+    // W5. Stop right after Start: nothing keeps recording, and the next
+    // start's first change starts from the disk text, not an earlier save.
+    write('src/rec3save.ts', 'S\n');
+    await until('rec3save.ts baseline', () => api.recorder.hasBaseline(uriOf('src/rec3save.ts')), 20000);
+    await sleep(1000);
+    api.recorder.drainHeld();
+    await until('rec3save playback', idle);
+    await vscode.commands.executeCommand('agentTypewriter.stop');
+    const racing = api.recorder.start();
+    api.recorder.stop();
+    await racing;
+    assert.equal(api.recorder.isRunning, false, 'stop during start left the recorder running');
+    const saveDoc = await vscode.workspace.openTextDocument(path.join(root, 'src/rec3save.ts'));
+    const saveEd = await vscode.window.showTextDocument(saveDoc);
+    await saveEd.edit((b) => b.replace(new vscode.Range(0, 0, saveDoc.lineCount, 0), 'U\n'));
+    await saveDoc.save();
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    write('src/rec3save.ts', 'A\n');
+    await sleep(500);
+    const atRestart = timeline.all().length;
+    await api.recorder.start();
+    await sleep(500);
+    write('src/rec3save.ts', 'A2\n');
+    await until('change after restart recorded', () => eventsFor('src/rec3save.ts', atRestart).length > 0, 20000);
+    await sleep(1000);
+    api.recorder.drainHeld();
+    assert.deepEqual(
+      since(atRestart).map((e) => [e.relPath, e.before, lf(e.after)]),
+      [['src/rec3save.ts', 'A\n', 'A2\n']],
+    );
+    await vscode.commands.executeCommand('agentTypewriter.start');
+    await until('rec3 restart playback', idle);
+    console.log('[it] REC3: stop during start ok');
 
     await cfg().update('reorderWindowMs', restoreReorder, WS);
     await sleep(500);

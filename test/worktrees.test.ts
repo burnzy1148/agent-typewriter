@@ -5,19 +5,24 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   CheckoutChoiceFile,
+  carriedProvisional,
   checkoutDisplayPath,
   checkoutName,
+  commonDirKey,
+  gitdirOf,
+  isWorktreeOf,
   listWorktrees,
+  liveWorktrees,
   nestedUnder,
   ownCheckout,
   parseWorktreeList,
-  pointsAtLinkedWorktree,
   relativeInside,
   rootIn,
   worktreeLabels,
   type Worktree,
 } from '../src/worktrees';
 import type { GitRunner } from '../src/gitBaseline';
+import { git, noGit, tempDir, tempRepo, write } from './gitFixture';
 
 const P = (...parts: string[]) => path.resolve('/', ...parts);
 const Z = 'worktree list --porcelain -z';
@@ -49,25 +54,31 @@ test('parseWorktreeList: branch, detached, bare and prunable records, both outpu
   for (const sep of ['\0', '\n'] as const) {
     const list = parseWorktreeList(porcelain(RECORDS, sep), sep);
     assert.deepEqual(
-      list.map((w) => [w.path, w.branch, w.head.slice(0, 1)]),
+      list.map((w) => [w.path, w.branch, w.head.slice(0, 1), w.prunable]),
       [
-        [P('repo'), 'main', '1'],
-        [P('repo', '.claude', 'worktrees', 'feature x'), 'claude/feature', '2'],
-        [P('elsewhere', 'detached'), undefined, '3'],
-        [P('locked'), 'locked', '5'],
+        [P('repo'), 'main', '1', undefined],
+        [P('repo', '.claude', 'worktrees', 'feature x'), 'claude/feature', '2', undefined],
+        [P('elsewhere', 'detached'), undefined, '3', undefined],
+        // at-l3q.10.3: a worktree mid-removal is still listed, flagged.
+        [P('gone'), undefined, '4', true],
+        [P('locked'), 'locked', '5', undefined],
       ],
       `separator ${JSON.stringify(sep)}`,
     );
+    assert.deepEqual(
+      liveWorktrees(list).map((w) => w.path),
+      [P('repo'), P('repo', '.claude', 'worktrees', 'feature x'), P('elsewhere', 'detached'), P('locked')],
+    );
   }
-  assert.deepEqual(parseWorktreeList(porcelain(RECORDS, '\n').replace(/\n/g, '\r\n'), '\n').length, 4, 'CRLF output');
+  assert.deepEqual(parseWorktreeList(porcelain(RECORDS, '\n').replace(/\n/g, '\r\n'), '\n').length, 5, 'CRLF output');
 });
 
 test('listWorktrees: -z, fallback without -z, not-a-repo, git missing', async () => {
   const z = await listWorktrees(P('repo'), runner({ [Z]: Buffer.from(porcelain(RECORDS, '\0')) }));
-  assert.ok(z.kind === 'ok' && z.worktrees.length === 4);
+  assert.ok(z.kind === 'ok' && z.worktrees.length === 5);
   const old = Object.assign(new Error('error: unknown switch `z`'), { code: 129 });
   const nl = await listWorktrees(P('repo'), runner({ [Z]: old, [NL]: Buffer.from(porcelain(RECORDS, '\n')) }));
-  assert.ok(nl.kind === 'ok' && nl.worktrees.length === 4);
+  assert.ok(nl.kind === 'ok' && nl.worktrees.length === 5);
   const notRepo = Object.assign(new Error('fatal: not a git repository'), { code: 128 });
   assert.deepEqual(await listWorktrees(P('x'), runner({ [Z]: notRepo, [NL]: notRepo })), { kind: 'not-repo' });
   const missing = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
@@ -145,14 +156,121 @@ test('CheckoutChoiceFile: survives a reload, forgets cleared choices, tolerates 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('pointsAtLinkedWorktree: worktree .git files, not submodules', () => {
-  assert.ok(pointsAtLinkedWorktree('gitdir: /repo/.git/worktrees/feature\n'));
-  assert.ok(pointsAtLinkedWorktree('gitdir: C:/Users/me/repo/.git/worktrees/fix-2\r\n'));
-  assert.ok(!pointsAtLinkedWorktree('gitdir: ../../.git/modules/vendor/lib\n'));
-  assert.ok(!pointsAtLinkedWorktree('gitdir: /repo/.git/worktrees\n'));
-  assert.ok(!pointsAtLinkedWorktree('[core]\n\tbare = false\n'));
+test('gitdirOf: the gitdir a .git file names, as written', () => {
+  assert.equal(gitdirOf('gitdir: /repo/.git/worktrees/feature\n'), '/repo/.git/worktrees/feature');
+  assert.equal(gitdirOf('gitdir: C:/Users/me/repo/.git/worktrees/fix-2\r\n'), 'C:/Users/me/repo/.git/worktrees/fix-2');
+  assert.equal(gitdirOf('gitdir: ../../.git/modules/vendor/lib\n'), '../../.git/modules/vendor/lib');
+  assert.equal(gitdirOf('[core]\n\tbare = false\n'), undefined);
 });
 
 test('relativeInside: keeps the child path as written, not case-folded', () => {
   assert.equal(relativeInside(P('Repo'), P('Repo', '.worktrees', 'Fix-Bug')), '.worktrees/Fix-Bug');
+});
+
+// --- at-l3q.10.8: only a git that ran and failed means not a repository.
+
+test('listWorktrees: spawn failures, a synchronous throw and timeouts are unavailable; a git exit code is not-repo', async () => {
+  const spawnError = (code: string) => Object.assign(new Error(`spawn git ${code}`), { code, syscall: 'spawn git', errno: -11 });
+  for (const code of ['EAGAIN', 'EMFILE', 'ENFILE', 'ENOMEM']) {
+    const r = await listWorktrees(P('repo'), runner({ [Z]: spawnError(code), [NL]: spawnError(code) }));
+    assert.equal(r.kind, 'unavailable', code);
+  }
+  const killed = Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM', code: null });
+  assert.equal((await listWorktrees(P('repo'), runner({ [Z]: killed, [NL]: killed }))).kind, 'unavailable', 'timeout');
+  const sync: GitRunner = () => {
+    throw new Error('spawn failed synchronously');
+  };
+  assert.equal((await listWorktrees(P('repo'), sync)).kind, 'unavailable', 'synchronous throw');
+  // A spawn failure after -z failed with an exit code is unavailable too.
+  const old = Object.assign(new Error('error: unknown switch `z`'), { code: 129 });
+  assert.equal((await listWorktrees(P('repo'), runner({ [Z]: old, [NL]: spawnError('EAGAIN') }))).kind, 'unavailable');
+  const notRepo = Object.assign(new Error('fatal: not a git repository'), { code: 128 });
+  assert.equal((await listWorktrees(P('x'), runner({ [Z]: notRepo, [NL]: notRepo }))).kind, 'not-repo');
+  const noCwd = Object.assign(new Error('not a directory'), { code: 'ENOCWD' });
+  assert.equal((await listWorktrees(P('x'), runner({ [Z]: noCwd }))).kind, 'not-repo', 'a missing folder');
+  const denied = Object.assign(new Error('spawn git EACCES'), { code: 'EACCES' });
+  assert.equal((await listWorktrees(P('x'), runner({ [Z]: denied }))).kind, 'unavailable');
+});
+
+// --- at-l3q.10.3: a worktree whose .git is gone is still listed, and still nested.
+
+test('listWorktrees: a nested worktree whose .git file is deleted is still listed, as prunable', { skip: noGit }, async () => {
+  const repo = tempRepo('at-wt-');
+  write(repo, 'a.ts', 'a\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'initial');
+  git(repo, 'worktree', 'add', '-q', '-b', 'feature', path.join('.claude', 'worktrees', 'feature'));
+  fs.rmSync(path.join(repo, '.claude', 'worktrees', 'feature', '.git'));
+  const r = await listWorktrees(repo);
+  assert.ok(r.kind === 'ok');
+  const feature = r.worktrees.find((w) => w.path.endsWith('feature'));
+  assert.equal(feature?.prunable, true);
+  assert.deepEqual(nestedUnder(repo, r.worktrees), ['.claude/worktrees/feature/']);
+  assert.deepEqual(liveWorktrees(r.worktrees).length, 1);
+});
+
+// --- at-l3q.10.7: a .git file hides its directory only when it is a worktree of the folder's repository.
+
+test('isWorktreeOf: own worktrees (absolute or relative gitdir), not another repository\'s or a submodule under worktrees/', { skip: noGit }, () => {
+  const ws = tempRepo('at-wt-ws-');
+  write(ws, 'a.ts', 'a\n');
+  git(ws, 'add', '-A');
+  git(ws, 'commit', '-q', '-m', 'initial');
+  const common = commonDirKey(ws)!;
+  assert.ok(common);
+  git(ws, 'worktree', 'add', '-q', '-b', 'late', path.join('.worktrees', 'late'));
+  const late = path.join(ws, '.worktrees', 'late', '.git');
+  assert.ok(isWorktreeOf(late, common));
+  assert.equal(commonDirKey(path.join(ws, '.worktrees', 'late')), common, 'a linked worktree has the same common directory');
+  // worktree.useRelativePaths writes a relative gitdir.
+  const relDir = path.join(ws, '.worktrees', 'rel');
+  fs.mkdirSync(relDir, { recursive: true });
+  fs.writeFileSync(path.join(relDir, '.git'), 'gitdir: ../../.git/worktrees/rel\n');
+  assert.ok(isWorktreeOf(path.join(relDir, '.git'), common));
+
+  const other = tempRepo('at-wt-b-');
+  write(other, 'f.ts', 'f\n');
+  git(other, 'add', '-A');
+  git(other, 'commit', '-q', '-m', 'initial');
+  git(other, 'worktree', 'add', '-q', '-b', 'bwt', path.join(ws, 'tmp', 'bwt'));
+  assert.ok(!isWorktreeOf(path.join(ws, 'tmp', 'bwt', '.git'), common), "another repository's worktree");
+
+  git(ws, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', other, 'worktrees/foo');
+  assert.match(fs.readFileSync(path.join(ws, 'worktrees', 'foo', '.git'), 'utf8'), /modules[\\/]worktrees[\\/]foo/);
+  assert.ok(!isWorktreeOf(path.join(ws, 'worktrees', 'foo', '.git'), common), 'a submodule named worktrees/foo');
+  assert.ok(!isWorktreeOf(path.join(ws, '.git'), common), 'a .git directory');
+  assert.ok(!isWorktreeOf(path.join(ws, 'missing', '.git'), common));
+});
+
+// --- at-l3q.10.4: provisional worktrees noticed during a listing outlive the scope it builds.
+
+test('carriedProvisional: keeps entries noticed after the listing started that git did not list', () => {
+  const entries = [
+    { dir: '.worktrees/a/', seq: 1 },
+    { dir: '.worktrees/b/', seq: 3 },
+    { dir: '.worktrees/c/', seq: 4 },
+  ];
+  // The listing started at 2: a is settled by it, b and c may have been missed; git listed c.
+  assert.deepEqual(carriedProvisional(entries, 2, ['.worktrees/c/']), [{ dir: '.worktrees/b/', seq: 3 }]);
+  assert.deepEqual(carriedProvisional(entries, 0, ['.worktrees/a/', '.worktrees/b/', '.worktrees/c/']), [], 'none duplicated');
+  assert.deepEqual(carriedProvisional(entries, 4, []), [], 'all older than the listing');
+});
+
+// --- at-l3q.10.5: saving the choice never throws.
+
+test('CheckoutChoiceFile: a choice that cannot be saved is kept for the session and reported', () => {
+  const dir = tempDir('choices-');
+  const file = path.join(dir, 'checkouts.json');
+  const a = new CheckoutChoiceFile(file);
+  assert.equal(a.set('file:///ws', P('repo-sibling')), undefined);
+  // A directory where the temporary file goes makes every save fail, on every platform.
+  fs.mkdirSync(`${file}.tmp`);
+  let err: Error | undefined;
+  assert.doesNotThrow(() => (err = a.set('file:///ws', P('other'))));
+  assert.ok(err instanceof Error);
+  assert.equal(a.get('file:///ws'), P('other'), 'the new choice holds for the session');
+  assert.equal(new CheckoutChoiceFile(file).get('file:///ws'), P('repo-sibling'), 'the file on disk changed');
+  assert.ok(a.set('file:///ws', undefined) instanceof Error);
+  assert.equal(a.get('file:///ws'), undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
