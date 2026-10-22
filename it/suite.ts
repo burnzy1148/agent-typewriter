@@ -1802,7 +1802,7 @@ export async function run(): Promise<void> {
     await gitRetry(otherRepo2, 'worktree', 'remove', '--force', path.join(root, 'rec3', 'bwt'));
     await gitRetry(root, 'rm', '-q', '-f', 'rec3/worktrees/foo');
     await gitRetry(root, 'rm', '-q', '-f', '.gitmodules');
-    await rm(path.join(root, '.git', 'modules'));
+    // The submodule's repository stays under .git/modules: git's object files are read-only, which Windows won't delete.
     await sleep(2000);
     api.recorder.drainHeld();
     await until('foreign removal playback', idle);
