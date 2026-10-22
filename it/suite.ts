@@ -9,10 +9,16 @@ import type { AgentTypewriterApi } from '../src/extension';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** What the recorder and timeline were doing, printed when a wait times out. Set once the extension is active. */
+let describeState = () => '';
+
 async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
   const start = Date.now();
   while (!fn()) {
-    if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() - start > timeoutMs) {
+      console.log(`[it] timed out waiting for ${what}. State:\n${describeState()}`);
+      throw new Error(`timed out waiting for ${what}`);
+    }
     await sleep(50);
   }
 }
@@ -28,6 +34,13 @@ export async function run(): Promise<void> {
   const mirrorText = (rel: string) =>
     vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel)?.getText();
   const idle = () => timeline.pendingCount() === 0 && !timeline.all().some((e) => timeline.stateOf(e.seq) === 'playing');
+  describeState = () =>
+    [
+      'recorder activity:',
+      api.recorder.describeActivity(),
+      `timeline (${timeline.all().length} events):`,
+      ...timeline.all().slice(-20).map((e) => `  #${e.seq} ${e.kind} ${e.relPath} ${timeline.stateOf(e.seq)}`),
+    ].join('\n');
 
   // Track which file playback is in, and how many separate edits hit the mirrors.
   const order: string[] = [];
