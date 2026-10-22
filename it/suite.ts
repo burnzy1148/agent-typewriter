@@ -1287,11 +1287,16 @@ export async function run(): Promise<void> {
     console.log('[it] own saves of unrecorded files ok');
 
     // R5. Saving through a symlink is an own save of the file it leads to.
+    // Let the filter refresh R4's setting change started finish first: a
+    // refresh queued now runs after it.
+    await api.recorder.refreshFilter();
+    await settled();
     await created('src/linkTarget.ts', 'export const target = 1;\n');
     fs.mkdirSync(path.join(root, 'src/linkDirReal'));
     await sleep(1000);
     await created('src/linkDirReal/a.ts', 'export const inLinkedDir = 1;\n');
     let linked = true;
+    const atLinks = timeline.all().length;
     try {
       fs.symlinkSync('linkTarget.ts', path.join(root, 'src/linkFile.ts'), 'file');
       fs.symlinkSync('linkDirReal', path.join(root, 'src/linkDir'), 'dir');
@@ -1300,6 +1305,11 @@ export async function run(): Promise<void> {
       console.log(`[it] symlinks unavailable here (${(err as NodeJS.ErrnoException).code}); skipping the symlink save check`);
     }
     if (linked) {
+      // A new link to a file is recorded as created. The Windows watcher can
+      // report it seconds later, so wait for it before saving through the link.
+      const linkCreated = () => eventsFor('src/linkFile.ts', atLinks).length > 0;
+      for (const start = Date.now(); !linkCreated() && Date.now() - start < 20000; ) await sleep(100);
+      if (!linkCreated()) console.log('[it] the watcher did not report the new file link; checking the save anyway');
       await settled();
       const saveVia = async (rel: string) => {
         const d = await vscode.workspace.openTextDocument(path.join(root, rel));
@@ -1314,7 +1324,9 @@ export async function run(): Promise<void> {
       const linkSaved = await saveVia('src/linkFile.ts');
       await saveVia('src/linkDir/a.ts');
       await settled();
-      assert.deepEqual(relEvents(atLink), [], 'a save through a symlink was recorded');
+      const linkEvents = relEvents(atLink);
+      if (linkEvents.length > 0) console.log(`[it] recorder activity:\n${api.recorder.describeActivity()}`);
+      assert.deepEqual(linkEvents, [], 'a save through a symlink was recorded');
       write('src/linkTarget.ts', linkSaved + "export const agent = 'agent';\n");
       await until('write to the link target recorded', () => eventsFor('src/linkTarget.ts', atLink).length > 0);
       await settled();
