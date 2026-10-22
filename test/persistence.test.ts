@@ -124,6 +124,37 @@ test('a damaged file is reported, moved aside, and not restored', () => {
   assert.match(logs.join('\n'), /newer version/);
 });
 
+test('flush does not start a save alongside one the timer started', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  const real = fs.promises.writeFile.bind(fs.promises);
+  let calls = 0;
+  let active = 0;
+  let maxActive = 0;
+  let started!: () => void;
+  const firstStarted = new Promise<void>((r) => (started = r));
+  t.mock.method(fs.promises, 'writeFile', async (...args: Parameters<typeof real>) => {
+    calls++;
+    if (calls === 1) started();
+    // A change made while the flush's own write is running.
+    if (calls === 2) tl.push(ev('c', '', '3'));
+    maxActive = Math.max(maxActive, ++active);
+    await sleep(40);
+    await real(...args);
+    active--;
+  });
+  store.start();
+  tl.push(ev('a', '', '1'));
+  await firstStarted;
+  tl.push(ev('b', '', '2'));
+  await store.flush();
+  await store.flush();
+  store.stop();
+  assert.equal(maxActive, 1);
+  assert.equal(loadFrom(dir)?.events.length, 3);
+});
+
 test('missing file loads as nothing, deleteSaved removes the file', async () => {
   const dir = tempDir();
   const t = new Timeline(100);
@@ -134,8 +165,9 @@ test('missing file loads as nothing, deleteSaved removes the file', async () => 
   await store.flush();
   assert.ok(fs.existsSync(store.path));
   store.stop();
+  fs.writeFileSync(path.join(dir, 'timeline.unreadable.json.gz'), 'old');
   store.deleteSaved();
-  assert.ok(!fs.existsSync(store.path));
+  assert.deepEqual(fs.readdirSync(dir), []);
   assert.equal(store.load(), undefined);
 });
 
@@ -290,14 +322,13 @@ test('an unreadable saved timeline that cannot be moved aside is not saved over'
   store.start();
   t2.push(ev('new', '', 'x'));
   await store.flush();
+  t2.push(ev('newer', '', 'y'));
   store.flushSync();
   t.mock.restoreAll();
   assert.deepEqual(fs.readFileSync(store.path), original);
 
-  // Once the file can be moved, it is kept aside and saving resumes.
-  t2.push(ev('newer', '', 'y'));
-  await store.flush();
-  store.stop();
+  // Once the file can be moved, the final save keeps it aside and saves, with no further change needed.
+  store.dispose();
   assert.match(logs.join('\n'), /Moved the unreadable saved timeline/);
   assert.deepEqual(fs.readFileSync(path.join(dir, 'timeline.unreadable.json.gz')), original);
   assert.equal(loadFrom(dir)?.events.length, 2);

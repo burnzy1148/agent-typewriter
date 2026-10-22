@@ -153,6 +153,9 @@ export class TimelineStore {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     await this.writing;
+    // The awaited write re-arms the timer for changes made meanwhile; this write covers them.
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
     if (this.dirty) await this.write();
   }
 
@@ -162,10 +165,10 @@ export class TimelineStore {
     this.timer = undefined;
     const inFlight = this.writing !== undefined && this.writingId === this.writeId;
     if (!this.dirty && !inFlight) return;
+    if (!this.canSave()) return;
     this.dirty = false;
     // Overtakes the write in flight, which then skips its rename.
     this.writeId++;
-    if (!this.canSave()) return;
     try {
       fs.mkdirSync(this.folder, { recursive: true });
       const tmp = this.path + '.sync.tmp';
@@ -176,9 +179,9 @@ export class TimelineStore {
     }
   }
 
-  /** Removes the saved timeline. */
+  /** Removes the saved timeline, including a copy moved aside as unreadable. */
   deleteSaved(): void {
-    for (const f of [this.path, this.path + '.tmp', this.path + '.sync.tmp']) {
+    for (const f of [this.path, this.path + '.tmp', this.path + '.sync.tmp', path.join(this.folder, UNREADABLE)]) {
       try {
         fs.rmSync(f, { force: true });
       } catch {
@@ -202,9 +205,10 @@ export class TimelineStore {
   }
 
   private write(): Promise<void> {
+    // Still dirty, so the next save (at the latest the final one) tries the move again.
+    if (!this.canSave()) return Promise.resolve();
     this.dirty = false;
     const id = ++this.writeId;
-    if (!this.canSave()) return Promise.resolve();
     const json = this.serialize();
     this.writingId = id;
     this.writing = (async () => {
