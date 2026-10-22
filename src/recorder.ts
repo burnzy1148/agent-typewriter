@@ -68,7 +68,10 @@ const WORKTREE_RETRY_MAX_MS = 30_000;
  * `.git` may go seconds after the first files; a pause while a large ignored
  * directory goes reports no events.
  */
-const DELETE_SETTLE_MS = 2000;
+const DELETE_SETTLE_MS = 3000;
+
+/** Longest a delete is held, however long deletes keep coming (a build cleaning its output, say). */
+const DELETE_HOLD_MAX_MS = 15_000;
 
 /** Longest wait between checks of whether a chosen worktree git calls prunable is gone yet. */
 const GONE_CHECK_MAX_MS = 5000;
@@ -131,7 +134,7 @@ export class Recorder implements vscode.Disposable {
   /** Deletes in chosen worktrees, per file URI, held until it is clear the checkout itself is not being removed. */
   private readonly heldDeletes = new Map<string, HeldDelete>();
   /** Per folder URI, the timer that decides its held deletes once deletes there have been quiet for DELETE_SETTLE_MS. */
-  private readonly deleteSettles = new Map<string, NodeJS.Timeout>();
+  private readonly deleteSettles = new Map<string, { timer: NodeJS.Timeout; since: number }>();
   /** Filter refreshes run one at a time, so an older one never overwrites a newer one's gitignore rules. */
   private filterWork: Promise<void> = Promise.resolve();
   private readonly scopeEmitter = new vscode.EventEmitter<void>();
@@ -418,7 +421,7 @@ export class Recorder implements vscode.Disposable {
     this.listRetry = undefined;
     this.listRetries = 0;
     this.listFailing.clear();
-    for (const t of this.deleteSettles.values()) clearTimeout(t);
+    for (const t of this.deleteSettles.values()) clearTimeout(t.timer);
     this.deleteSettles.clear();
     this.dropHeldDeletes();
     this.ignored.clear();
@@ -583,20 +586,29 @@ export class Recorder implements vscode.Disposable {
       watcher: [],
     };
     if (folder.uri.scheme !== 'file') return scope;
+    const session = this.session;
     const r = await this.listWorktreesIn(folder.uri.fsPath);
+    // Stopped meanwhile: this scope is never used.
+    if (session !== this.session) return scope;
     if (r.kind === 'unavailable') {
       // Git could not run this time. A folder git has listed keeps what it
-      // records; either way, the listing is tried again.
+      // records, and one with a chosen checkout waits to apply it; both are
+      // listed again later. Otherwise the folder is recorded as outside git.
       const noted = this.listFailing.has(key);
-      this.listFailing.add(key);
       const current = this.scopes.get(key);
+      const choice = this.choices.get(key);
       if (current?.repo) {
+        this.listFailing.add(key);
         if (!noted) this.log.appendLine(`Could not re-read the worktrees of ${folder.name} (${r.reason}); keeping its current checkout until git answers.`);
+        const recorded = current.own ? undefined : current.checkout.fsPath;
+        if ((choice === undefined) !== (recorded === undefined) || (choice !== undefined && recorded !== undefined && pathKey(choice) !== pathKey(recorded))) {
+          this.log.appendLine(`The checkout chosen for ${folder.name} applies once git can list its worktrees.`);
+        }
         return { ...current, folder };
       }
-      const choice = this.choices.get(key);
-      if (!noted && choice !== undefined) {
-        this.log.appendLine(`Could not read the worktrees of ${folder.name} (${r.reason}); recording the folder itself until git answers, then ${choice}.`);
+      if (choice !== undefined) {
+        this.listFailing.add(key);
+        if (!noted) this.log.appendLine(`Could not read the worktrees of ${folder.name} (${r.reason}); recording the folder itself until git answers, then ${choice}.`);
       }
       return scope;
     }
@@ -1126,9 +1138,11 @@ export class Recorder implements vscode.Disposable {
       }
     }
     const key = uri.toString();
-    // A held delete of this file is decided before anything that follows it.
+    // A held delete of this file is decided before a write that follows it; a
+    // repeated delete event only says deletes are still coming.
     const held = this.heldDeletes.get(key);
-    if (held) this.releaseDelete(key, held);
+    if (held && event !== 'delete') this.releaseDelete(key, held);
+    else if (held) this.settleDeletes(held.folderKey);
     const passes = this.passes(uri);
     this.note(`${inDir ? 'in directory' : 'watcher'} ${event} ${this.traceName(uri)}${passes ? '' : ' (filtered out)'}`);
     if (!passes) return;
@@ -1327,7 +1341,9 @@ export class Recorder implements vscode.Disposable {
   /**
    * Holds a file's delete in a chosen worktree until deletes there have been
    * quiet for DELETE_SETTLE_MS. Its burst stays pending in the reorder buffer
-   * meanwhile, so changes after it still follow it.
+   * meanwhile, which keeps later changes behind it only up to the buffer's
+   * cap (twice reorderWindowMs): a change to another file made during the
+   * hold can reach the timeline before the delete.
    */
   private holdDelete(scope: Scope, uri: vscode.Uri, relPath: string, before: Snapshot, burst: Burst): void {
     const folderKey = scope.folder.uri.toString();
@@ -1346,16 +1362,20 @@ export class Recorder implements vscode.Disposable {
     this.settleDeletes(folderKey);
   }
 
-  /** (Re)starts the quiet period after which a folder's held deletes are decided. */
+  /** (Re)starts the quiet period after which a folder's held deletes are decided, up to DELETE_HOLD_MAX_MS after the first. */
   private settleDeletes(folderKey: string): void {
-    clearTimeout(this.deleteSettles.get(folderKey));
-    this.deleteSettles.set(
-      folderKey,
-      setTimeout(() => {
+    const now = Date.now();
+    const pending = this.deleteSettles.get(folderKey);
+    clearTimeout(pending?.timer);
+    const since = pending?.since ?? now;
+    const timer = setTimeout(
+      () => {
         this.deleteSettles.delete(folderKey);
         for (const [key, held] of [...this.heldDeletes]) if (held.folderKey === folderKey) this.releaseDelete(key, held);
-      }, DELETE_SETTLE_MS),
+      },
+      Math.max(0, Math.min(DELETE_SETTLE_MS, since + DELETE_HOLD_MAX_MS - now)),
     );
+    this.deleteSettles.set(folderKey, { timer, since });
   }
 
   /**
@@ -1391,7 +1411,7 @@ export class Recorder implements vscode.Disposable {
       held.done();
     }
     if (folderKey !== undefined) {
-      clearTimeout(this.deleteSettles.get(folderKey));
+      clearTimeout(this.deleteSettles.get(folderKey)?.timer);
       this.deleteSettles.delete(folderKey);
     }
   }

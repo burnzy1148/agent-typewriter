@@ -260,19 +260,17 @@ test('carriedProvisional: keeps entries noticed after the listing started that g
 
 test('CheckoutChoiceFile: a choice that cannot be saved is kept for the session and reported', () => {
   const dir = tempDir('choices-');
-  const file = path.join(dir, 'storage', 'checkouts.json');
+  const file = path.join(dir, 'checkouts.json');
   const a = new CheckoutChoiceFile(file);
   assert.equal(a.set('file:///ws', P('repo-sibling')), undefined);
-  // The storage directory's parent becomes a file, so nothing can be written there.
-  fs.rmSync(path.join(dir, 'storage'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'storage'), 'not a directory');
-  const blocked = new CheckoutChoiceFile(file);
-  assert.equal(blocked.get('file:///ws'), undefined);
+  // A directory where the temporary file goes makes every save fail, on every platform.
+  fs.mkdirSync(`${file}.tmp`);
   let err: Error | undefined;
-  assert.doesNotThrow(() => (err = blocked.set('file:///ws', P('other'))));
+  assert.doesNotThrow(() => (err = a.set('file:///ws', P('other'))));
   assert.ok(err instanceof Error);
-  assert.equal(blocked.get('file:///ws'), P('other'));
-  assert.ok(blocked.set('file:///ws', undefined) instanceof Error);
-  assert.equal(blocked.get('file:///ws'), undefined);
+  assert.equal(a.get('file:///ws'), P('other'), 'the new choice holds for the session');
+  assert.equal(new CheckoutChoiceFile(file).get('file:///ws'), P('repo-sibling'), 'the file on disk changed');
+  assert.ok(a.set('file:///ws', undefined) instanceof Error);
+  assert.equal(a.get('file:///ws'), undefined);
   fs.rmSync(dir, { recursive: true, force: true });
 });

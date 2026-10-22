@@ -1721,7 +1721,7 @@ export async function run(): Promise<void> {
     const skipped = (dir: string) => !api.recorder.matches(vscode.Uri.file(path.join(dir, 'src', 'probe.ts')));
     /** Waits past the debounce, the worktree refresh and a chosen worktree's delete hold, then checks nothing was recorded. */
     const nothingSince = async (from: number, what: string) => {
-      await sleep(3500);
+      await sleep(4500);
       api.recorder.drainHeld();
       assert.deepEqual(
         since(from).map((e) => `${e.kind} ${e.relPath}`),

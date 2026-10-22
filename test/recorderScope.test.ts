@@ -17,7 +17,7 @@ import { git, noGit, tempDir, tempRepo, write } from './gitFixture';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Longer than the recorder's quiet period for deletes in a chosen worktree. */
-const HOLD_MS = 2600;
+const HOLD_MS = 3600;
 
 function settings(over: Partial<Settings> = {}): Settings {
   return {
@@ -269,6 +269,20 @@ test('a failed worktree listing keeps the chosen worktree, then git answering re
   assert.deepEqual(t.checkout(), before);
 });
 
+test('a checkout chosen while git cannot list worktrees applies once it can', { skip: noGit }, async () => {
+  const { repo, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n' });
+  const { state, lister } = flakyLister();
+  const t = recorderOn(settings(), { choices, lister }, repo);
+  await t.recorder.start();
+  assert.equal(t.checkout()?.own, false);
+  state.fail = true;
+  await t.recorder.setCheckout(t.folder, undefined);
+  assert.equal(t.checkout()?.own, false, 'kept while git cannot answer');
+  assert.ok(t.logs.some((l) => l.includes('applies once git can list its worktrees')), t.logs.join('\n'));
+  state.fail = false;
+  await until('own checkout once git answers', () => t.checkout()?.own === true, 5000);
+});
+
 test('a failed worktree listing keeps nested worktrees skipped; retries stop with the recorder', { skip: noGit }, async () => {
   const repo = committedRepo({ 'src/b.ts': 'b\n' });
   const feature = path.join(repo, '.claude', 'worktrees', 'feature');
@@ -470,6 +484,23 @@ test('removing the chosen worktree records nothing, even for files deleted well 
   await t.settle(HOLD_MS);
   assert.deepEqual(t.events(), []);
   assert.ok(!t.logs.some((l) => l.startsWith('Could not read the git baseline')), t.logs.join('\n'));
+});
+
+test('a repeated delete event for a held file keeps it held: removing the worktree then records nothing', { skip: noGit }, async () => {
+  const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n', 'src/b.ts': 'b\n' });
+  const t = recorderOn(settings(), { choices }, repo);
+  await t.recorder.start();
+  fs.rmSync(path.join(side, 'src', 'a.ts'));
+  t.fire('delete', path.join(side, 'src', 'a.ts'));
+  await t.settle();
+  // A late duplicate of the same delete, as a lagging watcher sends.
+  t.fire('delete', path.join(side, 'src', 'a.ts'));
+  await t.settle();
+  git(repo, 'worktree', 'remove', '--force', side);
+  t.fire('delete', path.join(side, 'src', 'b.ts'));
+  await until('fallback', () => t.checkout()?.own === true);
+  await t.settle(HOLD_MS);
+  assert.deepEqual(t.events(), []);
 });
 
 test('a delete in a chosen worktree that stays is recorded from its baseline after the wait', { skip: noGit }, async () => {
