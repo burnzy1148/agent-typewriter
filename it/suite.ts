@@ -691,7 +691,8 @@ export async function run(): Promise<void> {
   await until('actside baseline', () => sideUris('src/committed1.ts').some((u) => api.recorder.hasBaseline(u)), 20000);
   assert.ok(!sideUris('.git').some((u) => api.recorder.hasBaseline(u)), "the chosen worktree's .git file got a baseline");
   const atSide = timeline.all().length;
-  fs.writeFileSync(path.join(sideDir, '.git'), fs.readFileSync(path.join(sideDir, '.git')));
+  // Same text, in place: git hides the file on Windows, and a hidden file can't be opened for truncation.
+  fs.writeFileSync(path.join(sideDir, '.git'), fs.readFileSync(path.join(sideDir, '.git')), { flag: 'r+' });
   await sleep(1500);
   api.recorder.drainHeld();
   assert.deepEqual(since(atSide).map((e) => `${e.kind} ${e.relPath}`), [], "rewriting the chosen worktree's .git file was recorded");
