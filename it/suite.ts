@@ -633,7 +633,7 @@ export async function run(): Promise<void> {
 
     // Mirrors are read-only, so VS Code keeps U+2028 in them and every later hunk lands where planned.
     await setting('editor', 'unusualLineTerminators', 'auto');
-    const sep1 = 'const sep = "a b";\nlet x = 1;\n';
+    const sep1 = 'const sep = "a\u2028b";\nlet x = 1;\n';
     const sep2 = sep1.replace('x = 1', 'x = 2');
     await play('play/sep.ts', '', sep1);
     await sleep(300);
@@ -688,6 +688,19 @@ export async function run(): Promise<void> {
       assert.equal(mirrorText('play/race.ts'), newer.after, `Skip to Latest (+${delay} ms) left an older state in the mirror`);
       race = newer.after;
     }
+
+    // A seek made while Skip to Latest waits for the change being typed wins over the snap.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 1500);
+    await play('play/snapseek1.ts', '', 'export const one = 1;\n');
+    const sought = push('play/snapseek2.ts', '', 'export const two = 2;\n');
+    await until('the file-switch pause', playing(sought.seq));
+    const snapping = player.snapToLatest();
+    timeline.seek(sought.seq);
+    await snapping;
+    assert.equal(timeline.cursor, sought.seq, 'Skip to Latest overrode a seek made while it waited');
+    await until('replay after the seek', playedNow(sought.seq));
+    assert.equal(mirrorText('play/snapseek2.ts'), 'export const two = 2;\n');
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 0);
 
     // Typing and backspacing keep surrogate pairs whole (one unit per tick at 60 cps).
     await setting('agentTypewriter', 'charsPerSecond', 60);
@@ -767,12 +780,19 @@ export async function run(): Promise<void> {
       assert.ok(ed, 'hideB mirror is not visible');
       await vscode.window.showTextDocument(mirrorDoc('play/hideA.ts')!, { viewColumn: ed.viewColumn, preview: false, preserveFocus: true });
     };
-    const hiddenDuringSwitch = async (label: string, before: string, after: string, kind?: 'delete') => {
+    const closeB = async () => {
+      const tab = vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .find((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === 'agent-typewriter' && t.input.uri.path === '/play/hideB.ts');
+      assert.ok(tab, 'hideB mirror tab not found');
+      await vscode.window.tabGroups.close(tab);
+    };
+    const hiddenDuringSwitch = async (label: string, before: string, after: string, kind?: 'delete', hide = hideB) => {
       await nextA();
       const e = push('play/hideB.ts', before, after, kind);
       await until(`${label} to start`, playing(e.seq));
       await sleep(300);
-      await hideB();
+      await hide();
       await until(`${label} playback`, playedNow(e.seq));
       assert.equal(mirrorText('play/hideB.ts'), after, `${label}: hiding the tab during the file-switch pause abandoned the change`);
     };
@@ -780,9 +800,11 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'maxAnimatedChars', 20);
     const bigText = `export const big = "${'x'.repeat(40)}";\n`;
     await hiddenDuringSwitch('instant change', '', bigText);
+    await hiddenDuringSwitch('closed tab', bigText, bigText + '// typed\n', undefined, closeB);
+    assert.ok(mirrorEditor('play/hideB.ts'), 'the closed mirror tab was not shown again');
     await setting('agentTypewriter', 'fileSwitchDelayMs', 30);
     const multi = 'line1\nline2\nline3\nline4\n';
-    await play('play/hideB.ts', bigText, multi);
+    await play('play/hideB.ts', bigText + '// typed\n', multi);
     const selecting = selectionIn('play/hideB.ts');
     const trimmed = push('play/hideB.ts', multi, 'line1\n');
     await until('multi-line deletion selected', () => selecting.selected);

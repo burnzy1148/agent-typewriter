@@ -140,12 +140,16 @@ export async function run(): Promise<void> {
       }),
     );
     await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(sessionFile));
+    // A tab left from before a reload: its mirror file does not exist yet, so it shows an error.
+    const restored = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/play/reload2.ts' });
+    await Promise.race([Promise.resolve(vscode.commands.executeCommand('vscode.open', restored, { preview: false })).catch(() => undefined), sleep(3000)]);
     await vscode.commands.executeCommand('agentTypewriter.catchUp');
     const read = async (rel: string) =>
       new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel })));
     assert.equal(await read('play/reload2.ts'), r2, 'Skip to Latest did not fill a mirror that was never played');
     assert.equal(await read('play/reload1.ts'), r1b.replace(/\n/g, '\r\n'), 'Skip to Latest lost the newest mirror or its CRLF');
     assert.equal(timeline.pendingCount(), 0);
+    await until('the restored tab to load its mirror', () => vscode.workspace.textDocuments.some((d) => d.uri.toString() === restored.toString() && d.getText() === r2), 10000);
     if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
     console.log('[it] Skip to Latest fills unplayed mirrors ok');
   }

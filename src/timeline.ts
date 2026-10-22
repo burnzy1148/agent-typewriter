@@ -175,6 +175,11 @@ export class Timeline {
     return this.cursorSeq;
   }
 
+  /** Changes on every cursor jump (seek, skip, clear, restore), so a caller can tell one happened while it waited. */
+  get jumps(): number {
+    return this.generation;
+  }
+
   onDidChange(listener: Listener): { dispose(): void } {
     this.listeners.add(listener);
     return { dispose: () => this.listeners.delete(listener) };

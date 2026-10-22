@@ -12,7 +12,7 @@ export const MIRROR_SCHEME = 'agent-typewriter';
  * mirror, it never becomes dirty, so closing a tab never prompts, and VS Code
  * leaves its text alone (no save participants, no stripping of unusual line
  * terminators). The player still edits the open documents through
- * workspace.applyEdit, and stores each finished change here with store().
+ * workspace.applyEdit, and keeps the text stored here with store().
  */
 export class MirrorFileSystem implements vscode.FileSystemProvider {
   private files = new Map<string, { data: Uint8Array; mtime: number; ctime: number }>();

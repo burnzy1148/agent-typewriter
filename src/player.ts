@@ -91,20 +91,23 @@ export class Player implements vscode.Disposable {
 
   /**
    * Skips everything queued and puts every mirror document straight into its
-   * newest recorded state. Overlapping calls run one after another.
+   * newest recorded state. Overlapping calls run one after another. A seek,
+   * skip or other snap that moves the cursor while this one waits wins.
    */
   snapToLatest(): Promise<void> {
-    const run = this.snapping.then(() => this.snap());
+    const jumps = this.timeline.jumps;
+    const run = this.snapping.then(() => this.snap(jumps));
     this.snapping = run.catch(() => undefined);
     return run;
   }
 
-  private async snap(): Promise<void> {
+  private async snap(jumps: number): Promise<void> {
     this.holds++;
     try {
       this.epoch++;
       this.poke();
       await this.inFlight;
+      if (this.timeline.jumps !== jumps) return;
       // Move the cursor and read the states in one step: a change recorded
       // from here on stays queued and plays on top of the snapped text.
       this.timeline.seekToEnd();
@@ -198,6 +201,7 @@ export class Player implements vscode.Disposable {
 
     if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
     if (this.expected !== e.after) await this.edit(editor.document, 0, this.expected.length, e.after);
+    if (!this.live(epoch)) return;
     await setText(editor.document, e.after, e.eol);
     this.store(e);
   }
@@ -376,17 +380,35 @@ export class Player implements vscode.Disposable {
     if (this.synced?.doc !== doc || this.synced.version !== doc.version) {
       await setText(doc, this.expected, this.currentEol);
       this.synced = { doc, version: doc.version };
+      this.storeExpected(doc.uri);
     }
     return this.live(epoch) ? ed : undefined;
   }
 
-  /** Replaces LF offsets [from, to) of the mirror with `text`, keeping `expected` in step. */
+  /**
+   * Replaces LF offsets [from, to) of the mirror with `text`, keeping
+   * `expected`, and the stored bytes, in step with the document.
+   */
   private async edit(doc: vscode.TextDocument, from: number, to: number, text: string): Promise<void> {
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(doc.uri, new vscode.Range(posAt(doc, from), posAt(doc, to)), text);
-    await applyEdit(edit);
+    for (let attempt = 1; ; attempt++) {
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(doc.uri, new vscode.Range(posAt(doc, from), posAt(doc, to)), text);
+      if (await vscode.workspace.applyEdit(edit)) break;
+      if (attempt === 3) throw new Error('VS Code rejected the edit');
+      // The document changed after ready() looked (reloaded or reverted): put it back first.
+      await setText(doc, this.expected, this.currentEol);
+    }
     this.expected = this.expected.slice(0, from) + text + this.expected.slice(to);
     this.synced = { doc, version: doc.version };
+    this.storeExpected(doc.uri);
+  }
+
+  /**
+   * Keeps the stored bytes equal to the mirror mid-change, so VS Code's own
+   * reloads (on showing the tab, on window focus, on revert) change nothing.
+   */
+  private storeExpected(uri: vscode.Uri): void {
+    this.mirror.store(uri, this.bytes(this.expected, this.currentEol));
   }
 
   private columnStillOpen(column: vscode.ViewColumn): boolean {
@@ -456,19 +478,20 @@ function fullRange(doc: vscode.TextDocument): vscode.Range {
 
 /** Puts a document's text and line ending to the given LF text and ending, unless it already has them. */
 async function setText(doc: vscode.TextDocument, text: string, eol: Eol): Promise<void> {
-  const edits: vscode.TextEdit[] = [];
-  const want = toEndOfLine(eol);
-  if (doc.eol !== want) edits.push(vscode.TextEdit.setEndOfLine(want));
-  if (normalizeEol(doc.getText()) !== text) edits.push(vscode.TextEdit.replace(fullRange(doc), text));
-  if (edits.length === 0) return;
-  const edit = new vscode.WorkspaceEdit();
-  edit.set(doc.uri, edits);
-  await applyEdit(edit);
-}
-
-/** Mirrors are read-only to the editor, so edits go through a workspace edit rather than TextEditor.edit. */
-async function applyEdit(edit: vscode.WorkspaceEdit): Promise<void> {
-  if (!(await vscode.workspace.applyEdit(edit))) throw new Error('VS Code rejected the edit');
+  // Mirrors are read-only to the editor, so edits go through a workspace edit
+  // rather than TextEditor.edit. One made against a version that changed
+  // before it arrived is rejected; build it again from the current text.
+  for (let attempt = 1; ; attempt++) {
+    const edits: vscode.TextEdit[] = [];
+    const want = toEndOfLine(eol);
+    if (doc.eol !== want) edits.push(vscode.TextEdit.setEndOfLine(want));
+    if (normalizeEol(doc.getText()) !== text) edits.push(vscode.TextEdit.replace(fullRange(doc), text));
+    if (edits.length === 0) return;
+    const edit = new vscode.WorkspaceEdit();
+    edit.set(doc.uri, edits);
+    if (await vscode.workspace.applyEdit(edit)) return;
+    if (attempt === 3) throw new Error('VS Code rejected the edit');
+  }
 }
 
 /** Position of an offset into the LF-normalized text, whatever the document's line ending. */
