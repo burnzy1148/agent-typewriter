@@ -7,6 +7,15 @@ export interface FilterSettings {
   extensions: string[];
 }
 
+/**
+ * A relative path with '/' separators. Only on Windows is a backslash a
+ * separator; elsewhere it is an ordinary file-name character and is kept, so
+ * `src\\a.ts` stays a different file from `src/a.ts`.
+ */
+export function toSlashes(relPath: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? relPath.replace(/\\/g, '/') : relPath;
+}
+
 /** The rule that keeps a path from being recorded. */
 export type BlockedBy = 'git' | 'extension' | 'exclude' | 'include';
 
@@ -36,7 +45,7 @@ export class PathFilter {
 
   /** Which rule rejects the path, or undefined when it is recorded. */
   blockedBy(relPath: string): BlockedBy | undefined {
-    const path = relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+    const path = toSlashes(relPath).replace(/^\.\//, '');
     // A .git file (submodule, linked worktree) is git metadata whatever the
     // settings say; **/.git/** only covers .git directories.
     if (/(^|\/)\.git$/i.test(path)) return 'git';
@@ -53,7 +62,7 @@ export class PathFilter {
    * globs never prune.
    */
   excludesDir(relDir: string): boolean {
-    const dir = relDir.replace(/\\/g, '/').replace(/\/+$/, '');
+    const dir = toSlashes(relDir).replace(/\/+$/, '');
     return this.pruning.some((g) => minimatch(dir, g, { dot: true, nocase: false }));
   }
 
@@ -151,7 +160,7 @@ export class RootGlobs {
 
   /** True when the root-relative path or a directory above it matches. */
   covers(relPath: string): boolean {
-    const path = relPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+    const path = toSlashes(relPath).replace(/^\.\//, '').replace(/\/+$/, '');
     const slash = path.lastIndexOf('/');
     if (slash !== -1 && this.coversDir(path.slice(0, slash))) return true;
     return this.globs.some((g) => g.match(path));

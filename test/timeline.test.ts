@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Timeline, type NewChangeEvent } from '../src/timeline';
-import { PathFilter, parseExtensionList } from '../src/filter';
+import { PathFilter, toSlashes, parseExtensionList } from '../src/filter';
 
 function ev(relPath: string, before: string, after: string): NewChangeEvent {
   return { uri: 'file:///w/' + relPath, relPath, time: Date.now(), kind: 'modify', before, after, eol: '\n', linesAdded: 0, linesRemoved: 0 };
@@ -109,6 +109,28 @@ test('filter: dotfiles and windows separators', () => {
   assert.ok(f.matches('.github/workflows/ci.yml'));
   assert.ok(f.matches('src\\win\\path.ts'));
   assert.ok(!f.matches('.git/HEAD'));
+  if (process.platform === 'win32') assert.ok(!f.matches('.git\\HEAD'), 'a backslash is a separator on Windows');
+});
+
+test('toSlashes: a backslash is a separator only on Windows', () => {
+  assert.equal(toSlashes('src\\win\\path.ts', 'win32'), 'src/win/path.ts');
+  assert.equal(toSlashes('src\\a.ts', 'linux'), 'src\\a.ts');
+  assert.equal(toSlashes('src\\a.ts', 'darwin'), 'src\\a.ts');
+  assert.equal(toSlashes('src/a.ts', 'linux'), 'src/a.ts');
+});
+
+test('filter: a backslash in a POSIX file name is not a directory separator', () => {
+  const f = new PathFilter({ include: ['src/**'], exclude: ['gen/out/**'], extensions: [] });
+  // A root-level file named `src\a.ts`, and a root-level directory named `gen\out`.
+  if (process.platform === 'win32') {
+    assert.ok(f.matches('src\\a.ts'));
+    assert.ok(f.excludesDir('gen\\out'));
+  } else {
+    assert.ok(!f.matches('src\\a.ts'), 'src/** admitted a root-level file');
+    assert.ok(f.matches('src/a.ts'));
+    assert.ok(!f.excludesDir('gen\\out'), 'a directory named gen\\out was taken for gen/out');
+    assert.ok(f.excludesDir('gen/out'));
+  }
 });
 
 test('parseExtensionList accepts loose input', () => {
