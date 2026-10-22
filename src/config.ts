@@ -4,6 +4,7 @@ import { resolveReorderWindow } from './reorder';
 import { mergeProfiles, parseProfiles, type FilterProfile, type Profiles } from './profiles';
 import { pickLayer, REPO_SETTING_KINDS, type RepoValues } from './repoSettings';
 import { isFiniteNumber, numberSetting } from './numberSetting';
+import { resolveCharsPerMinute } from './pace';
 
 export const SECTION = 'agentTypewriter';
 
@@ -15,8 +16,10 @@ export interface Settings extends FilterSettings {
   /** Profiles from user settings, the repository file, and workspace settings, merged by name. */
   profiles: Profiles;
   autoStart: boolean;
-  charsPerSecond: number;
-  /** Language id → base chars per second. Raw from settings; pace.ts ignores bad entries. */
+  charsPerMinute: number;
+  /** The base speed came from the deprecated `charsPerSecond` setting. */
+  speedFromDeprecatedSetting: boolean;
+  /** Language id → base chars per minute. Raw from settings; pace.ts ignores bad entries. */
   languageSpeeds: Record<string, unknown>;
   jitter: number;
   catchUpFactor: number;
@@ -65,6 +68,7 @@ export function readSettings(): Settings {
   // A wrong-typed value counts as unset; numbers are then clamped.
   const num = (key: string, fallback: number, min?: number, max?: number) =>
     numberSetting(c.get(key, fallback, isFiniteNumber), fallback, min, max);
+  const speed = resolveSpeed(cfg);
   return {
     autoStart: c.get('autoStart', false),
     include: f.get('include', ['**/*'], isStringArray),
@@ -73,7 +77,8 @@ export function readSettings(): Settings {
     respectGitignore: f.get('respectGitignore', false),
     activeProfile,
     profiles,
-    charsPerSecond: num('charsPerSecond', 35, 1),
+    charsPerMinute: speed.charsPerMinute,
+    speedFromDeprecatedSetting: speed.fromDeprecated,
     languageSpeeds: asRecord(c.get<unknown>('languageSpeeds', {})),
     jitter: num('jitter', 0.6, 0, 1),
     catchUpFactor: num('catchUpFactor', 0.5, 0),
@@ -132,6 +137,20 @@ function layered(cfg: vscode.WorkspaceConfiguration, profile?: FilterProfile) {
       return pickLayer(cfg.inspect<unknown>(key)?.workspaceValue, above[key] ?? repoValues[key], below, valid && { valid, fallback });
     },
   };
+}
+
+/**
+ * charsPerMinute, with the deprecated charsPerSecond (times 60) standing in
+ * for it in any layer that sets only the old key, so the layers keep their order.
+ */
+function resolveSpeed(cfg: vscode.WorkspaceConfiguration) {
+  const perMinute = cfg.inspect<unknown>('charsPerMinute');
+  const perSecond = cfg.inspect<unknown>('charsPerSecond');
+  return resolveCharsPerMinute([
+    { charsPerMinute: perMinute?.workspaceValue, charsPerSecond: perSecond?.workspaceValue },
+    { charsPerMinute: repoValues.charsPerMinute, charsPerSecond: repoValues.charsPerSecond },
+    { charsPerMinute: perMinute?.globalValue, charsPerSecond: perSecond?.globalValue },
+  ]);
 }
 
 /** `profiles` is merged by name across layers instead of replaced whole. */

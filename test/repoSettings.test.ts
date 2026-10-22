@@ -18,9 +18,9 @@ test('valid values pass through', () => {
     JSON.stringify({
       include: ['src/**'],
       extensions: [],
-      charsPerSecond: 50,
+      charsPerMinute: 500,
       autoStart: true,
-      languageSpeeds: { markdown: 60 },
+      languageSpeeds: { markdown: 600 },
       reorderWindowMs: 'auto',
       viewColumn: 'active',
     }),
@@ -29,9 +29,9 @@ test('valid values pass through', () => {
   assert.deepEqual(r.values, {
     include: ['src/**'],
     extensions: [],
-    charsPerSecond: 50,
+    charsPerMinute: 500,
     autoStart: true,
-    languageSpeeds: { markdown: 60 },
+    languageSpeeds: { markdown: 600 },
     reorderWindowMs: 'auto',
     viewColumn: 'active',
   });
@@ -52,12 +52,18 @@ test('unknown keys are dropped and reported', () => {
   assert.match(r.problems[1], /speed/);
 });
 
+test('deprecated charsPerSecond is still a known key', () => {
+  const r = parsed('{"charsPerSecond": 10}');
+  assert.deepEqual(r.values, { charsPerSecond: 10 });
+  assert.deepEqual(r.problems, []);
+});
+
 test('wrong types are dropped and reported, the rest kept', () => {
   const r = parsed(
     JSON.stringify({
       extensions: 'ts',
       include: ['ok', 3],
-      charsPerSecond: 50,
+      charsPerMinute: 500,
       jitter: '0.5',
       autoStart: 'yes',
       viewColumn: 'left',
@@ -65,7 +71,7 @@ test('wrong types are dropped and reported, the rest kept', () => {
       reorderWindowMs: true,
     }),
   );
-  assert.deepEqual(r.values, { charsPerSecond: 50 });
+  assert.deepEqual(r.values, { charsPerMinute: 500 });
   assert.deepEqual(
     r.problems.map((p) => p.match(/^"(\w+)"/)?.[1]),
     ['extensions', 'include', 'jitter', 'autoStart', 'viewColumn', 'languageSpeeds', 'reorderWindowMs'],
@@ -76,7 +82,7 @@ test('wrong types are dropped and reported, the rest kept', () => {
 
 test('non-finite numbers are not numbers', () => {
   // JSON cannot express NaN, but 1e999 parses to Infinity.
-  assert.deepEqual(parsed('{"charsPerSecond": 1e999}').values, {});
+  assert.deepEqual(parsed('{"charsPerMinute": 1e999}').values, {});
 });
 
 test('a non-object root or invalid JSON fails', () => {

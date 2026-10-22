@@ -107,8 +107,8 @@ export async function run(): Promise<void> {
   console.log('[it] replayAll ok');
 
   // --- 3. Skip to latest while a long change is mid-typing.
-  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerSecond', 20, vscode.ConfigurationTarget.Workspace);
-  write('src/b.ts', disk('src/b.ts') + '\n' + '// slow line that would take ages to type at 20 cps\n'.repeat(5));
+  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerMinute', 1200, vscode.ConfigurationTarget.Workspace);
+  write('src/b.ts', disk('src/b.ts') + '\n' + '// slow line that would take ages to type at 1200 cpm\n'.repeat(5));
   await until('slow change to start playing', () => timeline.all().some((e) => timeline.stateOf(e.seq) === 'playing'));
   await sleep(300);
   await vscode.commands.executeCommand('agentTypewriter.catchUp');
@@ -117,7 +117,7 @@ export async function run(): Promise<void> {
   console.log('[it] catchUp ok');
 
   // --- 4. Deletion is recorded and replayed.
-  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerSecond', 4000, vscode.ConfigurationTarget.Workspace);
+  await vscode.workspace.getConfiguration('agentTypewriter').update('charsPerMinute', 240000, vscode.ConfigurationTarget.Workspace);
   fs.unlinkSync(path.join(root, 'src/b.ts'));
   await until('delete event', () => timeline.all().some((e) => e.kind === 'delete'));
   await sleep(300);
@@ -713,8 +713,8 @@ export async function run(): Promise<void> {
     assert.equal(mirrorText('play/snapseek2.ts'), 'export const two = 2;\n');
     await setting('agentTypewriter', 'fileSwitchDelayMs', 0);
 
-    // Typing and backspacing keep surrogate pairs whole (one unit per tick at 60 cps).
-    await setting('agentTypewriter', 'charsPerSecond', 60);
+    // Typing and backspacing keep surrogate pairs whole (one unit per tick at 3600 cpm).
+    await setting('agentTypewriter', 'charsPerMinute', 3600);
     const emoji1 = '# Release\nok 👍🏻 done\na 𝐀 b\nline2\n';
     const emoji2 = '# Release\nShip it 🚀 now\nok 👍🏿 done\na b\nline2 x\n';
     const emoji = record('play/emoji.ts');
@@ -728,7 +728,7 @@ export async function run(): Promise<void> {
     assert.equal(mirrorText('play/emoji.ts'), emoji2);
 
     // Pause holds long and multi-line deletions, and delete events.
-    await setting('agentTypewriter', 'charsPerSecond', 4000);
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
     const funcs = 'KEEP\nfunction one() {\n  return 1;\n}\nKEEP2\nfunction two() {\n  return 2;\n}\nKEEP3\nfunction three() {\n  return 3;\n}\n';
     const kept = 'KEEP\nKEEP2\nKEEP3\n';
     await play('play/funcs.ts', '', funcs);
@@ -749,7 +749,7 @@ export async function run(): Promise<void> {
     assert.equal(mirrorText('play/funcs.ts'), '');
 
     // A seek while paused edits nothing more: not mid-typing, not after a deletion's selection pause.
-    await setting('agentTypewriter', 'charsPerSecond', 20);
+    await setting('agentTypewriter', 'charsPerMinute', 1200);
     const first = await play('play/pause.ts', '', 'first\n');
     const typed = 'first\nabcdefghijklmnopqrstuvwxyz\n';
     const long = push('play/pause.ts', first.after, typed);
@@ -766,7 +766,7 @@ export async function run(): Promise<void> {
     await until('replay after the seek', playedNow(long.seq));
     assert.equal(mirrorText('play/pause.ts'), typed);
 
-    await setting('agentTypewriter', 'charsPerSecond', 4000);
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
     const lines = 'keep\nremove this line\nand this one\n';
     const made = await play('play/seekdel.ts', '', lines);
     const cutting = selectionIn('play/seekdel.ts');
@@ -830,7 +830,7 @@ export async function run(): Promise<void> {
     const r1 = 'const a = 10;\nconst b = 20;\nconst c = 30;\n';
     const r2 = 'const a = 100;\nconst b = 200;\nconst c = 300;\n';
     await play('play/revert.ts', '', r0);
-    await setting('agentTypewriter', 'charsPerSecond', 8);
+    await setting('agentTypewriter', 'charsPerMinute', 480);
     const revertMidChange = async (before: string, after: string, marker: string, command: string) => {
       const seen = record('play/revert.ts');
       const e = push('play/revert.ts', before, after);
@@ -876,10 +876,10 @@ export async function run(): Promise<void> {
 
     // A non-numeric pace falls back to the default instead of hanging playback.
     await until('idle before SET', idle);
-    const savedPace = (['charsPerSecond', 'catchUpFactor'] as const).map((k) => [k, cfg().inspect(k)?.workspaceValue] as const);
-    await cfg().update('charsPerSecond', 'fast', WS);
+    const savedPace = (['charsPerMinute', 'catchUpFactor'] as const).map((k) => [k, cfg().inspect(k)?.workspaceValue] as const);
+    await cfg().update('charsPerMinute', 'fast', WS);
     await cfg().update('catchUpFactor', 'auto', WS);
-    assert.equal(readSettings().charsPerSecond, 35);
+    assert.equal(readSettings().charsPerMinute, 350);
     assert.equal(readSettings().catchUpFactor, 0.5);
     const atPace = timeline.all().length;
     write('src/setPace.ts', 'export const pace = 1;\n');

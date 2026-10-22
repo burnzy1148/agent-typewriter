@@ -96,7 +96,7 @@ To share filters (or any other setting) with everyone who opens a repository, co
   "include": ["src/**", "docs/**"],
   "exclude": ["**/generated/**", "**/node_modules/**"],
   "extensions": ["ts", "md"],
-  "charsPerSecond": 50
+  "charsPerMinute": 350
 }
 ```
 
@@ -141,8 +141,8 @@ To watch an agent's worktree instead, run **Choose Checkout...** or click the br
 
 | Setting | Default | |
 |---|---|---|
-| `charsPerSecond` | 35 | Base typing speed |
-| `languageSpeeds` | {} | Base speed per language ID, e.g. `{ "markdown": 60 }`; unlisted languages use `charsPerSecond` |
+| `charsPerMinute` | 350 | Base typing speed, in characters per minute. The deprecated `charsPerSecond` still works (times 60) wherever `charsPerMinute` is not set |
+| `languageSpeeds` | {} | Base speed per language ID, in characters per minute, e.g. `{ "markdown": 600 }`; unlisted languages use `charsPerMinute`. Multiply values set before 0.3.0 by 60 |
 | `jitter` | 0.6 | Rhythm unevenness, 0 to 1 |
 | `catchUpFactor` | 0.5 | Speed added per queued change |
 | `maxSpeedup` | 8 | Cap on automatic catch-up |
