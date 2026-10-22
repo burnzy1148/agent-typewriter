@@ -103,6 +103,18 @@ test('listIgnored: not a repository, git missing', async () => {
   assert.equal((await listIgnored('/ws', runner({ [LS]: missing }))).kind, 'unavailable');
 });
 
+test('listIgnored: a spawn or buffer failure is git not running, an exit code is not a repository', async () => {
+  const failing = (props: Record<string, unknown>) => runner({ [LS]: Object.assign(new Error(`git failed: ${JSON.stringify(props)}`), props) });
+  for (const code of ['EMFILE', 'EAGAIN', 'ENFILE', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', 'ENOENT', 'EACCES']) {
+    const r = await listIgnored('/ws', failing({ code }));
+    assert.equal(r.kind, 'unavailable', code);
+    assert.ok(r.kind === 'unavailable' && r.reason.includes(code), `${code}: the reason does not say what failed`);
+  }
+  assert.equal((await listIgnored('/ws', failing({ killed: true, signal: 'SIGTERM' }))).kind, 'unavailable', 'timeout');
+  assert.deepEqual(await listIgnored('/ws', failing({ code: 128 })), { kind: 'not-repo' });
+  assert.deepEqual(await listIgnored('/ws', failing({ code: 'ENOCWD' })), { kind: 'not-repo' }, 'a missing folder is no repository');
+});
+
 test('checkIgnored: exit 0 is ignored, exit 1 or failure is not', async () => {
   const run = runner({
     'check-ignore -q -- ./new.log': Buffer.alloc(0),

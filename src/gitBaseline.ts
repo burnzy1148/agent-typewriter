@@ -78,6 +78,54 @@ export function selectWithinBudget(candidates: BudgetCandidate[], budgetBytes: n
   return chosen;
 }
 
+/**
+ * Fills the budget most recently modified first, like `selectWithinBudget`,
+ * with the bytes `load` actually keeps. `load` resolves what a candidate
+ * takes, or undefined when it keeps nothing (binary or unreadable); the size
+ * reserved for it is then given back, and candidates skipped earlier are
+ * tried again. Resolves the candidates left out because the budget ran out.
+ */
+export async function fillBudget(
+  candidates: BudgetCandidate[],
+  budgetBytes: number,
+  load: (c: BudgetCandidate) => Promise<number | undefined>,
+  batchSize = 64,
+): Promise<BudgetCandidate[]> {
+  let pending = [...candidates].sort((a, b) => b.mtime - a.mtime);
+  let used = 0;
+  for (;;) {
+    const batch: BudgetCandidate[] = [];
+    const rest: BudgetCandidate[] = [];
+    for (const c of pending) {
+      if (batch.length < batchSize && used + c.size <= budgetBytes) {
+        used += c.size;
+        batch.push(c);
+      } else {
+        rest.push(c);
+      }
+    }
+    if (batch.length === 0) return rest;
+    pending = rest;
+    await Promise.all(
+      batch.map(async (c) => {
+        used += ((await load(c)) ?? 0) - c.size;
+      }),
+    );
+  }
+}
+
+/** How far past the time of its stat a file's mtime may be and still count as written then (coarse or skewed clocks). */
+export const CAPTURE_SKEW_MS = 2000;
+
+/**
+ * True when a file's mtime says it was written while a baseline capture ran,
+ * from `startedAt` to its stat at `statAt`: a change still on its way through
+ * the watcher. A later mtime is a file stamped in the future, not a new write.
+ */
+export function writtenDuringCapture(mtime: number, startedAt: number, statAt: number, skewMs = CAPTURE_SKEW_MS): boolean {
+  return mtime >= startedAt && mtime <= statAt + skewMs;
+}
+
 /** Runs git with the given args in cwd and resolves its stdout, or rejects with the process error. */
 export type GitRunner = (args: string[], cwd: string) => Promise<Buffer>;
 
