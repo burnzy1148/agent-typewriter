@@ -22,20 +22,29 @@ const realScheduler: Scheduler = {
 interface Held<T> {
   item: T;
   key: number;
+  fileKey: string;
   seq: number;
-  /** Earliest release time: key + window. */
+  /** Earliest release time: key + window, with the key capped at the add time. */
   due: number;
-  /** Released by this time even if an earlier burst is still pending: key + 2 × window. */
+  /**
+   * Released by this time even if an earlier burst is still pending: 2 × window
+   * after it was added. Items arrive a debounce after their write, so measuring
+   * from the key would leave no time to wait.
+   */
   cap: number;
 }
 
+/** setTimeout fires at once for delays above this. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 export class ReorderBuffer<T> {
   private held: Held<T>[] = [];
-  private readonly lastKeyByFile = new Map<string, number>();
   /** First watcher arrival of each debounce burst that has not finished reading yet. */
   private readonly pendingBursts = new Set<{ firstArrival: number }>();
   private nextSeq = 0;
   private timer: unknown;
+  /** Last wall-clock reading, to notice the clock stepping back. */
+  private lastNow = -Infinity;
 
   constructor(
     private readonly release: (items: T[]) => void,
@@ -48,15 +57,17 @@ export class ReorderBuffer<T> {
   }
 
   /**
-   * Holds `item` with write time `key`. A file's changes never swap: a key
-   * earlier than that file's previous one is raised to match it.
+   * Holds `item` with write time `key`. A file's held changes never swap: a
+   * key earlier than that file's latest held one is raised to match it.
+   * Released changes are already in order. A key ahead of the clock waits no
+   * longer than one written now.
    */
   add(item: T, key: number, fileKey: string): void {
-    const last = this.lastKeyByFile.get(fileKey);
-    const k = last !== undefined && last > key ? last : key;
-    this.lastKeyByFile.set(fileKey, k);
+    const now = this.now();
+    let k = key;
+    for (const h of this.held) if (h.fileKey === fileKey && h.key > k) k = h.key;
     const w = Math.max(0, this.window());
-    this.held.push({ item, key: k, seq: this.nextSeq++, due: k + w, cap: k + 2 * w });
+    this.held.push({ item, key: k, fileKey, seq: this.nextSeq++, due: Math.min(k, now) + w, cap: now + 2 * w });
     this.held.sort((a, b) => a.key - b.key || a.seq - b.seq);
     this.pump();
   }
@@ -67,6 +78,7 @@ export class ReorderBuffer<T> {
    * when the burst has been read, whether or not it produced a change.
    */
   pending(firstArrival: number): () => void {
+    this.now(); // shift for a clock step before adding an entry read after it
     const entry = { firstArrival };
     this.pendingBursts.add(entry);
     return () => {
@@ -85,7 +97,26 @@ export class ReorderBuffer<T> {
     this.clearTimer();
     this.held = [];
     this.pendingBursts.clear();
-    this.lastKeyByFile.clear();
+  }
+
+  /**
+   * The wall clock, with everything held shifted back by any backward step
+   * since the last reading, so a step neither holds items for its length nor
+   * sorts later writes before them.
+   */
+  private now(): number {
+    const now = this.clock.now();
+    const step = this.lastNow - now;
+    this.lastNow = now;
+    if (step > 0) {
+      for (const h of this.held) {
+        h.key -= step;
+        h.due -= step;
+        h.cap -= step;
+      }
+      for (const p of this.pendingBursts) p.firstArrival -= step;
+    }
+    return now;
   }
 
   private blocked(h: Held<T>): boolean {
@@ -96,7 +127,7 @@ export class ReorderBuffer<T> {
   /** Releases the longest ready prefix, then schedules the next check. */
   private pump(): void {
     this.clearTimer();
-    const now = this.clock.now();
+    const now = this.now();
     let n = 0;
     while (n < this.held.length) {
       const h = this.held[n];
@@ -111,7 +142,7 @@ export class ReorderBuffer<T> {
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined;
       this.pump();
-    }, Math.max(0, at - now));
+    }, Math.min(MAX_TIMER_MS, Math.max(0, at - now)));
   }
 
   private clearTimer(): void {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyHunks, normalizeEol, planHunks } from '../src/planner';
+import { applyHunks, countChanges, normalizeEol, planHunks } from '../src/planner';
 
 function roundTrip(before: string, after: string) {
   const hunks = planHunks(before, after);
@@ -60,6 +60,89 @@ test('missing trailing newline edge cases', () => {
 
 test('CRLF normalizes to LF', () => {
   assert.equal(normalizeEol('a\r\nb\rc\n'), 'a\nb\nc\n');
+});
+
+function timed<T>(fn: () => T): { value: T; ms: number } {
+  const t0 = performance.now();
+  const value = fn();
+  return { value, ms: performance.now() - t0 };
+}
+
+/** Plans and counts a big change, asserting both are fast and the plan round trips. */
+function assertFastRoundTrip(before: string, after: string) {
+  const plan = timed(() => planHunks(before, after));
+  const count = timed(() => countChanges(before, after));
+  assert.equal(applyHunks(before, plan.value), after);
+  assert.ok(plan.ms < 500, `planHunks took ${Math.round(plan.ms)} ms`);
+  assert.ok(count.ms < 500, `countChanges took ${Math.round(count.ms)} ms`);
+  return { hunks: plan.value, counts: count.value };
+}
+
+function uniqueLines(prefix: string, bytes: number) {
+  const lines: string[] = [];
+  let size = 0;
+  for (let i = 0; size < bytes; i++) {
+    const line = `${prefix} line ${i} ${(i * 2654435761) % 1000003}\n`;
+    lines.push(line);
+    size += line.length;
+  }
+  return lines.join('');
+}
+
+test('large rewrite: a 500 KB file of all new lines is planned quickly', () => {
+  const before = uniqueLines('old', 500_000);
+  const after = uniqueLines('new', 500_000);
+  const { hunks, counts } = assertFastRoundTrip(before, after);
+  assert.equal(hunks.length, 1);
+  assert.ok(hunks[0].insertText.length > 6000, 'retyped instead of applied at once');
+  assert.ok(counts.added > 0 && counts.removed > 0);
+});
+
+test('large reindent: a 250 KB JSON file from 2 to 4 spaces is planned quickly', () => {
+  const data = Array.from({ length: 2500 }, (_, i) => ({ id: i, name: `item ${i}`, tags: ['a', 'b'], ok: i % 2 === 0 }));
+  const before = JSON.stringify(data, null, 2) + '\n';
+  const after = JSON.stringify(data, null, 4) + '\n';
+  assert.ok(before.length > 200_000, `before is only ${before.length} chars`);
+  const { counts } = assertFastRoundTrip(before, after);
+  assert.ok(counts.added >= 0 && counts.removed >= 0);
+});
+
+test('large rewrite fallback: one hunk between the shared leading and trailing lines', () => {
+  const head = 'header one\nheader two\n';
+  const tail = 'footer one\nfooter two\n';
+  // Shared characters run into the changed region on both sides: "line " and " x\n".
+  const before = head + 'line ' + uniqueLines('old', 200_000) + 'old x\n' + tail;
+  const after = head + 'line ' + uniqueLines('new', 200_000) + 'new x\n' + tail;
+  const { hunks, counts } = assertFastRoundTrip(before, after);
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].offset, head.length);
+  assert.ok(hunks[0].deleteText.startsWith('line old line 0 '));
+  assert.ok(hunks[0].deleteText.endsWith('\nold x\n'));
+  assert.ok(hunks[0].insertText.startsWith('line new line 0 '));
+  assert.ok(after.endsWith(tail) && !hunks[0].insertText.includes('footer'));
+  const lines = (s: string) => s.split('\n').length - 1;
+  assert.deepEqual(counts, { added: lines(hunks[0].insertText), removed: lines(hunks[0].deleteText) });
+});
+
+test('large rewrite fallback: no shared lines, or a change at the very end', () => {
+  for (const [before, after] of [
+    [uniqueLines('old', 100_000), uniqueLines('new', 100_000) + 'no newline'],
+    ['top\n' + uniqueLines('old', 100_000), 'top\n' + uniqueLines('new', 50_000)],
+    [uniqueLines('old', 100_000) + 'end\n', 'x' + uniqueLines('new', 100_000) + 'end\n'],
+  ]) {
+    const { counts } = assertFastRoundTrip(before, after);
+    assert.ok(counts.added >= 0 && counts.removed >= 0);
+  }
+});
+
+test('word refinement gives up on a block too dissimilar to diff cheaply, and still round trips', () => {
+  const words = (seed: number, n: number) => Array.from({ length: n }, (_, i) => `w${(i * seed) % 9973}`).join(' ');
+  // Just under the refinement size limit; an unbounded word diff takes about 300 ms here.
+  const before = 'keep\n' + words(7, 1300) + '\nkeep\n';
+  const after = 'keep\n' + words(13, 1300) + '\nkeep\n';
+  const { value: hunks, ms } = timed(() => roundTrip(before, after));
+  assert.ok(ms < 200, `took ${Math.round(ms)} ms`);
+  assert.equal(hunks.length, 1);
 });
 
 // Deterministic fuzz: random code-like edits must always round trip exactly.

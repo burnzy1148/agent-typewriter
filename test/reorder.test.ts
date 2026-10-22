@@ -2,15 +2,21 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ReorderBuffer, clampOrderKey, resolveReorderWindow, type Scheduler } from '../src/reorder';
 
-/** Manual clock: timers fire only when advance() passes them. */
+/**
+ * Manual clock: timers fire only when advance() passes them. `offset` moves
+ * the wall clock alone, the way a clock step leaves Node's timers untouched.
+ */
 class FakeClock implements Scheduler {
   t = 0;
+  offset = 0;
+  readonly requested: number[] = [];
   private timers = new Map<number, { at: number; fn: () => void }>();
   private id = 0;
   now() {
-    return this.t;
+    return this.t + this.offset;
   }
   setTimeout(fn: () => void, ms: number) {
+    this.requested.push(ms);
     this.timers.set(++this.id, { at: this.t + ms, fn });
     return this.id;
   }
@@ -124,6 +130,90 @@ test('reorder: a later same-file item with an earlier key is still released seco
   buf.add('f#2', 900, 'f');
   clock.advance(500);
   assert.deepEqual(out, ['g', 'f#1', 'f#2']);
+});
+
+test('reorder: an item added a debounce after its write still waits for an earlier burst', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1005;
+  const doneB = buf.pending(1005);
+  clock.t = 1010;
+  const doneA = buf.pending(1010);
+  clock.t = 1205;
+  buf.add('b', 1000, 'b');
+  clock.advance(5);
+  buf.add('a', 950, 'a');
+  doneA();
+  doneB();
+  clock.advance(500);
+  assert.deepEqual(out, ['a', 'b']);
+});
+
+test('reorder: with the default window, a burst read 300 ms later still lands first', () => {
+  const { clock, out, buf } = setup(250);
+  clock.t = 1005;
+  const doneB = buf.pending(1005);
+  clock.t = 1205;
+  buf.add('b', 1000, 'b');
+  doneB();
+  clock.advance(35);
+  const doneA = buf.pending(1240);
+  clock.advance(270);
+  assert.deepEqual(out, [], 'released while an earlier burst was pending');
+  buf.add('a', 990, 'a');
+  doneA();
+  clock.advance(500);
+  assert.deepEqual(out, ['a', 'b']);
+});
+
+test('reorder: a burst that never finishes blocks at most 2 × window after the add', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1000;
+  buf.pending(1000);
+  clock.t = 1300;
+  buf.add('a', 1000, 'a');
+  clock.advance(199);
+  assert.deepEqual(out, []);
+  clock.advance(1);
+  assert.deepEqual(out, ['a']);
+});
+
+for (const window of [100, 0]) {
+  test(`reorder: a backward clock step after a drain does not hold a file (window ${window})`, () => {
+    const { clock, out, buf } = setup(window);
+    clock.t = 1000;
+    buf.add('A1', 1000, 'A');
+    clock.advance(window);
+    buf.drain();
+    clock.t -= 3_600_000;
+    buf.add('A2', clock.t + 100, 'A');
+    buf.add('B1', clock.t + 200, 'B');
+    if (window === 0) assert.deepEqual(out, ['A1', 'A2', 'B1'], 'zero window released late');
+    clock.advance(window + 1);
+    assert.deepEqual(out, ['A1', 'A2', 'B1']);
+    assert.equal(buf.size, 0);
+  });
+}
+
+test('reorder: a backward clock step while an item is held does not hold it for the step', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1000;
+  buf.add('A2', 1000, 'A');
+  clock.advance(50);
+  clock.offset -= 3_600_000;
+  buf.add('B1', clock.now(), 'B');
+  clock.advance(200);
+  assert.deepEqual(out, ['A2', 'B1']);
+  assert.ok(clock.requested.every((ms) => ms <= 2 ** 31 - 1), `delays ${clock.requested.join(', ')}`);
+});
+
+test('reorder: a backward step of more than 24.8 days asks for no oversized timer', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1000;
+  buf.add('A', 1000, 'A');
+  clock.offset -= 30 * 86_400_000;
+  clock.advance(300);
+  assert.deepEqual(out, ['A']);
+  assert.ok(clock.requested.every((ms) => ms <= 2 ** 31 - 1), `delays ${clock.requested.join(', ')}`);
 });
 
 test('reorder: drain releases everything held, in order', () => {
