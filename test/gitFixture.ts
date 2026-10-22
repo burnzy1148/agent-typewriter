@@ -15,11 +15,14 @@ export const noGit: string | undefined = (() => {
   }
 })();
 
+/** A hooks directory that does not exist, so the user's hooks never run. */
+const NO_HOOKS = path.join(os.tmpdir(), 'at-git-no-hooks');
+
 /** Runs git in cwd, ignoring the user's config that would change commits, and returns stdout. */
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync(
     'git',
-    ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=', ...args],
+    ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', '-c', `core.hooksPath=${NO_HOOKS}`, ...args],
     { cwd, encoding: 'utf8', env: gitChildEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] },
   );
 }

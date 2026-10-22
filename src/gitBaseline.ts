@@ -116,16 +116,12 @@ export function gitChildEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = 
 }
 
 /**
- * Runs one git process. A missing cwd rejects with code `ENOCWD` before the
- * spawn, since Node reports it as `ENOENT`, the same as git not being installed.
+ * Runs one git process. When the spawn fails with `ENOENT` because cwd is
+ * missing, not because git is, it rejects with code `ENOCWD` instead, so the
+ * folder reads as not a repository rather than git being unavailable.
  */
-export const execGit: GitRunner = async (args, cwd) => {
-  const isDir = await fsp.stat(cwd).then(
-    (st) => st.isDirectory(),
-    () => false,
-  );
-  if (!isDir) throw Object.assign(new Error(`not a directory: ${cwd}`), { code: 'ENOCWD' });
-  return new Promise((resolve, reject) => {
+export const execGit: GitRunner = (args, cwd) =>
+  new Promise<Buffer>((resolve, reject) => {
     execFile(
       'git',
       ['--no-optional-locks', ...args],
@@ -139,8 +135,14 @@ export const execGit: GitRunner = async (args, cwd) => {
       },
       (err, stdout) => (err ? reject(err) : resolve(stdout)),
     );
+  }).catch(async (err: unknown) => {
+    if ((err as { code?: unknown } | undefined)?.code !== 'ENOENT') throw err;
+    const isDir = await fsp.stat(cwd).then(
+      (st) => st.isDirectory(),
+      () => false,
+    );
+    throw isDir ? err : Object.assign(new Error(`not a directory: ${cwd}`), { code: 'ENOCWD', cause: err });
   });
-};
 
 /** Spawn failures that pass once other processes exit: out of process slots or file descriptors. */
 const TRANSIENT_SPAWN_CODES = new Set(['EAGAIN', 'EMFILE', 'ENFILE']);
@@ -223,9 +225,29 @@ export async function listCleanTracked(folder: string, run: GitRunner = runGit):
 export async function readBlob(folder: string, path: string, sha: string, run: GitRunner = runGit): Promise<Buffer | undefined> {
   try {
     // cat-file looks up attributes for --path from the repo's top level, not from cwd.
-    const prefix = (await run(['rev-parse', '--show-prefix'], folder)).toString('utf8').replace(/\n$/, '');
-    return await run(['cat-file', '--filters', `--path=${prefix}${path}`, sha], folder);
+    const prefix = await showPrefix(folder, run);
+    return await run(['cat-file', '--filters', `--path=${prefix}${path}`, sha], folder).catch((err: unknown) => {
+      prefixes.get(run)?.delete(folder);
+      throw err;
+    });
   } catch {
     return undefined;
   }
+}
+
+/** Successful `rev-parse --show-prefix` lookups, per runner and folder; a folder's prefix does not change. */
+const prefixes = new WeakMap<GitRunner, Map<string, Promise<string>>>();
+
+/** The folder's path below the repo's top level, with a trailing slash, or '' at the top. */
+function showPrefix(folder: string, run: GitRunner): Promise<string> {
+  let byFolder = prefixes.get(run);
+  if (!byFolder) prefixes.set(run, (byFolder = new Map()));
+  const cached = byFolder.get(folder);
+  if (cached) return cached;
+  const lookup = run(['rev-parse', '--show-prefix'], folder).then((out) => out.toString('utf8').replace(/\n$/, ''));
+  byFolder.set(folder, lookup);
+  lookup.catch(() => {
+    if (byFolder.get(folder) === lookup) byFolder.delete(folder);
+  });
+  return lookup;
 }

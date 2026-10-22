@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { IgnoredPaths, checkIgnored, listIgnored } from '../src/gitIgnore';
+import { IgnoredPaths, checkIgnored, dropCollapsedDirs, listIgnored } from '../src/gitIgnore';
 import type { GitRunner } from '../src/gitBaseline';
 import { git, noGit, tempRepo, write } from './gitFixture';
 
@@ -29,23 +29,21 @@ test('IgnoredPaths: files exactly, directories as prefixes', () => {
 });
 
 test('listIgnored: parses NUL-separated output, paths with spaces', async () => {
-  const r = await listIgnored('/ws', runner({ [LS]: Buffer.from('dist/\0my notes.log\0'), 'check-ignore -q -- dist': Buffer.alloc(0) }));
+  const r = await listIgnored('/ws', runner({ [LS]: Buffer.from('dist/\0my notes.log\0') }));
   assert.equal(r.kind, 'ok');
   assert.ok(r.kind === 'ok' && r.ignored.has('dist/out.js') && r.ignored.has('my notes.log'));
 });
 
-test('listIgnored: a directory git lists only because its contents are ignored is not ignored itself', async () => {
-  const notIgnored = Object.assign(new Error('exit 1'), { code: 1 });
-  const r = await listIgnored(
-    '/ws',
-    runner({
-      [LS]: Buffer.from('logs/\0logs/run.log\0star/\0star/x.txt\0gen/\0odd/\0'),
-      'check-ignore -q -- logs': notIgnored,
-      'check-ignore -q -- star': notIgnored,
-      'check-ignore -q -- gen': Buffer.alloc(0),
-      // odd: check-ignore fails some other way, so the directory stays.
-    }),
+test('dropCollapsedDirs: drops a dir/ only when entries are listed under it', () => {
+  assert.deepEqual(
+    dropCollapsedDirs(['star/x.txt', 'logs/', 'gen/', 'logs/run.log', 'a/', 'a/node_modules/', 'star/', 'b.log', 'logsx/']),
+    ['a/node_modules/', 'b.log', 'gen/', 'logs/run.log', 'logsx/', 'star/x.txt'],
   );
+  assert.deepEqual(dropCollapsedDirs([]), []);
+});
+
+test('listIgnored: a directory git lists only because its contents are ignored is not ignored itself', async () => {
+  const r = await listIgnored('/ws', runner({ [LS]: Buffer.from('logs/\0logs/run.log\0star/\0star/x.txt\0gen/\0') }));
   assert.equal(r.kind, 'ok');
   if (r.kind !== 'ok') return;
   assert.equal(r.ignored.has('logs/'), false);
@@ -54,7 +52,6 @@ test('listIgnored: a directory git lists only because its contents are ignored i
   assert.equal(r.ignored.has('star/keep.md'), false);
   assert.equal(r.ignored.has('star/x.txt'), true);
   assert.equal(r.ignored.has('gen/a.ts'), true);
-  assert.equal(r.ignored.has('odd/a.ts'), true);
 });
 
 test('listIgnored (real git): new files in an untracked directory of ignored files are not ignored', { skip: noGit }, async () => {
@@ -66,6 +63,8 @@ test('listIgnored (real git): new files in an untracked directory of ignored fil
   write(repo, 'node_modules/x/i.js', 'x\n');
   write(repo, 'gen/a.ts', 'x\n');
   write(repo, 'star/x.txt', 'x\n');
+  write(repo, 'logs/sub/x.log', 'x\n');
+  write(repo, 'a/node_modules/x/i.js', 'x\n');
   const r = await listIgnored(repo);
   assert.equal(r.kind, 'ok');
   if (r.kind !== 'ok') return;
@@ -79,6 +78,22 @@ test('listIgnored (real git): new files in an untracked directory of ignored fil
   assert.equal(r.ignored.has('gen/b.ts'), true);
   assert.equal(r.ignored.has('star/keep.md'), false);
   assert.equal(r.ignored.has('star/x.txt'), true);
+  assert.equal(r.ignored.has('logs/sub/new.md'), false);
+  assert.equal(r.ignored.has('logs/sub/x.log'), true);
+  assert.equal(r.ignored.has('a/new.md'), false);
+  assert.equal(r.ignored.has('a/node_modules/x/i.js'), true);
+});
+
+test('checkIgnored (real git): a leading colon is a file name, not pathspec magic', { skip: noGit ?? (process.platform === 'win32' && 'colons are not allowed in Windows file names') }, async () => {
+  const repo = tempRepo();
+  write(repo, '.gitignore', '/foo\n*.log\n');
+  write(repo, ':foo/a.log', 'x\n');
+  write(repo, ':foo/b.md', 'x\n');
+  assert.equal(await checkIgnored(repo, ':foo'), false);
+  assert.equal(await checkIgnored(repo, ':foo/b.md'), false);
+  assert.equal(await checkIgnored(repo, ':foo/a.log'), true);
+  write(repo, 'foo/b.md', 'x\n');
+  assert.equal(await checkIgnored(repo, 'foo'), true);
 });
 
 test('listIgnored: not a repository, git missing', async () => {
@@ -90,8 +105,8 @@ test('listIgnored: not a repository, git missing', async () => {
 
 test('checkIgnored: exit 0 is ignored, exit 1 or failure is not', async () => {
   const run = runner({
-    'check-ignore -q -- new.log': Buffer.alloc(0),
-    'check-ignore -q -- src/a.ts': Object.assign(new Error('exit 1'), { code: 1 }),
+    'check-ignore -q -- ./new.log': Buffer.alloc(0),
+    'check-ignore -q -- ./src/a.ts': Object.assign(new Error('exit 1'), { code: 1 }),
   });
   assert.equal(await checkIgnored('/ws', 'new.log', run), true);
   assert.equal(await checkIgnored('/ws', 'src/a.ts', run), false);

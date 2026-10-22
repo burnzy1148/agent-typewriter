@@ -163,6 +163,19 @@ test('readBlob: at the top level the prefix is empty', async () => {
   assert.deepEqual(calls[1], ['cat-file', '--filters', '--path=src/a.ts', SHA_A]);
 });
 
+test('readBlob: looks the prefix up once per folder, again after a failed read', async () => {
+  const { run, calls } = fakeRunner({
+    'rev-parse --show-prefix': Buffer.from('app/\n'),
+    [`cat-file --filters --path=app/a.ts ${SHA_A}`]: Buffer.from('a'),
+    [`cat-file --filters --path=app/b.ts ${SHA_B}`]: Buffer.from('b'),
+  });
+  await Promise.all([readBlob('/ws/app', 'a.ts', SHA_A, run), readBlob('/ws/app', 'b.ts', SHA_B, run)]);
+  assert.equal(calls.filter((c) => c[0] === 'rev-parse').length, 1);
+  assert.equal(await readBlob('/ws/app', 'c.ts', SHA_C, run), undefined);
+  await readBlob('/ws/app', 'a.ts', SHA_A, run);
+  assert.equal(calls.filter((c) => c[0] === 'rev-parse').length, 2);
+});
+
 test('readBlob: undefined when rev-parse fails', async () => {
   const { run, calls } = fakeRunner({ [`cat-file --filters --path=src/a.ts ${SHA_A}`]: Buffer.from('hi\n') });
   assert.equal(await readBlob('/ws', 'src/a.ts', SHA_A, run), undefined);
@@ -326,6 +339,16 @@ test('limitGit: a spawn that keeps failing transiently rejects after the bounded
   }, FAST);
   await assert.rejects(run(['ls-files'], '/ws'), { code: 'EAGAIN' });
   assert.equal(n, FAST.attempts);
+});
+
+test('limitGit: failed calls give their slot back', async () => {
+  let n = 0;
+  const run = limitGit(async () => {
+    if (++n <= 3) throw spawnError(n === 1 ? 'EAGAIN' : 128);
+    return Buffer.from('ok');
+  }, { concurrency: 1, attempts: 1, backoffMs: 1 });
+  for (let i = 0; i < 3; i++) await assert.rejects(run(['x'], '/ws'));
+  assert.equal((await run(['x'], '/ws')).toString(), 'ok');
 });
 
 test('limitGit: git exit codes, ENOENT, EACCES and timeouts are not retried', async () => {
