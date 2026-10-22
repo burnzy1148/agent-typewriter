@@ -166,6 +166,20 @@ export class Timeline {
     return out;
   }
 
+  /**
+   * The text each file's mirror shows at the cursor: the after text of its
+   * newest played change, or the before text of its earliest change when none
+   * was played. Used to refill mirrors after a reload.
+   */
+  mirrorStates(): Map<string, { text: string; eol: ChangeEvent['eol'] }> {
+    const out = new Map<string, { text: string; eol: ChangeEvent['eol'] }>();
+    for (const e of this.events) {
+      if (e.seq < this.cursorSeq) out.set(e.relPath, { text: e.after, eol: e.eol });
+      else if (!out.has(e.relPath)) out.set(e.relPath, { text: e.before, eol: e.eol });
+    }
+    return out;
+  }
+
   stateOf(seq: number): 'played' | 'playing' | 'pending' {
     if (seq === this.playingSeq) return 'playing';
     return seq < this.cursorSeq ? 'played' : 'pending';

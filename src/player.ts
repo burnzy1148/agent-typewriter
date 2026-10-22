@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { MirrorFileSystem } from './mirrorFs';
+import { MirrorFileSystem, mirrorBytes } from './mirrorFs';
 import { baseCharsPerMinute } from './pace';
 import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
 import type { ChangeEvent, Timeline } from './timeline';
@@ -40,7 +40,6 @@ export class Player implements vscode.Disposable {
   private snapping: Promise<void> = Promise.resolve();
   private waiters: Array<() => void> = [];
   private inFlight: Promise<void> = Promise.resolve();
-  private readonly encoder = new TextEncoder();
   private readonly flash = vscode.window.createTextEditorDecorationType({
     backgroundColor: new vscode.ThemeColor('diffEditor.insertedTextBackground'),
     isWholeLine: false,
@@ -443,7 +442,7 @@ export class Player implements vscode.Disposable {
   }
 
   private bytes(text: string, eol: Eol): Uint8Array {
-    return this.encoder.encode(eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text);
+    return mirrorBytes(text, eol);
   }
 
   // ---------------------------------------------------------------- waiting

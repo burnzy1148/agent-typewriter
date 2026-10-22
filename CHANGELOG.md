@@ -5,6 +5,7 @@
 - Typing speed is set in characters per minute: `charsPerMinute` replaces `charsPerSecond`, and the default is 350 per minute (was 35 per second, 2100 per minute). **Set Playback Speed... > Base speed...** reads and writes it.
 - `charsPerSecond` is deprecated but still honored, times 60, wherever `charsPerMinute` is not set. The output channel says when it is in effect.
 - **BREAKING**: `languageSpeeds` values are characters per minute. Multiply existing values by 60 to keep the same speed.
+- Mirror tabs left open across a reload or restart reopen with the text they showed, instead of "file not found". Mirror tabs for files with no recorded history are closed.
 
 ## 0.2.0 (2026-10-21)
 

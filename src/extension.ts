@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
-import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
+import { MirrorFileSystem, MIRROR_SCHEME, mirrorBytes, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
 import { activeProfileOf, describeProfile, isValidProfileName } from './profiles';
@@ -27,7 +27,12 @@ export interface AgentTypewriterApi {
   store: TimelineStore | undefined;
   /** Re-reads each folder's checkouts, as a window focus does, and returns them by folder URI. For tests. */
   refreshCheckouts(): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>>;
+  /** Closes mirror tabs whose file the mirror filesystem does not hold, as activation does once. Returns how many. For tests. */
+  closeOrphanMirrorTabs(): Promise<number>;
 }
+
+/** Mirror reads wait at most this long for the restored timeline to refill them. */
+const MIRROR_GATE_BACKSTOP_MS = 10_000;
 
 /** Final save on deactivation, set while active. */
 let finalSave: (() => void) | undefined;
@@ -630,6 +635,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     historyLoaded = true;
     applyPersistHistory();
   });
+  // Mirror files live in memory, so after a restart the tabs VS Code reopens
+  // have nothing behind them. Refill each recorded file's mirror from the
+  // restored timeline, then let reads through; the backstop lets them through
+  // if the restore stalls, and the refill still reloads those tabs later.
+  // Mirror tabs left with no file are closed once.
+  const closeOrphanMirrorTabs = async (): Promise<number> => {
+    const orphans = vscode.window.tabGroups.all
+      .flatMap((g) => g.tabs)
+      .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === MIRROR_SCHEME && !mirror.has(t.input.uri));
+    if (orphans.length === 0) return 0;
+    await vscode.window.tabGroups.close(orphans);
+    log.appendLine(`Closed ${orphans.length} mirror tab(s) with no recorded history.`);
+    return orphans.length;
+  };
+  const backstop = setTimeout(() => mirror.open(), MIRROR_GATE_BACKSTOP_MS);
+  context.subscriptions.push({ dispose: () => clearTimeout(backstop) });
+  const mirrorsRefilled = historyRestored
+    .catch(() => undefined)
+    .then(() => {
+      clearTimeout(backstop);
+      let refilled = 0;
+      for (const [rel, { text, eol }] of timeline.mirrorStates()) {
+        const uri = MirrorFileSystem.uriFor(rel);
+        if (mirror.has(uri)) continue;
+        mirror.writeFile(uri, mirrorBytes(text, eol));
+        refilled++;
+      }
+      if (refilled) log.appendLine(`Refilled ${refilled} mirror file(s) from the restored timeline.`);
+    })
+    .finally(() => {
+      mirror.open();
+      closeOrphanMirrorTabs().catch((err) => log.appendLine(`Could not close mirror tabs with no history: ${err}`));
+    });
+
   finalSave = () => {
     recorder.drainHeld();
     if (store?.isRunning) store.flushSync();
@@ -638,12 +677,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   void setWatching(false);
   await historyRestored;
+  await mirrorsRefilled;
   noteUnknownProfile();
   noteDeprecatedSpeed();
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder, store, scrubber, refreshCheckouts };
+  return { timeline, player, recorder, store, scrubber, refreshCheckouts, closeOrphanMirrorTabs };
 }
 
 /** Local time as yyyy-mm-dd-hhmm, for default session file names. */

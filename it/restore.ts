@@ -30,6 +30,26 @@ export async function run(): Promise<void> {
   const idle = () => timeline.pendingCount() === 0 && !timeline.all().some((e) => timeline.stateOf(e.seq) === 'playing');
   const expected = JSON.parse(fs.readFileSync(process.env.IT_EXPECT!, 'utf8'));
 
+  // --- 0. Mirror tabs left open before the reload reopen with the text they
+  // showed, in their line ending, before anything plays. A tab VS Code did not
+  // restore in this launch is opened here, as a restored tab would be.
+  {
+    const tabOf = (uri: vscode.Uri) =>
+      vscode.window.tabGroups.all.flatMap((g) => g.tabs).find((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
+    let restoredByVsCode = 0;
+    for (const [rel, want] of Object.entries(expected.mirrorTabs as Record<string, { text: string; eol: string }>)) {
+      const uri = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel });
+      if (tabOf(uri)) restoredByVsCode++;
+      else await vscode.commands.executeCommand('vscode.open', uri, { preview: false });
+      const text = want.eol === '\r\n' ? want.text.replace(/\n/g, '\r\n') : want.text;
+      await until(`restored mirror tab for ${rel}`, () => mirrorText(rel) === text, 10000);
+      const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())!;
+      assert.equal(doc.eol, want.eol === '\r\n' ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF, `restored mirror for ${rel} lost its line ending`);
+      assert.ok(tabOf(uri), `mirror tab for ${rel} is not open`);
+    }
+    console.log(`[it] mirror tabs reopen after reload ok (${restoredByVsCode} restored by VS Code)`);
+  }
+
   // --- 1. Same changes, same recorded text, same queue; playback paused.
   assert.deepEqual(timeline.all().map(persisted), expected.events, 'restored changes differ from the recorded ones');
   assert.equal(timeline.pendingCount(), expected.pending, 'queued count not restored');
@@ -49,9 +69,27 @@ export async function run(): Promise<void> {
   });
   await vscode.commands.executeCommand('agentTypewriter.togglePause');
   await until('restored queue to play', idle);
-  assert.deepEqual(order, ['src/queued1.ts', 'src/queued2.ts'], 'restored queue played out of order');
-  for (const rel of ['src/queued1.ts', 'src/queued2.ts']) assert.equal(mirrorText(rel), disk(rel), `mirror for ${rel} does not match disk`);
+  assert.deepEqual(order, ['src/tabQueued.ts', 'src/queued1.ts', 'src/queued2.ts'], 'restored queue played out of order');
+  for (const rel of ['src/tabQueued.ts', 'src/queued1.ts', 'src/queued2.ts']) assert.equal(mirrorText(rel), disk(rel), `mirror for ${rel} does not match disk`);
   console.log('[it] resume after restore ok');
+
+  // --- 2b. A mirror tab with no file behind it is closed; real-file tabs are not.
+  {
+    const orphan = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/orphan/none.ts' });
+    const real = vscode.Uri.file(path.join(root, 'src', 'queued1.ts'));
+    await Promise.race([Promise.resolve(vscode.commands.executeCommand('vscode.open', orphan, { preview: false })).catch(() => undefined), sleep(3000)]);
+    await vscode.commands.executeCommand('vscode.open', real, { preview: false });
+    const open = (uri: vscode.Uri) =>
+      vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
+    await until('orphan mirror tab to open', () => open(orphan), 5000);
+    assert.ok((await api.closeOrphanMirrorTabs()) >= 1, 'no orphan mirror tab was closed');
+    assert.ok(!open(orphan), 'the orphan mirror tab is still open');
+    assert.ok(open(real), 'a real-file tab was closed');
+    for (const rel of Object.keys(expected.mirrorTabs)) {
+      assert.ok(open(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel })), `mirror tab for ${rel} was closed though it has history`);
+    }
+    console.log('[it] orphan mirror tabs close ok');
+  }
 
   // --- 3. Save the session to a file outside the workspace, clear, load it, replay it.
   const gitStatus = () => execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });

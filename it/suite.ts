@@ -1631,23 +1631,34 @@ export async function run(): Promise<void> {
     await sleep(500);
   }
 
-  // --- 18. Leave two queued changes behind for the reload check in restore.ts,
-  // which runs in a second VS Code launch on the same workspace.
+  // --- 18. Leave three queued changes behind for the reload check in restore.ts,
+  // which runs in a second VS Code launch on the same workspace. Two mirror
+  // tabs stay open across it: an LF file played to the end, and a CRLF file
+  // played once with a second change queued behind it.
   await until('idle before reload setup', idle);
+  write('src/tabPlayed.ts', 'export const tabPlayed = 1;\n');
+  await sleep(300);
+  write('src/tabQueued.ts', 'export const tabQueued = 1;\r\n');
+  await until('mirror tabs to play', () => idle() && ['src/tabPlayed.ts', 'src/tabQueued.ts'].every((rel) => mirrorText(rel) === disk(rel)));
   if (!api.player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
   const beforeQueue = timeline.all().length;
+  write('src/tabQueued.ts', 'export const tabQueued = 2;\r\n');
+  await sleep(300);
   write('src/queued1.ts', 'export const queued1 = 1;\n');
   await sleep(300);
   write('src/queued2.ts', 'export const queued2 = 2;\n');
-  await until('queued changes recorded', () => timeline.all().length >= beforeQueue + 2, 20000);
-  assert.equal(timeline.pendingCount(), 2, 'expected two queued changes');
+  await until('queued changes recorded', () => timeline.all().length >= beforeQueue + 3, 20000);
+  assert.equal(timeline.pendingCount(), 3, 'expected three queued changes');
+  const states = timeline.mirrorStates();
+  const mirrorTabs = Object.fromEntries(['src/tabPlayed.ts', 'src/tabQueued.ts'].map((rel) => [rel, states.get(rel)]));
+  assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'queued mirror state is not the played text');
   assert.ok(api.store, 'no timeline store');
   await api.store.flush();
   fs.writeFileSync(
     process.env.IT_EXPECT!,
-    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount() }),
+    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount(), mirrorTabs }),
   );
-  console.log(`[it] left ${timeline.all().length} changes (2 queued) for the reload check`);
+  console.log(`[it] left ${timeline.all().length} changes (3 queued) for the reload check`);
   // Stop first, so choosing only stores the choice; restore.ts checks it survives the reload.
   await vscode.commands.executeCommand('agentTypewriter.stop');
   await choose(nestedDir);
