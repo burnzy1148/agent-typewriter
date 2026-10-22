@@ -79,7 +79,8 @@ export async function run(): Promise<void> {
   assert.equal(timeline.pendingCount(), recorded.length, 'a bad file changed the buffer');
 
   await vscode.commands.executeCommand('agentTypewriter.togglePause');
-  await until('loaded session to play', idle, 60000);
+  // Replays every change suite.ts recorded, so allow time per change; Windows runners are the slowest.
+  await until('loaded session to play', idle, Math.max(60000, recorded.length * 1500));
   const last = new Map(recorded.map((e) => [e.relPath, e]));
   for (const [rel, e] of last) {
     assert.equal(mirrorText(rel)?.replace(/\r\n/g, '\n'), e.after, `mirror for ${rel} does not end at its last recorded text`);
