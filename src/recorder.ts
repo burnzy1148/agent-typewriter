@@ -34,6 +34,13 @@ const OLD_SAVE_GRACE_MS = 250;
 /** How long after git failed to list a folder's ignored paths the listing is tried again. */
 const IGNORE_RETRY_MS = 2000;
 
+/**
+ * A rebuild keeps a file's current baseline when the file was written this
+ * long before the rebuild started: its change may still be on its way through
+ * the watcher, and the current baseline is what that change starts from.
+ */
+const REBUILD_RECENT_MS = 10_000;
+
 /** How many recent watcher events and read outcomes the recorder keeps for diagnostics. */
 const ACTIVITY_LIMIT = 200;
 
@@ -75,8 +82,6 @@ export class Recorder implements vscode.Disposable {
   /** Folders already logged as having no gitignore rules this session. */
   private readonly ignoreNoted = new Set<string>();
   private ignoreRefresh: NodeJS.Timeout | undefined;
-  /** A retry of a failed gitignore listing is scheduled or done; cleared once no folder loses its rules. */
-  private ignoreRetried = false;
   /** The checkout each workspace folder records while running, keyed by folder URI. */
   private readonly scopes = new Map<string, Scope>();
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
@@ -306,7 +311,6 @@ export class Recorder implements vscode.Disposable {
 
     this.gitUnavailable = false;
     this.ignoreNoted.clear();
-    this.ignoreRetried = false;
     await this.refreshIgnored();
     await this.captureBaseline();
     this.log.appendLine(`Watching ${this.watchedCount} files (${this.filter.describe()}).`);
@@ -757,7 +761,8 @@ export class Recorder implements vscode.Disposable {
       const st = await stat(uri);
       if (!isFile(st)) return;
       const key = uri.toString();
-      if (writtenDuringCapture(st.mtime, startedAt, Date.now())) writtenMeanwhile.add(key);
+      const recent = before && st.mtime >= startedAt - REBUILD_RECENT_MS && (before.snapshots.has(key) || before.gitBaselines.has(key));
+      if (recent || writtenDuringCapture(st.mtime, startedAt, Date.now())) writtenMeanwhile.add(key);
       // A file stamped in the future counts as the newest.
       else stats.push({ key, size: st.size, mtime: Math.min(st.mtime, startedAt) });
     });
@@ -842,12 +847,8 @@ export class Recorder implements vscode.Disposable {
     }
     this.ignored.clear();
     for (const [k, v] of next) this.ignored.set(k, v);
-    if (lost && !this.ignoreRetried) {
-      this.ignoreRetried = true;
-      this.scheduleIgnoreRefresh(IGNORE_RETRY_MS);
-    } else if (!lost) {
-      this.ignoreRetried = false;
-    }
+    // The rules are dropped now, so a second failure does not retry again.
+    if (lost) this.scheduleIgnoreRefresh(IGNORE_RETRY_MS);
   }
 
   /** A file the ignore snapshot doesn't know yet: asks git once and remembers an ignored answer. */

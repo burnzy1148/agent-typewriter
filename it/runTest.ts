@@ -57,6 +57,16 @@ async function main() {
 
   // --- review group REC1: fixtures
 
+  // REC2: committed files for the baseline sections, in a second commit.
+  fs.mkdirSync(path.join(workspace, 'src/rec2'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'src/rec2/hidden.ts'), 'export const hidden = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/agents.ts'), '// Agents\nexport const one = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/plain.ts'), 'export const plain = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/toggle.ts'), 'export const toggle = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/big.ts'), `export const big = '${'b'.repeat(2000)}';\n`);
+  git('add', 'src/rec2');
+  git('commit', '-q', '-m', 'rec2 fixtures');
+
   // VS Code puts an IPC socket in the user-data dir. The default one under
   // .vscode-test/ is too long for macOS's 104-char socket limit in deep
   // checkouts such as worktrees, so keep it short.
@@ -120,19 +130,7 @@ exports.run = async () => {
   // A saved multi-root workspace [a, b] where b has a sibling worktree, for
   // adding and removing folders while recording (folders.ts). Adding a folder
   // to a single-folder window restarts the extension host, so it needs its own
-  // launch. folders.ts is bundled here because the "it" script in package.json
-  // only bundles suite.ts, restore.ts and runTest.ts.
-  const esbuild = require(path.join(extensionDevelopmentPath, 'node_modules', 'esbuild'));
-  esbuild.buildSync({
-    entryPoints: [path.join(extensionDevelopmentPath, 'it', 'folders.ts')],
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    target: 'node18',
-    external: ['vscode'],
-    outfile: path.resolve(__dirname, 'folders.js'),
-    logLevel: 'warning',
-  });
+  // launch.
   const multi = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-multi-'));
   const gitAt = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', '-c', 'core.autocrlf=false', ...args], { cwd, stdio: 'ignore' });
@@ -167,6 +165,38 @@ exports.run = async () => {
     launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...launchArgs.slice(2)],
     extensionTestsEnv: { IT_MULTI: multi },
   });
+
+  // REC2: a saved workspace whose folders nest, [repo, repo/pkg], outer
+  // first, for git baselines of the inner folder's files (nestedFolders.ts).
+  const nest = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-nest-'));
+  const nestRepo = path.join(nest, 'repo');
+  fs.mkdirSync(path.join(nestRepo, 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(nestRepo, 'package.json'), '{ "name": "ROOT" }\n');
+  fs.writeFileSync(path.join(nestRepo, 'pkg', 'package.json'), '{ "name": "PKG" }\n');
+  gitAt(nestRepo, 'init', '-q');
+  gitAt(nestRepo, 'add', '-A');
+  gitAt(nestRepo, 'commit', '-q', '-m', 'initial');
+  const nestFile = path.join(nest, 'nest.code-workspace');
+  fs.writeFileSync(
+    nestFile,
+    JSON.stringify({
+      folders: [{ path: 'repo' }, { path: 'repo/pkg' }],
+      settings: {
+        'agentTypewriter.extensions': ['json'],
+        'agentTypewriter.debounceMs': 100,
+        'agentTypewriter.reorderWindowMs': 0,
+        'agentTypewriter.gitBaselines': true,
+        'agentTypewriter.persistHistory': false,
+      },
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'nestedFolders.js'),
+    launchArgs: [nestFile, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    extensionTestsEnv: { IT_NEST: nestRepo },
+  });
+
 }
 
 main().catch((err) => {

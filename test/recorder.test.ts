@@ -146,8 +146,25 @@ test('rebuild: an edit flushed after the rebuild finished is recorded from the o
   assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'src/app.ts', before: 'one\n', after: 'one\ntwo\n' }]);
 });
 
+test('rebuild: a write just before the rebuild, reported after it, is recorded from the old baseline', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/app.ts': 'one\n' });
+  const s = settings();
+  const t = recorderOn(s, repo);
+  await t.recorder.start();
+  fs.writeFileSync(path.join(repo, 'src/app.ts'), 'one\ntwo\n');
+  await sleep(20);
+  s.gitBaselines = false;
+  await t.recorder.refreshBaselines();
+  mock.fire('change', path.join(repo, 'src/app.ts'));
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'src/app.ts', before: 'one\n', after: 'one\ntwo\n' }]);
+});
+
 test('rebuild: turning gitBaselines off moves untouched files to memory, within the budget', { skip: noGit }, async () => {
   const repo = committedRepo({ 'a.ts': 'a\n', 'b.ts': 'b\n' });
+  // Files written moments ago keep their baseline through a rebuild.
+  const hourAgo = new Date(Date.now() - 3_600_000);
+  for (const f of ['a.ts', 'b.ts']) fs.utimesSync(path.join(repo, f), hourAgo, hourAgo);
   const s = settings();
   const t = recorderOn(s, repo);
   await t.recorder.start();
