@@ -1649,9 +1649,14 @@ export async function run(): Promise<void> {
   write('src/queued2.ts', 'export const queued2 = 2;\n');
   await until('queued changes recorded', () => timeline.all().length >= beforeQueue + 3, 20000);
   assert.equal(timeline.pendingCount(), 3, 'expected three queued changes');
-  const states = timeline.mirrorStates();
-  const mirrorTabs = Object.fromEntries(['src/tabPlayed.ts', 'src/tabQueued.ts'].map((rel) => [rel, states.get(rel)]));
-  assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'queued mirror state is not the played text');
+  // What each tab shows now, LF text plus its line ending, is what it must show after the reload.
+  const shown = (rel: string) => {
+    const doc = vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel)!;
+    return { text: doc.getText().replace(/\r\n/g, '\n'), eol: doc.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n' };
+  };
+  const mirrorTabs = Object.fromEntries(['src/tabPlayed.ts', 'src/tabQueued.ts'].map((rel) => [rel, shown(rel)]));
+  assert.deepEqual(mirrorTabs['src/tabPlayed.ts'], { text: 'export const tabPlayed = 1;\n', eol: '\n' });
+  assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'the queued change was typed while paused');
   assert.ok(api.store, 'no timeline store');
   await api.store.flush();
   fs.writeFileSync(

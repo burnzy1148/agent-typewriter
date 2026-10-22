@@ -105,6 +105,22 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
   }
 
   /**
+   * Adds the files that are not here yet, announcing them in one event so a
+   * tab already showing "not found" reloads. Returns how many were added.
+   */
+  seed(files: Iterable<[vscode.Uri, Uint8Array]>): number {
+    const now = Date.now();
+    const added: vscode.FileChangeEvent[] = [];
+    for (const [uri, data] of files) {
+      if (this.files.has(uri.path)) continue;
+      this.files.set(uri.path, { data, mtime: now, ctime: now });
+      added.push({ type: vscode.FileChangeType.Created, uri });
+    }
+    if (added.length) this.emitter.fire(added);
+    return added.length;
+  }
+
+  /**
    * Replaces a file's bytes without telling VS Code, so an open document that
    * is being typed into is not reloaded. A document that is opened or reverted
    * later reads these bytes.

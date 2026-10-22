@@ -23,7 +23,7 @@ When VS Code reopens a mirror tab after a reload or restart and the restored tim
 - **THEN** the restored mirror tab's line ending is CRLF
 
 ### Requirement: Mirror tabs without history are closed
-After a reload or restart, a restored mirror tab whose file has no change in the restored timeline SHALL be closed rather than left showing an error. Tabs for the user's real files SHALL NOT be affected.
+After a reload or restart, a restored mirror tab whose file has no change in the restored timeline SHALL be closed rather than left showing an error, as SHALL a restored compare tab with such a mirror on either side. Tabs for the user's real files SHALL NOT be affected.
 
 #### Scenario: History turned off
 - **WHEN** `persistHistory` is off, a mirror tab is open, and the window is reloaded
@@ -33,3 +33,7 @@ After a reload or restart, a restored mirror tab whose file has no change in the
 #### Scenario: File aged out of the history limit
 - **WHEN** a mirror tab is open for a file whose changes are all older than the newest `historyLimit` changes, and the window is reloaded
 - **THEN** that mirror tab is closed and mirror tabs for files still in the timeline are restored
+
+#### Scenario: Compare tab with a mirror side
+- **WHEN** a compare tab between a mirror and a real file is open, the mirror's file has no change in the restored timeline, and the window is reloaded
+- **THEN** the compare tab is closed

@@ -344,7 +344,7 @@ export class Player implements vscode.Disposable {
 
   private async showMirror(relPath: string, initial: string, eol: Eol): Promise<vscode.TextEditor> {
     const uri = MirrorFileSystem.uriFor(relPath);
-    if (!this.mirror.has(uri)) this.mirror.writeFile(uri, this.bytes(initial, eol));
+    if (!this.mirror.has(uri)) this.mirror.writeFile(uri, mirrorBytes(initial, eol));
     const doc = await vscode.workspace.openTextDocument(uri);
     const s = this.settings();
     let column: vscode.ViewColumn;
@@ -407,7 +407,7 @@ export class Player implements vscode.Disposable {
    * reloads (on showing the tab, on window focus, on revert) change nothing.
    */
   private storeExpected(uri: vscode.Uri): void {
-    this.mirror.store(uri, this.bytes(this.expected, this.currentEol));
+    this.mirror.store(uri, mirrorBytes(this.expected, this.currentEol));
   }
 
   private columnStillOpen(column: vscode.ViewColumn): boolean {
@@ -427,7 +427,7 @@ export class Player implements vscode.Disposable {
 
   /** Stores a played change's after text in the mirror filesystem, for documents opened or reverted later. */
   private store(e: ChangeEvent): void {
-    this.mirror.store(MirrorFileSystem.uriFor(e.relPath), this.bytes(e.after, e.eol));
+    this.mirror.store(MirrorFileSystem.uriFor(e.relPath), mirrorBytes(e.after, e.eol));
   }
 
   /** Puts a file's mirror, open or not, into `e`'s after state. */
@@ -436,13 +436,9 @@ export class Player implements vscode.Disposable {
     // A new file is announced, so a tab restored after a reload (still showing
     // "not found") loads it; an existing one is replaced quietly.
     if (this.mirror.has(uri)) this.store(e);
-    else this.mirror.writeFile(uri, this.bytes(e.after, e.eol));
+    else this.mirror.writeFile(uri, mirrorBytes(e.after, e.eol));
     const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
     if (doc) await setText(doc, e.after, e.eol);
-  }
-
-  private bytes(text: string, eol: Eol): Uint8Array {
-    return mirrorBytes(text, eol);
   }
 
   // ---------------------------------------------------------------- waiting

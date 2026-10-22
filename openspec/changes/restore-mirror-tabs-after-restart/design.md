@@ -34,21 +34,21 @@ It reads only recorded event text, so the "before is captured at record time" ru
 
 *Alternative considered:* `latestStates()` (newest event's after text for every path). It would show queued changes as already done, and resuming would visibly snap the mirror back before typing.
 
-### 2. Seeding uses `writeFile`, only for paths not yet present
+### 2. Seeding announces new files in one event, only for paths not yet present
 
-After `timeline.restore` in `historyRestored`, the extension seeds each path from `mirrorStates()` with `mirror.writeFile` (CRLF applied the same way as `Player.bytes`), skipping paths `mirror.has` already reports. `writeFile` fires `Created`, so even a tab that somehow already resolved to "not found" reloads, the same thing `settle` relies on. The CRLF encoding moves to a small shared helper (for example `mirrorBytes(text, eol)` in `mirrorFs.ts`), which `Player.bytes` then calls.
+After `historyRestored`, the extension passes every path from `mirrorStates()` to `mirror.seed`, which adds the files it does not hold yet and fires one batched `Created` event for them. The event means even a tab that somehow already resolved to "not found" reloads, the same thing `settle` relies on; batching keeps it to one round trip however many files the timeline holds. The CRLF encoding moves to a shared `mirrorBytes(text, eol)` in `mirrorFs.ts`, which the player calls too.
 
 ### 3. Readiness gate on the provider
 
-`MirrorFileSystem` gets a `ready` promise and an `open()` method. While the gate is shut, `stat`, `readFile` and `readDirectory` return a promise that waits for `ready` and then answers from the map. Once open, they answer synchronously as today. The provider interface allows `Thenable` results. Writes, `has` and `store` are not gated: only the extension writes, and it writes after seeding.
+`MirrorFileSystem` gets an internal gate promise and an `open()` method. While the gate is shut, `stat`, `readFile` and `readDirectory` return a promise that waits for `ready` and then answers from the map. Once open, they answer synchronously as today. The provider interface allows `Thenable` results. Writes, `has` and `store` are not gated: only the extension writes, and it writes after seeding.
 
-`activate` opens the gate in a `finally` after `historyRestored`, so a failed restore never leaves reads hanging. As a backstop, the gate also opens after 10 s even if `historyRestored` has not settled. That covers a repository settings file whose `ready` never resolves.
+`activate` opens the gate in a `finally` after `historyRestored`, so a failed restore never leaves reads hanging. As a backstop, the gate also opens after 10 s even if `historyRestored` has not settled, which covers a repository settings file whose `ready` never resolves, and it opens when the extension is disposed.
 
 *Alternative considered:* relying on VS Code waiting for `activate()` to return before calling the provider. That is not guaranteed for `onFileSystem` activation, since the provider is usable as soon as it is registered, and `historyRestored` waits on file I/O.
 
 ### 4. Closing orphaned mirror tabs
 
-Right after the gate opens, `closeOrphanMirrorTabs()` collects every tab in `vscode.window.tabGroups.all` whose input is a `TabInputText` with the `agent-typewriter` scheme and whose URI `mirror.has` does not know. It closes them with one `tabGroups.close(tabs)` call (VS Code 1.85 API) and logs how many. Real-file tabs, snapshot diff tabs and other schemes are never touched. This runs once per activation. The function is exposed on `AgentTypewriterApi` so the integration test can drive it directly.
+Right after the gate opens, `closeOrphanMirrorTabs()` collects every tab in `vscode.window.tabGroups.all` whose input is a `TabInputText` with an `agent-typewriter` URI that `mirror.has` does not know, or a `TabInputTextDiff` with such a URI on either side. It closes them with one `tabGroups.close(tabs)` call (VS Code 1.85 API) and logs how many. Real-file tabs, snapshot diff tabs and other schemes are never touched. This runs once per activation. The function, and a `mirrorRestore` promise with the refilled and closed counts, are exposed on `AgentTypewriterApi` for the integration test.
 
 Workbench tab state is restored before extensions activate, so restored mirror tabs are already in `tabGroups` when this runs, even ones VS Code has not resolved yet (inactive tabs load lazily).
 
@@ -60,6 +60,8 @@ Workbench tab state is restored before extensions activate, so restored mirror t
 - [The 10 s backstop opens the gate before seeding when the repository file is very slow] → Tabs show "not found" as today, and seeding's `Created` event reloads them once it runs. No worse than the current behavior.
 - [Seeding many files at activation] → One `Map.set` and one change event per recorded path, bounded by `historyLimit`. Text is already in memory from the restore.
 - [Gated reads change provider timing for other callers] → Only during activation. The extension's own code doesn't read through the provider.
+- [The integration harness cannot reproduce a tab restored during activation] → VS Code does not restore editors in the test launches. The gate is unit-tested against the mock, the reload launch checks the refill and the text tabs show, and orphan closing is checked through the API. A real restart is checked by hand.
+- [The refill shows the text at the playback position, not always what was on screen] → After Replay Entire Buffer or a backward seek, a file not yet replayed shows its earliest before text, and a change cut off mid-typing comes back as its before text. That is what playback types from next, so resuming never snaps the mirror.
 
 ## Migration Plan
 

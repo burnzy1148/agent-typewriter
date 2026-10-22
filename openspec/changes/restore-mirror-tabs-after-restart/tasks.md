@@ -6,17 +6,17 @@
 
 ## 2. Mirror filesystem
 
-- [x] 2.1 In `src/mirrorFs.ts`, add a shared `mirrorBytes(text, eol)` helper and have `Player.bytes` use it. Add a readiness gate: a `ready` promise and an `open()` method. While the gate is shut, `stat`, `readFile` and `readDirectory` wait for it, then answer from the map; once open they answer synchronously as now. Verify `npm run typecheck` and `npm test` pass.
+- [x] 2.1 In `src/mirrorFs.ts`, add a shared `mirrorBytes(text, eol)` helper and have the player use it, and a `seed(files)` method that adds missing files in one `Created` event. Add a readiness gate: an internal promise and an `open()` method. While the gate is shut, `stat`, `readFile` and `readDirectory` wait for it, then answer from the map; once open they answer synchronously as now. Verify with unit tests in `test/mirrorFs.test.ts` (reads pending until `open()`, then answered, FileNotFound for a missing file, synchronous once open; `seed` adds only new files in one event, with CRLF), and `npm run typecheck` and `npm test` pass.
 
 ## 3. Activation wiring
 
-- [x] 3.1 In `src/extension.ts`, after `timeline.restore` in `historyRestored`, seed each path from `mirrorStates()` with `mirror.writeFile(MirrorFileSystem.uriFor(rel), mirrorBytes(text, eol))`, skipping paths `mirror.has` already knows. Open the gate in a `finally` after `historyRestored`, with a 10 s backstop timer, and log how many mirrors were seeded. Verify `npm run typecheck` passes.
-- [x] 3.2 Add `closeOrphanMirrorTabs()`: close every `TabInputText` tab with the `agent-typewriter` scheme that `mirror.has` does not know, in one `tabGroups.close` call, and log the count. Call it once right after the gate opens, and expose it on `AgentTypewriterApi` for tests. Verify `npm run typecheck` passes.
+- [x] 3.1 In `src/extension.ts`, after `timeline.restore` in `historyRestored`, seed every path from `mirrorStates()` with `mirror.seed`. Open the gate in a `finally` after `historyRestored`, with a 10 s backstop timer and on dispose, and log how many mirrors were seeded. Expose a `mirrorRestore` promise with the refilled and closed counts. Verify `npm run typecheck` passes.
+- [x] 3.2 Add `closeOrphanMirrorTabs()`: close every `TabInputText` tab with an `agent-typewriter` URI that `mirror.has` does not know, and every `TabInputTextDiff` with one on either side, in one `tabGroups.close` call, and log the count. Call it once right after the gate opens, and expose it on `AgentTypewriterApi` for tests. Verify `npm run typecheck` passes.
 
 ## 4. Integration checks
 
-- [x] 4.1 At the end of `it/suite.ts` (section 18), make sure mirror tabs are open for at least one played file, a CRLF file if the suite has one, and a file whose newest change is queued behind a played one, and record their relative paths and expected text in `IT_EXPECT`. At the top of `it/restore.ts`, before anything plays, open any of those tabs VS Code did not restore (`vscode.open`), then assert each document reads its expected text and line ending with no error. Check that resuming types the queued change into its tab. Verify `npm run it` passes.
-- [ ] 4.2 In `it/restore.ts`, open a mirror tab for a path not in the timeline and a real-file tab, call `api.closeOrphanMirrorTabs()`, and assert the mirror tab is closed and the real-file tab is still open. Place it so the PLAY section's hand-opened `play/reload2.ts` tab is not touched. Verify `npm run it` passes locally, and on CI on Ubuntu and Windows.
+- [x] 4.1 At the end of `it/suite.ts` (section 18), make sure mirror tabs are open for at least one played file, a CRLF file if the suite has one, and a file whose newest change is queued behind a played one, and record their relative paths and the text and line ending each tab shows in `IT_EXPECT`. At the top of `it/restore.ts`, before anything plays, assert `mirrorRestore` refilled at least those files, open each tab (`vscode.open`), then assert each document reads its expected text and line ending with no error. Check that resuming types the queued change into its tab. Verify `npm run it` passes.
+- [ ] 4.2 In `it/restore.ts`, open a mirror tab and a compare tab for paths not in the timeline, and a real-file tab, call `api.closeOrphanMirrorTabs()`, and assert both orphan tabs are closed and the real-file tab is still open. Place it so the PLAY section's hand-opened `play/reload2.ts` tab is not touched. Verify `npm run it` passes locally, and on CI on Ubuntu and Windows.
 
 ## 5. Docs
 

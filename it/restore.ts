@@ -31,23 +31,27 @@ export async function run(): Promise<void> {
   const expected = JSON.parse(fs.readFileSync(process.env.IT_EXPECT!, 'utf8'));
 
   // --- 0. Mirror tabs left open before the reload reopen with the text they
-  // showed, in their line ending, before anything plays. A tab VS Code did not
-  // restore in this launch is opened here, as a restored tab would be.
+  // showed, in their line ending, before anything plays. VS Code does not
+  // restore editors in these test launches, so a tab it did not restore is
+  // opened here; opening one it did restore loads its document.
   {
+    const mirrorTabs = expected.mirrorTabs as Record<string, { text: string; eol: string }>;
+    const { refilled, closed } = await api.mirrorRestore;
+    assert.ok(refilled >= Object.keys(mirrorTabs).length, `activation refilled only ${refilled} mirror file(s)`);
     const tabOf = (uri: vscode.Uri) =>
       vscode.window.tabGroups.all.flatMap((g) => g.tabs).find((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
     let restoredByVsCode = 0;
-    for (const [rel, want] of Object.entries(expected.mirrorTabs as Record<string, { text: string; eol: string }>)) {
+    for (const [rel, want] of Object.entries(mirrorTabs)) {
       const uri = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel });
       if (tabOf(uri)) restoredByVsCode++;
-      else await vscode.commands.executeCommand('vscode.open', uri, { preview: false });
+      await vscode.commands.executeCommand('vscode.open', uri, { preview: false });
       const text = want.eol === '\r\n' ? want.text.replace(/\n/g, '\r\n') : want.text;
       await until(`restored mirror tab for ${rel}`, () => mirrorText(rel) === text, 10000);
       const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString())!;
       assert.equal(doc.eol, want.eol === '\r\n' ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF, `restored mirror for ${rel} lost its line ending`);
       assert.ok(tabOf(uri), `mirror tab for ${rel} is not open`);
     }
-    console.log(`[it] mirror tabs reopen after reload ok (${restoredByVsCode} restored by VS Code)`);
+    console.log(`[it] mirror tabs reopen after reload ok (${refilled} refilled, ${closed} orphan tab(s) closed, ${restoredByVsCode} tab(s) restored by VS Code)`);
   }
 
   // --- 1. Same changes, same recorded text, same queue; playback paused.
@@ -73,7 +77,7 @@ export async function run(): Promise<void> {
   for (const rel of ['src/tabQueued.ts', 'src/queued1.ts', 'src/queued2.ts']) assert.equal(mirrorText(rel), disk(rel), `mirror for ${rel} does not match disk`);
   console.log('[it] resume after restore ok');
 
-  // --- 2b. A mirror tab with no file behind it is closed; real-file tabs are not.
+  // --- 2b. A mirror or compare tab with no mirror file behind it is closed; real-file tabs are not.
   {
     const orphan = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/orphan/none.ts' });
     const real = vscode.Uri.file(path.join(root, 'src', 'queued1.ts'));
@@ -82,8 +86,15 @@ export async function run(): Promise<void> {
     const open = (uri: vscode.Uri) =>
       vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
     await until('orphan mirror tab to open', () => open(orphan), 5000);
-    assert.ok((await api.closeOrphanMirrorTabs()) >= 1, 'no orphan mirror tab was closed');
+    // A compare tab with an orphan mirror on one side is closed too.
+    const orphanSide = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/orphan/diff.ts' });
+    await Promise.race([Promise.resolve(vscode.commands.executeCommand('vscode.diff', orphanSide, real, 'orphan diff', { preview: false })).catch(() => undefined), sleep(3000)]);
+    const diffOpen = () =>
+      vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.input instanceof vscode.TabInputTextDiff && t.input.original.toString() === orphanSide.toString());
+    await until('orphan diff tab to open', diffOpen, 5000);
+    assert.ok((await api.closeOrphanMirrorTabs()) >= 2, 'the orphan mirror tabs were not closed');
     assert.ok(!open(orphan), 'the orphan mirror tab is still open');
+    assert.ok(!diffOpen(), 'the orphan diff tab is still open');
     assert.ok(open(real), 'a real-file tab was closed');
     for (const rel of Object.keys(expected.mirrorTabs)) {
       assert.ok(open(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel })), `mirror tab for ${rel} was closed though it has history`);
