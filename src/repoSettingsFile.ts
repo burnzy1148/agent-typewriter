@@ -7,8 +7,8 @@ import { REPO_SETTINGS_FILE, changedKeys, parseRepoSettings, type RepoValues } f
  */
 export class RepoSettingsFile implements vscode.Disposable {
   private current: RepoValues = {};
-  /** True while the file on disk is unusable; its previous values stay in effect. */
-  private broken = false;
+  /** Why the file on disk is unusable, while it is; its previous values stay in effect. */
+  private broken: 'invalid' | 'unreadable' | undefined;
   private watcher: vscode.FileSystemWatcher | undefined;
   private loading: Promise<void> = Promise.resolve();
   private readonly emitter = new vscode.EventEmitter<string[]>();
@@ -64,24 +64,32 @@ export class RepoSettingsFile implements vscode.Disposable {
 
   private async load(): Promise<void> {
     const uri = this.uri;
-    const bytes = uri && (await readIfExists(uri));
+    let bytes: Uint8Array | undefined;
+    try {
+      bytes = uri && (await readIfExists(uri));
+    } catch (err) {
+      this.markBroken(
+        'unreadable',
+        `${REPO_SETTINGS_FILE} could not be read (${err instanceof Error ? err.message : String(err)}); keeping its previous values until it can be.`,
+        `Agent Typewriter: ${REPO_SETTINGS_FILE} could not be read. Its previous values stay in effect until it can be read.`,
+      );
+      return;
+    }
     let next: RepoValues = {};
     if (bytes) {
       const r = parseRepoSettings(this.decoder.decode(bytes));
       if (!r.ok) {
-        if (!this.broken) {
-          this.broken = true;
-          this.log.appendLine(`${REPO_SETTINGS_FILE} is not usable (${r.error}); keeping its previous values until it is fixed.`);
-          void vscode.window.showWarningMessage(
-            `Agent Typewriter: ${REPO_SETTINGS_FILE} is not valid JSON. Its previous values stay in effect until it is fixed.`,
-          );
-        }
+        this.markBroken(
+          'invalid',
+          `${REPO_SETTINGS_FILE} is not usable (${r.error}); keeping its previous values until it is fixed.`,
+          `Agent Typewriter: ${REPO_SETTINGS_FILE} is not valid JSON. Its previous values stay in effect until it is fixed.`,
+        );
         return;
       }
       for (const p of r.problems) this.log.appendLine(`${REPO_SETTINGS_FILE}: ${p}`);
       next = r.values;
     }
-    this.broken = false;
+    this.broken = undefined;
     const changed = changedKeys(this.current, next);
     if (changed.length === 0) return;
     this.current = next;
@@ -92,13 +100,28 @@ export class RepoSettingsFile implements vscode.Disposable {
     );
     this.emitter.fire(changed);
   }
+
+  /** Logs and warns once per broken state; the current values stay. */
+  private markBroken(why: 'invalid' | 'unreadable', logLine: string, warning: string): void {
+    if (this.broken === why) return;
+    this.broken = why;
+    this.log.appendLine(logLine);
+    void vscode.window.showWarningMessage(warning);
+  }
 }
 
+/** The file's bytes, or undefined when there is no file (a directory of that name counts as none). */
 async function readIfExists(uri: vscode.Uri): Promise<Uint8Array | undefined> {
   try {
     return await vscode.workspace.fs.readFile(uri);
   } catch (err) {
-    if (err instanceof vscode.FileSystemError && err.code === 'FileNotFound') return undefined;
+    if (err instanceof vscode.FileSystemError && (err.code === 'FileNotFound' || err.code === 'FileIsADirectory')) return undefined;
+    // Not every platform reports reading a directory as FileIsADirectory.
+    const isDir = await vscode.workspace.fs.stat(uri).then(
+      (s) => (s.type & vscode.FileType.Directory) !== 0,
+      () => false,
+    );
+    if (isDir) return undefined;
     throw err;
   }
 }

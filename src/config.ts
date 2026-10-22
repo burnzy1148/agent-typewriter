@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import type { FilterSettings } from './filter';
 import { resolveReorderWindow } from './reorder';
 import { mergeProfiles, parseProfiles, type FilterProfile, type Profiles } from './profiles';
-import { pickLayer, type RepoValues } from './repoSettings';
+import { pickLayer, REPO_SETTING_KINDS, type RepoValues } from './repoSettings';
+import { isFiniteNumber, numberSetting } from './numberSetting';
 
 export const SECTION = 'agentTypewriter';
 
@@ -44,10 +45,13 @@ export function setRepoValues(values: RepoValues): void {
   repoValues = values;
 }
 
-/** Of these repository file keys, the ones a workspace setting overrides. */
+/** Of these repository file keys, the ones a workspace setting overrides (a wrong-typed one does not). */
 export function workspaceOverrides(keys: string[]): string[] {
   const c = vscode.workspace.getConfiguration(SECTION);
-  return keys.filter((k) => c.inspect(k)?.workspaceValue !== undefined);
+  return keys.filter((k) => {
+    const v = c.inspect(k)?.workspaceValue;
+    return v !== undefined && (checkFor(k)?.(v) ?? true);
+  });
 }
 
 export function readSettings(): Settings {
@@ -58,27 +62,30 @@ export function readSettings(): Settings {
   const activeProfile = typeof rawActive === 'string' ? rawActive : '';
   // The active profile's filters sit between the repository file and workspace settings.
   const f = layered(cfg, Object.hasOwn(profiles, activeProfile) ? profiles[activeProfile] : undefined);
+  // A wrong-typed value counts as unset; numbers are then clamped.
+  const num = (key: string, fallback: number, min?: number, max?: number) =>
+    numberSetting(c.get(key, fallback, isFiniteNumber), fallback, min, max);
   return {
     autoStart: c.get('autoStart', false),
-    include: f.get('include', ['**/*']),
-    exclude: f.get('exclude', []),
-    extensions: f.get('extensions', []),
+    include: f.get('include', ['**/*'], isStringArray),
+    exclude: f.get('exclude', [], isStringArray),
+    extensions: f.get('extensions', [], isStringArray),
     respectGitignore: f.get('respectGitignore', false),
     activeProfile,
     profiles,
-    charsPerSecond: Math.max(1, c.get('charsPerSecond', 35)),
+    charsPerSecond: num('charsPerSecond', 35, 1),
     languageSpeeds: asRecord(c.get<unknown>('languageSpeeds', {})),
-    jitter: clamp(c.get('jitter', 0.6), 0, 1),
-    catchUpFactor: Math.max(0, c.get('catchUpFactor', 0.5)),
-    maxSpeedup: Math.max(1, c.get('maxSpeedup', 8)),
-    maxAnimatedChars: c.get('maxAnimatedChars', 6000),
-    fileSwitchDelayMs: Math.max(0, c.get('fileSwitchDelayMs', 600)),
-    debounceMs: Math.max(0, c.get('debounceMs', 200)),
+    jitter: num('jitter', 0.6, 0, 1),
+    catchUpFactor: num('catchUpFactor', 0.5, 0),
+    maxSpeedup: num('maxSpeedup', 8, 1),
+    maxAnimatedChars: num('maxAnimatedChars', 6000),
+    fileSwitchDelayMs: num('fileSwitchDelayMs', 600, 0),
+    debounceMs: num('debounceMs', 200, 0),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
-    maxFileSizeKB: Math.max(1, c.get('maxFileSizeKB', 512)),
+    maxFileSizeKB: num('maxFileSizeKB', 512, 1),
     gitBaselines: c.get('gitBaselines', true),
-    baselineBudgetMB: Math.max(0, c.get('baselineBudgetMB', 256)),
-    historyLimit: Math.max(10, c.get('historyLimit', 500)),
+    baselineBudgetMB: num('baselineBudgetMB', 256, 0),
+    historyLimit: num('historyLimit', 500, 10),
     persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     viewColumn: c.get('viewColumn', 'beside'),
@@ -108,12 +115,22 @@ export function storedProfiles(): Record<string, unknown> {
 /**
  * Reads like `cfg.get`, with repository file values slotted between user and
  * workspace settings, and the active profile's values just above the file.
+ * With `valid`, a value that fails it is treated as unset and the next layer
+ * applies, down to `fallback`.
  */
 function layered(cfg: vscode.WorkspaceConfiguration, profile?: FilterProfile) {
   const above = (profile ?? {}) as Record<string, unknown>;
   return {
-    get: <T>(key: string, fallback: T): T =>
-      pickLayer(cfg.inspect<T>(key)?.workspaceValue, above[key] ?? repoValues[key], () => cfg.get<T>(key, fallback)),
+    get: <T>(key: string, fallback: T, valid?: (v: unknown) => v is T): T => {
+      const below = () => {
+        const v = cfg.get<unknown>(key, fallback);
+        if (!valid || valid(v)) return v;
+        // cfg.get prefers the workspace value; when that one is wrong-typed, try the user setting, then the contributed default.
+        const i = cfg.inspect<unknown>(key);
+        return [i?.globalValue, i?.defaultValue].find(valid);
+      };
+      return pickLayer(cfg.inspect<unknown>(key)?.workspaceValue, above[key] ?? repoValues[key], below, valid && { valid, fallback });
+    },
   };
 }
 
@@ -131,6 +148,12 @@ function asRecord(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, n));
+/** The type check readSettings applies to a setting, if any. */
+function checkFor(key: string): ((v: unknown) => boolean) | undefined {
+  const kind = Object.hasOwn(REPO_SETTING_KINDS, key) ? REPO_SETTING_KINDS[key] : undefined;
+  return kind === 'number' ? isFiniteNumber : kind === 'stringArray' ? isStringArray : undefined;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((s) => typeof s === 'string');
 }
