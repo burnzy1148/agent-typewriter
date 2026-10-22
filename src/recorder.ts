@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { PathFilter, RootGlobs } from './filter';
+import { PathFilter, RootGlobs, toSlashes } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
 import { CAPTURE_SKEW_MS, fillBudget, listCleanTracked, readBlob, writtenDuringCapture, type BudgetCandidate } from './gitBaseline';
 import { checkIgnored, IgnoredPaths, listIgnored } from './gitIgnore';
@@ -11,12 +11,16 @@ import {
   checkoutDisplayPath,
   checkoutName,
   commonDirKey,
+  folderCheckoutChoice,
+  folderLabels,
+  innermostRoot,
   isWorktreeOf,
   listWorktrees,
   liveWorktrees,
   nestedUnder,
   ownCheckout,
   pathKey,
+  relativeInside,
   rootIn,
   worktreeLabels,
   type ProvisionalDir,
@@ -118,6 +122,8 @@ export class Recorder implements vscode.Disposable {
   private ignoreRetried = false;
   /** The checkout each workspace folder records while running, keyed by folder URI. */
   private readonly scopes = new Map<string, Scope>();
+  /** Chosen worktree labels per folder URI, by worktree `pathKey`, when `choices` cannot keep them. */
+  private readonly labels = new Map<string, Map<string, string>>();
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
   private scopeWork: Promise<void> = Promise.resolve();
   private worktreeRefresh: NodeJS.Timeout | undefined;
@@ -178,13 +184,20 @@ export class Recorder implements vscode.Disposable {
   describeFilter(): string {
     const profile = this.profileName ? `${this.profileName}: ` : '';
     const nested = [...this.scopes.values()].some((s) => s.nestedDirs.length > 0);
-    return profile + this.filter.describe() + (this.ignored.size > 0 ? ', not gitignored' : '') + (nested ? ', other worktrees skipped' : '');
+    const unchosen = [...this.scopes.values()].filter((s) => s.container && s.own).map((s) => s.folder.name);
+    return (
+      profile +
+      this.filter.describe() +
+      (this.ignored.size > 0 ? ', not gitignored' : '') +
+      (nested ? ', other worktrees skipped' : '') +
+      (unchosen.length > 0 ? `, no checkout chosen in ${unchosen.join(', ')}` : '')
+    );
   }
 
   /** The checkout a folder records while running, or undefined when stopped. */
   checkoutOf(folder: vscode.WorkspaceFolder): CheckoutInfo | undefined {
     const s = this.scopes.get(folder.uri.toString());
-    return s && { own: s.own, name: s.name, root: s.root.fsPath, worktrees: s.worktrees };
+    return s && { own: s.own, name: s.name, root: s.root.fsPath, worktrees: s.worktrees, container: s.container };
   }
 
   /** The folder's repository worktrees and the remembered choice, or undefined outside git. */
@@ -509,6 +522,11 @@ export class Recorder implements vscode.Disposable {
         if (!scope.own && old?.root.toString() !== scope.root.toString()) {
           this.log.appendLine(`Recording ${scope.folder.name} from checkout ${scope.name} (${scope.root.fsPath}).`);
         }
+        if (scope.container && scope.own && !(old?.container && old.own)) {
+          this.log.appendLine(
+            `${scope.folder.name} has no checkout of its own, so its worktrees are skipped; run Agent Typewriter: Choose Checkout to record one.`,
+          );
+        }
         if (scope.nestedDirs.join('\0') !== old?.nestedDirs.join('\0') && scope.nestedDirs.length > 0) {
           this.log.appendLine(`Skipping ${scope.nestedDirs.length} other worktree(s) in ${scope.folder.name}: ${scope.nestedDirs.join(', ')}`);
         }
@@ -580,6 +598,7 @@ export class Recorder implements vscode.Disposable {
       nestedDirs: [],
       repo: false,
       worktrees: 0,
+      container: false,
       prunable: false,
       commonKey: undefined,
       listedAt: this.provisionalSeq,
@@ -618,10 +637,10 @@ export class Recorder implements vscode.Disposable {
     const live = liveWorktrees(r.worktrees);
     scope.repo = true;
     scope.worktrees = live.length;
-    if (own) {
-      scope.checkout = vscode.Uri.file(own.path);
-      scope.name = checkoutName(own);
-    }
+    // A folder holding a bare repository's worktrees has no checkout of its own.
+    scope.container = !own && live.length > 0;
+    scope.name = folderCheckoutChoice(folder.name, own, live).name;
+    if (own) scope.checkout = vscode.Uri.file(own.path);
 
     const choice = this.choices.get(key);
     let chosen: Worktree | undefined;
@@ -637,11 +656,15 @@ export class Recorder implements vscode.Disposable {
       } else if (own && pathKey(chosen.path) === pathKey(own.path)) {
         chosen = undefined;
       } else {
-        scope.root = vscode.Uri.file(root);
+        // Inside the folder, the root is spelled as the folder is (git
+        // resolves symlinks), so watcher events, baselines and editor
+        // documents of its files all use one spelling.
+        const inside = relativeInside(folder.uri.fsPath, root);
+        scope.root = inside ? vscode.Uri.joinPath(folder.uri, ...inside.split('/')) : vscode.Uri.file(root);
         scope.checkout = vscode.Uri.file(chosen.path);
         scope.own = false;
         scope.prunable = !!chosen.prunable;
-        scope.label = worktreeLabels(r.worktrees.filter((w) => !w.prunable || w === chosen)).get(chosen.path) ?? checkoutName(chosen);
+        scope.label = await this.labelFor(folder, chosen, r.worktrees.filter((w) => !w.prunable || w === chosen));
         scope.name = checkoutName(chosen);
       }
     }
@@ -653,6 +676,45 @@ export class Recorder implements vscode.Disposable {
       if (scope.commonKey !== undefined) break;
     }
     return scope;
+  }
+
+  /**
+   * The display label of a chosen worktree: the one it was given before, so
+   * its files keep their mirrors while other worktrees come and go, or a new
+   * one. A new label is unique among the folder's labels and never names a
+   * top-level entry of the folder other than a worktree, so the folder's own
+   * files can't share its display paths.
+   */
+  private async labelFor(folder: vscode.WorkspaceFolder, chosen: Worktree, worktrees: Worktree[]): Promise<string> {
+    const folderKey = folder.uri.toString();
+    const given = this.choices.labelsOf ? this.choices.labelsOf(folderKey) : (this.labels.get(folderKey) ?? new Map<string, string>());
+    const chosenKey = pathKey(chosen.path);
+    const known = given.get(chosenKey);
+    if (known !== undefined) return known;
+    let entries: string[] = [];
+    try {
+      entries = await fs.promises.readdir(folder.uri.fsPath);
+    } catch {
+      // Unreadable: nothing in it to collide with.
+    }
+    const worktreeDirs = new Set(worktrees.map((w) => relativeInside(folder.uri.fsPath, w.path)));
+    const listed = new Map(worktrees.flatMap((w) => (given.has(pathKey(w.path)) ? [[w.path, given.get(pathKey(w.path))!] as const] : [])));
+    const elsewhere = [...given].filter(([k]) => !worktrees.some((w) => pathKey(w.path) === k)).map(([, l]) => l);
+    const taken = [...entries.filter((e) => !worktreeDirs.has(e)), ...elsewhere];
+    const list = worktrees.includes(chosen) ? worktrees : [...worktrees, chosen];
+    const label = worktreeLabels(list, { given: listed, taken }).get(chosen.path) ?? checkoutName(chosen);
+    if (this.choices.setLabel) {
+      try {
+        const r = await this.choices.setLabel(folderKey, chosenKey, label);
+        if (r instanceof Error) this.log.appendLine(`Could not save the label ${label} of checkout ${chosen.path}: ${r.message}`);
+      } catch (err) {
+        this.log.appendLine(`Could not save the label ${label} of checkout ${chosen.path}: ${String(err)}`);
+      }
+    } else {
+      if (!this.labels.has(folderKey)) this.labels.set(folderKey, new Map());
+      this.labels.get(folderKey)!.set(chosenKey, label);
+    }
+    return label;
   }
 
   /** Replaces every scope's watcher, so new ones pick up changed watcher settings. */
@@ -728,16 +790,25 @@ export class Recorder implements vscode.Disposable {
     );
   }
 
-  /** The scope that records this path, if any. A chosen worktree inside a folder takes precedence over the folder. */
+  /**
+   * The scope that records this path, if any: the one with the innermost root
+   * holding it, among chosen checkouts and the innermost workspace folder
+   * recording its own. A chosen worktree inside a folder takes precedence over
+   * the folder.
+   */
   private scopeOf(uri: vscode.Uri): Scope | undefined {
-    const open = vscode.workspace.workspaceFolders ?? [];
-    for (const s of this.scopes.values()) {
-      // A removed folder's chosen worktree stops counting at once, before the refresh drops its scope.
-      if (!s.own && isUnder(s.root, uri) && open.some((f) => f.uri.toString() === s.folder.uri.toString())) return s;
-    }
+    const open = new Set((vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.toString()));
+    // A removed folder's chosen worktree stops counting at once, before the refresh drops its scope.
+    const candidates = [...this.scopes.values()].filter((s) => !s.own && open.has(s.folder.uri.toString()));
     const folder = vscode.workspace.getWorkspaceFolder(uri);
-    const s = folder && this.scopes.get(folder.uri.toString());
-    return s?.own ? s : undefined;
+    const own = folder && this.scopes.get(folder.uri.toString());
+    if (own?.own) candidates.push(own);
+    const i = innermostRoot(
+      candidates.map((s) => s.root.path),
+      uri.path,
+    );
+    // The folder itself (getWorkspaceFolder counts a folder as its own) is not inside its root.
+    return i === -1 ? (own?.own ? own : undefined) : candidates[i];
   }
 
   /** Path used for filtering and git: relative to the recorded checkout root. */
@@ -748,8 +819,7 @@ export class Recorder implements vscode.Disposable {
   /** Path used for display and mirrors: a chosen worktree's label goes in front, so checkouts never share a mirror. */
   private displayOf(scope: Scope | undefined, uri: vscode.Uri): string {
     if (!scope || scope.own) return displayPathOf(uri);
-    const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
-    return checkoutDisplayPath(multiRoot ? scope.folder.name : '', scope.label, this.relOf(scope, uri));
+    return checkoutDisplayPath(folderPrefixOf(scope.folder) ?? '', scope.label, this.relOf(scope, uri));
   }
 
   /**
@@ -1596,10 +1666,16 @@ interface HeldDelete {
   done: () => void;
 }
 
-/** Where the checkout chosen for each folder is remembered, keyed by folder URI. */
+/**
+ * Where the checkout chosen for each folder is remembered, keyed by folder
+ * URI, and the display label each chosen worktree was given, by its `pathKey`.
+ * Without the label methods, labels last for the session.
+ */
 export interface CheckoutChoices {
   get(folderKey: string): string | undefined;
   set(folderKey: string, worktreePath: string | undefined): unknown;
+  labelsOf?(folderKey: string): ReadonlyMap<string, string>;
+  setLabel?(folderKey: string, worktreeKey: string, label: string): unknown;
 }
 
 /** The checkout a folder records, for status and the chooser. */
@@ -1612,6 +1688,8 @@ export interface CheckoutInfo {
   root: string;
   /** Worktrees the folder's repository has, 0 outside git. */
   worktrees: number;
+  /** The folder has no checkout of its own: it holds a bare repository's worktrees. */
+  container: boolean;
 }
 
 export interface FolderCheckouts {
@@ -1641,6 +1719,8 @@ interface Scope {
   repo: boolean;
   /** Worktrees the repository has, not counting ones being removed. */
   worktrees: number;
+  /** git lists worktrees, but none is the folder's own: it holds a bare repository's worktrees. */
+  container: boolean;
   /** The chosen worktree is being removed: git still lists it, but its `.git` is gone. */
   prunable: boolean;
   /** `pathKey` of the repository's common git directory, which a linked worktree's `.git` file points into. */
@@ -1713,13 +1793,29 @@ function foldKey(key: string): string {
 
 /** Path used for filtering: relative to its workspace folder, so globs like src/** work in every folder. */
 export function relPathOf(uri: vscode.Uri): string {
-  return vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
+  return toSlashes(vscode.workspace.asRelativePath(uri, false));
 }
 
-/** Path used for display and mirror documents: prefixed with the folder name in multi-root workspaces so files never collide. */
+/**
+ * Path used for display and mirror documents: prefixed with the folder's
+ * display prefix in multi-root workspaces so files never collide.
+ */
 export function displayPathOf(uri: vscode.Uri): string {
-  const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
-  return vscode.workspace.asRelativePath(uri, multiRoot).replace(/\\/g, '/');
+  const folder = vscode.workspace.getWorkspaceFolder(uri);
+  const prefix = folder && folderPrefixOf(folder);
+  return prefix === undefined ? relPathOf(uri) : `${prefix}/${relPathOf(uri)}`;
+}
+
+/**
+ * A folder's display-path prefix in a multi-root workspace: its name, made
+ * unique among the open folders (see `folderLabels`). Undefined with one folder.
+ */
+function folderPrefixOf(folder: vscode.WorkspaceFolder): string | undefined {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length < 2) return undefined;
+  const labels = folderLabels(folders.map((f) => ({ name: f.name, path: f.uri.path })));
+  const i = folders.findIndex((f) => f.uri.toString() === folder.uri.toString());
+  return i === -1 ? folder.name : labels[i];
 }
 
 /** True when `uri` is strictly inside `root`. Case is ignored on Windows. */

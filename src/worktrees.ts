@@ -250,16 +250,111 @@ export function rootIn(chosen: Worktree, own: Worktree | undefined, folder: stri
   return sub ? path.join(chosen.path, ...sub.split('/')) : chosen.path;
 }
 
-/** A short name per worktree path for display paths: its directory name, with the parent's name added when two share one. */
-export function worktreeLabels(worktrees: Worktree[]): Map<string, string> {
-  const counts = new Map<string, number>();
-  for (const wt of worktrees) counts.set(path.basename(wt.path), (counts.get(path.basename(wt.path)) ?? 0) + 1);
-  const labels = new Map<string, string>();
-  for (const wt of worktrees) {
-    const base = path.basename(wt.path);
-    labels.set(wt.path, (counts.get(base) ?? 0) > 1 ? `${path.basename(path.dirname(wt.path))}-${base}` : base);
+/**
+ * Innermost of `roots` that strictly contains `target`, as an index, or -1.
+ * Paths are '/'-separated (URI paths); case is ignored when `foldCase`, as on
+ * Windows. A tie goes to the first root listed.
+ */
+export function innermostRoot(roots: string[], target: string, foldCase = process.platform === 'win32'): number {
+  const fold = (p: string) => (foldCase ? p.toLowerCase() : p);
+  const t = fold(target);
+  let best = -1;
+  let bestLength = -1;
+  roots.forEach((root, i) => {
+    const r = fold(root.replace(/\/+$/, ''));
+    if (t.startsWith(r + '/') && r.length > bestLength) {
+      best = i;
+      bestLength = r.length;
+    }
+  });
+  return best;
+}
+
+/** One path segment for a display path: separators in a name become '-'. */
+function segment(name: string): string {
+  const s = name.replace(/[\\/]+/g, '-');
+  return s === '' || /^\.+$/.test(s) ? `_${s}` : s;
+}
+
+/**
+ * Display-path prefixes that never collide: one per entry, different from
+ * each other and from every `taken` name. An entry's label is its first name,
+ * with more of its names joined in front ('parent-base') while that is shared,
+ * and then a number. `names` go most specific first: a directory's own name,
+ * then its parent's, and so on. An entry with a `given` label keeps it.
+ */
+export function uniqueLabels(entries: Array<{ names: string[]; given?: string }>, taken: Iterable<string> = []): string[] {
+  const used = new Set(taken);
+  for (const e of entries) if (e.given !== undefined) used.add(e.given);
+  const names = entries.map((e) => {
+    const n = e.names.filter((s) => s !== '').map(segment);
+    return n.length > 0 ? n : ['_'];
+  });
+  const open = entries.flatMap((e, i) => (e.given === undefined ? [i] : []));
+  const level = new Map<number, number>();
+  const firsts = new Map<string, number>();
+  for (const i of open) firsts.set(names[i][0], (firsts.get(names[i][0]) ?? 0) + 1);
+  // Two that share a directory name both get their parent's, as they always have.
+  for (const i of open) level.set(i, (firsts.get(names[i][0]) ?? 0) > 1 ? Math.min(1, names[i].length - 1) : 0);
+  const label = (i: number) => names[i].slice(0, level.get(i)! + 1).reverse().join('-');
+  for (;;) {
+    const counts = new Map<string, number>();
+    for (const i of open) counts.set(label(i), (counts.get(label(i)) ?? 0) + 1);
+    const bump = open.filter((i) => ((counts.get(label(i)) ?? 0) > 1 || used.has(label(i))) && level.get(i)! < names[i].length - 1);
+    if (bump.length === 0) break;
+    for (const i of bump) level.set(i, level.get(i)! + 1);
   }
-  return labels;
+  // Out of names: the first keeps a shared label, the rest get a number no other label has.
+  const counts = new Map<string, number>();
+  for (const i of open) counts.set(label(i), (counts.get(label(i)) ?? 0) + 1);
+  const unique = new Set(open.map(label).filter((l) => counts.get(l) === 1 && !used.has(l)));
+  const out = entries.map((e) => e.given ?? '');
+  for (const i of open) {
+    const base = label(i);
+    let l = base;
+    for (let k = 2; used.has(l) || (l !== base && unique.has(l)); k++) l = `${base}-${k}`;
+    used.add(l);
+    out[i] = l;
+  }
+  return out;
+}
+
+/** A native path's directory names, most specific first. */
+function namesOf(p: string): string[] {
+  const names: string[] = [];
+  for (let dir = path.resolve(p); path.basename(dir) !== ''; dir = path.dirname(dir)) names.push(path.basename(dir));
+  return names;
+}
+
+/**
+ * A short name per worktree path for display paths: its directory name, with
+ * its parent's (and further up) added while two would share one or one would
+ * match a `taken` name, such as a top-level entry of the workspace folder.
+ * Paths in `given` keep the label they have; labels are never shared.
+ */
+export function worktreeLabels(
+  worktrees: Worktree[],
+  opts: { given?: ReadonlyMap<string, string>; taken?: Iterable<string> } = {},
+): Map<string, string> {
+  const labels = uniqueLabels(
+    worktrees.map((w) => ({ names: namesOf(w.path), given: opts.given?.get(w.path) })),
+    opts.taken,
+  );
+  return new Map(worktrees.map((w, i) => [w.path, labels[i]]));
+}
+
+/**
+ * Display-path prefix per workspace folder in a multi-root workspace: its
+ * name as one path segment, with its parent directories' names added while two
+ * folders would share one. `path` is the folder's URI path.
+ */
+export function folderLabels(folders: Array<{ name: string; path: string }>): string[] {
+  return uniqueLabels(
+    folders.map((f) => {
+      const dirs = f.path.replace(/\/+$/, '').split('/').filter(Boolean).reverse();
+      return { names: [f.name, ...dirs.slice(1)] };
+    }),
+  );
 }
 
 /** What the user sees for a checkout: its branch, or its short commit when detached. */
@@ -267,7 +362,26 @@ export function checkoutName(wt: Worktree): string {
   return wt.branch ?? (wt.head ? wt.head.slice(0, 7) : path.basename(wt.path));
 }
 
-/** Display path of a file in a chosen worktree: folder name (multi-root only), worktree label, then the root-relative path. */
+/** Status name of a folder recording itself while it has no checkout of its own (a bare repository's worktrees). */
+export const NO_CHECKOUT = '(none chosen)';
+
+/**
+ * How a folder in git appears in the checkout chooser and status bar.
+ * `choices` counts what the chooser offers: the folder's own checkout, or the
+ * folder itself when it has none, plus every other worktree. It can be chosen
+ * from when there are two or more.
+ */
+export function folderCheckoutChoice(
+  folderName: string,
+  own: Worktree | undefined,
+  worktrees: Worktree[],
+): { choices: number; label: string; description: string; name: string } {
+  const others = worktrees.filter((w) => w !== own).length;
+  if (own) return { choices: others + 1, label: checkoutName(own), description: "this folder's checkout", name: checkoutName(own) };
+  return { choices: others > 0 ? others + 1 : 0, label: folderName, description: 'no checkout of its own, records none', name: NO_CHECKOUT };
+}
+
+/** Display path of a file in a chosen worktree: folder prefix (multi-root only), worktree label, then the root-relative path. */
 export function checkoutDisplayPath(folderName: string, label: string, rel: string): string {
   return [folderName, label, rel].filter(Boolean).join('/');
 }
@@ -279,12 +393,24 @@ export function checkoutDisplayPath(folderName: string, label: string, rel: stri
  */
 export class CheckoutChoiceFile {
   private readonly choices = new Map<string, string>();
+  /** Per folder key, the display label given to each chosen worktree, by its `pathKey`. */
+  private readonly labels = new Map<string, Map<string, string>>();
 
   constructor(readonly file: string) {
     try {
       const data: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (data && typeof data === 'object') {
-        for (const [k, v] of Object.entries(data)) if (typeof v === 'string') this.choices.set(k, v);
+        for (const [k, v] of Object.entries(data)) {
+          if (typeof v === 'string') this.choices.set(k, v);
+          // Folder keys are URIs, so this key is never one; older files have no labels.
+          else if (k === 'labels' && v && typeof v === 'object') {
+            for (const [folderKey, given] of Object.entries(v as Record<string, unknown>)) {
+              if (!given || typeof given !== 'object') continue;
+              const map = new Map(Object.entries(given).filter((e): e is [string, string] => typeof e[1] === 'string'));
+              if (map.size > 0) this.labels.set(folderKey, map);
+            }
+          }
+        }
       }
     } catch {
       // Missing or unreadable: nothing chosen yet.
@@ -302,10 +428,29 @@ export class CheckoutChoiceFile {
   set(folderKey: string, worktreePath: string | undefined): Error | undefined {
     if (worktreePath === undefined) this.choices.delete(folderKey);
     else this.choices.set(folderKey, worktreePath);
+    return this.save();
+  }
+
+  /** Labels given so far to the folder's chosen worktrees, by the worktree's `pathKey`. */
+  labelsOf(folderKey: string): ReadonlyMap<string, string> {
+    return this.labels.get(folderKey) ?? new Map();
+  }
+
+  /** Remembers a worktree's label for good, like `set`: kept for the session even when saving fails. */
+  setLabel(folderKey: string, worktreeKey: string, label: string): Error | undefined {
+    let map = this.labels.get(folderKey);
+    if (!map) this.labels.set(folderKey, (map = new Map()));
+    map.set(worktreeKey, label);
+    return this.save();
+  }
+
+  private save(): Error | undefined {
+    const data: Record<string, unknown> = Object.fromEntries(this.choices);
+    if (this.labels.size > 0) data.labels = Object.fromEntries([...this.labels].map(([k, m]) => [k, Object.fromEntries(m)]));
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.choices), null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, this.file);
       return undefined;
     } catch (err) {

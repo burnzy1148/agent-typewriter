@@ -9,6 +9,10 @@ import {
   checkoutDisplayPath,
   checkoutName,
   commonDirKey,
+  folderCheckoutChoice,
+  folderLabels,
+  innermostRoot,
+  NO_CHECKOUT,
   gitdirOf,
   isWorktreeOf,
   listWorktrees,
@@ -18,6 +22,7 @@ import {
   parseWorktreeList,
   relativeInside,
   rootIn,
+  uniqueLabels,
   worktreeLabels,
   type Worktree,
 } from '../src/worktrees';
@@ -272,5 +277,168 @@ test('CheckoutChoiceFile: a choice that cannot be saved is kept for the session 
   assert.equal(new CheckoutChoiceFile(file).get('file:///ws'), P('repo-sibling'), 'the file on disk changed');
   assert.ok(a.set('file:///ws', undefined) instanceof Error);
   assert.equal(a.get('file:///ws'), undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// --- Review group REC4: checkout labels, display paths and the chooser.
+
+const wt = (...parts: string[]): Worktree => ({ path: P(...parts), head: '' });
+const labelsOf = (list: Worktree[], opts?: Parameters<typeof worktreeLabels>[1]) => {
+  const m = worktreeLabels(list, opts);
+  return list.map((w) => m.get(w.path));
+};
+const distinct = (labels: Array<string | undefined>) => assert.equal(new Set(labels).size, labels.length, `labels collide: ${labels.join(', ')}`);
+
+test('at-l3q.11.1 innermostRoot: the longest root holding the path, in any order', () => {
+  const outer = '/w/repo-feature';
+  const inner = '/w/repo-feature/packages/app';
+  assert.equal(innermostRoot([outer, inner], '/w/repo-feature/packages/app/src/x.ts'), 1);
+  assert.equal(innermostRoot([inner, outer], '/w/repo-feature/packages/app/src/x.ts'), 0);
+  assert.equal(innermostRoot([outer, inner], '/w/repo-feature/src/y.ts'), 0, 'outside the inner root');
+  assert.equal(innermostRoot(['/w/a', '/w/b'], '/w/b/x.ts'), 1, 'siblings');
+  assert.equal(innermostRoot(['/w/repo-feature'], '/w/repo-feature2/x.ts'), -1, 'a string prefix is not a path prefix');
+  assert.equal(innermostRoot(['/w/repo-feature/'], '/w/repo-feature/x.ts'), 0, 'trailing slash');
+  assert.equal(innermostRoot(['/c:/W/Repo'], '/c:/w/repo/x.ts', true), 0, 'case folded on Windows');
+  assert.equal(innermostRoot(['/c:/W/Repo'], '/c:/w/repo/x.ts', false), -1, 'case kept elsewhere');
+  assert.equal(innermostRoot(['/w/a', '/w/a'], '/w/a/x.ts'), 0, 'a tie goes to the first');
+  assert.equal(innermostRoot([], '/w/a/x.ts'), -1);
+  assert.equal(innermostRoot(['/w/a'], '/w/a'), -1, 'the root itself is not inside it');
+});
+
+test('at-l3q.11.5 worktreeLabels: labels never collide', () => {
+  // Same basename and same parent name.
+  const two = labelsOf([wt('r', 'repo'), wt('r', 'repo', '.claude', 'worktrees', 'fix'), wt('tmp', 'worktrees', 'fix')]);
+  distinct(two);
+  assert.equal(two[0], 'repo');
+  // A parent-prefixed label equal to another worktree's plain name.
+  distinct(labelsOf([wt('a', 'one', 'fix'), wt('b', 'two', 'fix'), wt('c', 'one-fix')]));
+  distinct(labelsOf([wt('x', 'a-fix'), wt('y', 'a', 'fix'), wt('z', 'b', 'fix')]));
+  // a-b/c and a/b-c join to the same string at every level.
+  distinct(labelsOf([wt('a-b', 'c'), wt('a', 'b-c')]));
+  distinct(labelsOf([wt('a-b', 'c'), wt('a', 'b-c'), wt('a-b-c'), wt('a-b-c-2')]));
+  // The usual cases keep their labels.
+  assert.deepEqual(labelsOf([MAIN, NESTED]), ['repo', 'feature']);
+  assert.deepEqual(labelsOf([wt('wt', 'one', 'fix'), wt('wt', 'two', 'fix')]), ['one-fix', 'two-fix']);
+});
+
+test('at-l3q.11.5 worktreeLabels: unique across random path sets', () => {
+  const names = ['a', 'b', 'fix', 'a-b', 'b-fix', 'a-fix', 'worktrees'];
+  let seed = 7;
+  const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+  for (let round = 0; round < 300; round++) {
+    const paths = new Set<string>();
+    const count = 2 + rnd(6);
+    while (paths.size < count) {
+      const depth = 1 + rnd(4);
+      paths.add(P(...Array.from({ length: depth }, () => names[rnd(names.length)])));
+    }
+    const list = [...paths].map((p) => ({ path: p, head: '' }));
+    const taken = rnd(2) ? ['fix', 'a'] : [];
+    const labels = labelsOf(list, { taken });
+    distinct(labels);
+    for (const l of labels) {
+      assert.ok(l && !taken.includes(l), `label ${l} is taken`);
+      assert.ok(!/[\\/]/.test(l), `label ${l} is not one path segment`);
+    }
+  }
+});
+
+test('at-l3q.11.3 worktreeLabels: a label never names a taken top-level directory', () => {
+  const docs = wt('repo', '.worktrees', 'docs');
+  const [, label] = labelsOf([wt('repo'), docs], { taken: ['docs', 'src'] });
+  assert.notEqual(label, 'docs');
+  assert.notEqual(checkoutDisplayPath('', label!, 'README.md'), 'docs/README.md');
+  assert.deepEqual(labelsOf([wt('repo'), docs]), ['repo', 'docs'], 'nothing taken: unchanged');
+  // A worktree that is itself the folder's top-level directory: the caller leaves its name out of taken.
+  assert.deepEqual(labelsOf([wt('repo'), wt('repo', 'feature')], { taken: ['src'] }), ['repo', 'feature']);
+  assert.equal(labelsOf([wt('repo', '.claude', 'worktrees', 'feature')], { taken: ['src', '.claude'] })[0], 'feature');
+});
+
+test('at-l3q.11.7 worktreeLabels: a given label is kept while other worktrees come and go', () => {
+  const first = wt('r', 'repo', '.claude', 'worktrees', 'fix');
+  const second = wt('tmp', 'worktrees', 'fix');
+  const [, a] = labelsOf([wt('r', 'repo'), first]);
+  assert.equal(a, 'fix');
+  const given = new Map([[first.path, a!]]);
+  const later = labelsOf([wt('r', 'repo'), first, second], { given });
+  assert.equal(later[1], 'fix', 'the first keeps its label');
+  assert.notEqual(later[2], 'fix');
+  distinct(later);
+  // A label given to a worktree no longer listed stays reserved.
+  assert.notEqual(labelsOf([second], { taken: ['fix'] })[0], 'fix');
+});
+
+test('at-l3q.11.6 folderLabels: same-named folders get distinct, single-segment prefixes', () => {
+  assert.deepEqual(folderLabels([{ name: 'api', path: '/w/api' }, { name: 'web', path: '/w/web' }]), ['api', 'web'], 'unique names unchanged');
+  assert.deepEqual(
+    folderLabels([
+      { name: 'app', path: '/w/client/app' },
+      { name: 'app', path: '/w/server/app' },
+    ]),
+    ['client-app', 'server-app'],
+  );
+  const slash = folderLabels([
+    { name: 'app/src', path: '/w/one' },
+    { name: 'app', path: '/w/two' },
+  ]);
+  assert.deepEqual(slash, ['app-src', 'app'], "'/' in a name never makes a second segment");
+  const both = folderLabels([
+    { name: 'app/src', path: '/w/one' },
+    { name: 'app\\src', path: '/w/two' },
+    { name: 'app-src', path: '/w/three' },
+  ]);
+  distinct(both);
+  for (const l of both) assert.ok(!/[\\/]/.test(l));
+  assert.deepEqual(folderLabels([{ name: 'app', path: '/a/app' }, { name: 'app', path: '/a/app' }]), ['a-app', 'a-app-2'], 'even the same path');
+  assert.equal(checkoutDisplayPath('server-app', 'feature', 'src/a.ts'), 'server-app/feature/src/a.ts');
+});
+
+test('uniqueLabels: empty and dot names still give a usable segment', () => {
+  const labels = uniqueLabels([{ names: [''] }, { names: ['..'] }, { names: ['.'] }]);
+  distinct(labels);
+  for (const l of labels) assert.ok(l !== '' && l !== '.' && l !== '..', `label ${l}`);
+});
+
+test('at-l3q.11.2 folderCheckoutChoice: a bare-repository container can choose even one worktree', () => {
+  const bare = [
+    [`worktree ${P('proj', '.bare')}`, 'bare'],
+    [`worktree ${P('proj', 'main')}`, 'HEAD 1111111111111111111111111111111111111111', 'branch refs/heads/main'],
+  ];
+  const one = parseWorktreeList(porcelain(bare, '\0'), '\0');
+  assert.equal(ownCheckout(P('proj'), one), undefined);
+  const c1 = folderCheckoutChoice('proj', undefined, one);
+  assert.equal(c1.choices, 2, 'the folder itself and main');
+  assert.equal(c1.label, 'proj');
+  assert.equal(c1.name, NO_CHECKOUT);
+  assert.ok(c1.name.trim() !== '');
+  assert.doesNotMatch(c1.description, /this folder's checkout/);
+  const two = parseWorktreeList(
+    porcelain([...bare, [`worktree ${P('proj', 'feat')}`, 'HEAD 2222222222222222222222222222222222222222', 'branch refs/heads/feat']], '\0'),
+    '\0',
+  );
+  assert.equal(ownCheckout(P('proj'), two), undefined);
+  assert.equal(folderCheckoutChoice('proj', undefined, two).choices, 3);
+  // Ordinary checkouts are unchanged: choosable from two worktrees on.
+  assert.deepEqual(folderCheckoutChoice('repo', MAIN, [MAIN]), { choices: 1, label: 'main', description: "this folder's checkout", name: 'main' });
+  assert.equal(folderCheckoutChoice('repo', MAIN, ALL).choices, 4);
+  assert.equal(folderCheckoutChoice('x', undefined, []).choices, 0, 'a bare repository with no worktrees');
+});
+
+test('at-l3q.11.7 CheckoutChoiceFile: labels survive a reload; an old file without labels loads', () => {
+  const dir = tempDir('choices-');
+  const file = path.join(dir, 'checkouts.json');
+  fs.writeFileSync(file, JSON.stringify({ 'file:///ws': P('repo-sibling') }));
+  const a = new CheckoutChoiceFile(file);
+  assert.equal(a.get('file:///ws'), P('repo-sibling'), 'the old format still loads');
+  assert.equal(a.labelsOf('file:///ws').size, 0);
+  assert.equal(a.setLabel('file:///ws', 'key-a', 'fix'), undefined);
+  a.setLabel('file:///ws', 'key-b', 'worktrees-fix');
+  a.setLabel('file:///other', 'key-a', 'fix');
+  a.set('file:///ws', undefined);
+  const b = new CheckoutChoiceFile(file);
+  assert.deepEqual([...b.labelsOf('file:///ws')], [['key-a', 'fix'], ['key-b', 'worktrees-fix']]);
+  assert.deepEqual([...b.labelsOf('file:///other')], [['key-a', 'fix']]);
+  assert.equal(b.get('file:///ws'), undefined, 'clearing the choice keeps its labels');
+  assert.equal(b.get('labels'), undefined, 'the labels entry is no folder');
   fs.rmSync(dir, { recursive: true, force: true });
 });

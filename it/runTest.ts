@@ -197,6 +197,57 @@ exports.run = async () => {
     extensionTestsEnv: { IT_NEST: nestRepo },
   });
 
+  // REC4: a saved multi-root workspace for display paths and checkout choices
+  // (rec4.ts): two folders both named app, a folder holding a bare
+  // repository's one worktree, and a repository with a nested worktree. It is
+  // opened through a symlink (a plain path on Windows), as a workspace under
+  // ~/code linked elsewhere would be.
+  const rec4 = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-rec4-'));
+  for (const side of ['client', 'server']) {
+    fs.mkdirSync(path.join(rec4, side, 'app', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(rec4, side, 'app', 'src', 'index.ts'), `export const side = '${side}';\n`);
+  }
+  const rec4Origin = path.join(rec4, 'origin');
+  const rec4Repo = path.join(rec4, 'repo');
+  for (const repo of [rec4Origin, rec4Repo]) {
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    gitAt(repo, 'init', '-q');
+    gitAt(repo, 'add', '-A');
+    gitAt(repo, 'commit', '-q', '-m', 'initial');
+  }
+  const rec4Proj = path.join(rec4, 'proj');
+  fs.mkdirSync(rec4Proj);
+  gitAt(rec4Proj, 'clone', '-q', '--bare', rec4Origin, '.bare');
+  fs.writeFileSync(path.join(rec4Proj, '.git'), 'gitdir: ./.bare\n');
+  gitAt(rec4Proj, 'worktree', 'add', '-q', 'main');
+  gitAt(rec4Repo, 'worktree', 'add', '-q', '-b', 'nested', '.worktrees/nested');
+  fs.writeFileSync(
+    path.join(rec4, 'rec4.code-workspace'),
+    JSON.stringify({
+      folders: [{ path: 'client/app' }, { path: 'server/app' }, { path: 'proj' }, { path: 'repo' }],
+      settings: {
+        'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.debounceMs': 100,
+        'agentTypewriter.reorderWindowMs': 0,
+        'agentTypewriter.charsPerMinute': 240000,
+        'agentTypewriter.jitter': 0,
+        'agentTypewriter.fileSwitchDelayMs': 0,
+        'agentTypewriter.persistHistory': false,
+      },
+    }),
+  );
+  let rec4Open = rec4;
+  if (process.platform !== 'win32') {
+    rec4Open = `${rec4}-link`;
+    fs.symlinkSync(rec4, rec4Open, 'dir');
+  }
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'folders.js'),
+    launchArgs: [path.join(rec4Open, 'rec4.code-workspace'), `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    extensionTestsEnv: { IT_REC4: rec4Open },
+  });
 }
 
 main().catch((err) => {
