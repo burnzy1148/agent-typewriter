@@ -65,16 +65,6 @@ export function renderHtml(nonce: string): string {
 
   const describe = (c) => '#' + c.seq + ' ' + c.relPath;
 
-  function statusText() {
-    const n = state.changes.length;
-    if (n === 0) return state.watching ? 'Waiting for changes' : 'Not watching';
-    const queued = state.queued ? ' \\u00b7 ' + state.queued + ' queued' : '';
-    const playing = state.changes.find((c) => c.seq === state.playingSeq);
-    if (playing) return (state.paused ? 'Paused in ' : 'Typing ') + describe(playing) + queued;
-    if (state.index >= n) return 'Caught up';
-    return (state.paused ? 'Paused before ' : 'Next: ') + describe(state.changes[state.index]) + queued;
-  }
-
   function seekText(i) {
     const n = state.changes.length;
     return i >= n ? 'Seek to latest' : 'Seek to ' + describe(state.changes[i]);
@@ -98,8 +88,8 @@ export function renderHtml(nonce: string): string {
       speed.appendChild(o);
     }
     if (document.activeElement !== speed) speed.value = value;
-    label.textContent = held ? seekText(Number(slider.value)) : statusText();
-    position.textContent = Math.min(state.index + 1, n) + ' / ' + n;
+    label.textContent = held ? seekText(Number(slider.value)) : state.label;
+    position.textContent = state.position;
   }
 
   for (const b of document.querySelectorAll('button[data-cmd]')) {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as vm from 'node:vm';
 import { renderHtml } from '../src/scrubberHtml';
-import type { ScrubberState } from '../src/scrubberState';
+import { describePlayback, type ScrubberState } from '../src/scrubberState';
 
 type Listener = (e: unknown) => void;
 
@@ -65,7 +65,11 @@ function loadPanel() {
     el,
     posted,
     seeks: () => posted.flatMap((m) => ((m as { type: string }).type === 'seek' ? [(m as { seq: number }).seq] : [])),
-    state: (s: Partial<ScrubberState>) => win.dispatch('message', { data: { ...STATE, ...s } }),
+    // The host computes the label and position, so recompute them for the partial state.
+    state: (s: Partial<ScrubberState>) => {
+      const data = { ...STATE, ...s };
+      win.dispatch('message', { data: { ...data, ...describePlayback(data) } });
+    },
     pointerup: () => win.dispatch('pointerup'),
     runTimers: () => timers.splice(0).forEach((fn) => fn()),
   };
@@ -80,6 +84,8 @@ const STATE: ScrubberState = {
   paused: false,
   speed: 1,
   watching: true,
+  label: 'Typing #2 f2.ts \u00b7 3 queued',
+  position: '2 / 5',
 };
 
 test('keyboard steps on the slider seek to the stepped-to change', () => {
