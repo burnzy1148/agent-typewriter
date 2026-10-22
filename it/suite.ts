@@ -562,6 +562,17 @@ export async function run(): Promise<void> {
   await until('worktree playback', idle);
   console.log('[it] worktrees ok');
 
+  // Review fix groups add their sections directly below their own anchor, so
+  // branches worked on in parallel merge cleanly. Later recorder groups use
+  // REC1's. Remove the anchors once the review groups have merged.
+  // --- review group PLAY
+
+  // --- review group SET
+
+  // --- review group ACT
+
+  // --- review group REC1
+
   // --- 18. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.
   await until('idle before reload setup', idle);
