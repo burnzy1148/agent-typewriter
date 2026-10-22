@@ -98,6 +98,25 @@ test('pickLayer: workspace, then file, then below', () => {
   assert.deepEqual(pickLayer<string[]>([], ['file'], () => ['x']), [], 'an empty workspace array still wins');
 });
 
+test('pickLayer: without a file value, VS Code resolution decides', () => {
+  // VS Code merges objects across user and workspace; the workspace value alone would drop user entries.
+  assert.deepEqual(pickLayer({ ts: 20 }, undefined, () => ({ md: 80, ts: 20 })), { md: 80, ts: 20 });
+  assert.deepEqual(pickLayer({ ts: 20 }, { py: 5 }, () => ({ md: 80, ts: 20 })), { ts: 20 }, 'the workspace value still beats the file');
+});
+
+test('pickLayer: a check treats wrong-typed values as unset', () => {
+  const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
+  const check = { valid: isStrings, fallback: ['default'] };
+  for (const bad of ['ts', null, ['ts', 1]]) {
+    assert.deepEqual(pickLayer(bad, ['file'], () => bad, check), ['file'], `workspace ${JSON.stringify(bad)} beat the file`);
+    assert.deepEqual(pickLayer(undefined, undefined, () => bad, check), ['default'], `below ${JSON.stringify(bad)} was used`);
+    assert.deepEqual(pickLayer(undefined, bad, () => ['user'], check), ['user'], `file ${JSON.stringify(bad)} was used`);
+  }
+  assert.deepEqual(pickLayer([], ['file'], () => ['x'], check), [], 'an empty workspace array still wins');
+  assert.deepEqual(pickLayer(['ws'], ['file'], () => ['x'], check), ['ws']);
+  assert.deepEqual(pickLayer(undefined, undefined, () => ['user'], check), ['user']);
+});
+
 test('changedKeys compares by value', () => {
   assert.deepEqual(changedKeys({}, {}), []);
   assert.deepEqual(changedKeys({ include: ['a'] }, { include: ['a'] }), []);

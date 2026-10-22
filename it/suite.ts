@@ -581,6 +581,83 @@ export async function run(): Promise<void> {
   // --- review group PLAY
 
   // --- review group SET
+  // Settings layering: wrong-typed VS Code settings resolve as if unset,
+  // object settings merge across user and workspace, and a repository file
+  // replaced by a directory stops applying.
+  {
+    // This bundle's own copy of the config module: it reads VS Code settings
+    // like the extension does, but has no repository file values.
+    const { readSettings } = await import('../src/config');
+    const GLOBAL = vscode.ConfigurationTarget.Global;
+    const recordedSince = (rel: string, from: number) => timeline.all().slice(from).some((e) => e.relPath === rel);
+
+    // A non-numeric pace falls back to the default instead of hanging playback.
+    await until('idle before SET', idle);
+    await cfg().update('charsPerSecond', 'fast', WS);
+    await cfg().update('catchUpFactor', 'auto', WS);
+    assert.equal(readSettings().charsPerSecond, 35);
+    assert.equal(readSettings().catchUpFactor, 0.5);
+    const atPace = timeline.all().length;
+    write('src/setPace.ts', 'export const pace = 1;\n');
+    await until('setPace.ts recorded', () => recordedSince('src/setPace.ts', atPace), 20000);
+    await until('setPace.ts playback at the default pace', idle, 20000);
+    assert.equal(mirrorText('src/setPace.ts'), 'export const pace = 1;\n');
+    await cfg().update('charsPerSecond', 600, WS);
+    await cfg().update('catchUpFactor', 0, WS);
+
+    // A string extensions setting counts as unset; recording and Stop/Start keep working.
+    const savedExtensions = cfg().inspect('extensions')?.workspaceValue;
+    await cfg().update('extensions', 'ts', WS);
+    assert.ok(Array.isArray(readSettings().extensions), 'a string extensions setting came through');
+    await sleep(500);
+    const atTyped = timeline.all().length;
+    write('src/setTyped.ts', 'export const typed = 1;\n');
+    await until('write recorded with wrong-typed extensions', () => recordedSince('src/setTyped.ts', atTyped), 20000);
+    await vscode.commands.executeCommand('agentTypewriter.stop');
+    await vscode.commands.executeCommand('agentTypewriter.start');
+    assert.ok(api.recorder.isRunning, 'Start failed with wrong-typed extensions');
+    await sleep(1000);
+    const atRestart = timeline.all().length;
+    write('src/setTyped.ts', 'export const typed = 2;\n');
+    await until('write recorded after Stop/Start', () => recordedSince('src/setTyped.ts', atRestart), 20000);
+    await cfg().update('extensions', savedExtensions, WS);
+    await until('wrong-typed extensions playback', idle);
+
+    // languageSpeeds merges user and workspace entries, as VS Code does.
+    await cfg().update('languageSpeeds', { markdown: 80 }, GLOBAL);
+    await cfg().update('languageSpeeds', { typescript: 20 }, WS);
+    assert.deepEqual(readSettings().languageSpeeds, { markdown: 80, typescript: 20 });
+    await cfg().update('languageSpeeds', undefined, WS);
+    await cfg().update('languageSpeeds', undefined, GLOBAL);
+
+    // A directory in place of the repository file drops the file's values.
+    const settingsFile = path.join(root, '.agent-typewriter.json');
+    const savedFile = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile, 'utf8') : undefined;
+    const savedProfile = cfg().inspect('activeProfile')?.workspaceValue;
+    // A profile's filters sit above the file; turn it off so the file's exclude shows.
+    await cfg().update('activeProfile', undefined, WS);
+    const excluded = vscode.Uri.file(path.join(root, 'src/skip/a.ts'));
+    fs.writeFileSync(settingsFile, JSON.stringify({ exclude: ['src/skip/**'] }));
+    await until('repository file exclude to apply', () => !api.recorder.matches(excluded), 10000);
+    fs.unlinkSync(settingsFile);
+    fs.mkdirSync(settingsFile);
+    await until('directory in place of the file to stop applying', () => api.recorder.matches(excluded), 10000);
+    fs.rmdirSync(settingsFile);
+    fs.writeFileSync(settingsFile, JSON.stringify({ exclude: ['src/skip/**'] }));
+    await until('file written again to apply', () => !api.recorder.matches(excluded), 10000);
+    if (savedFile === undefined) fs.unlinkSync(settingsFile);
+    else fs.writeFileSync(settingsFile, savedFile);
+    await cfg().update('activeProfile', savedProfile, WS);
+    await until('restored filters', () => api.recorder.matches(excluded), 10000);
+
+    // The settings writes above are recorded too, up to a reorder window later.
+    for (let n = -1; n !== timeline.all().length; ) {
+      n = timeline.all().length;
+      await sleep(reorderWindow + 1500);
+    }
+    await until('SET playback', idle);
+    console.log('[it] settings layering ok');
+  }
 
   // --- review group ACT
 
