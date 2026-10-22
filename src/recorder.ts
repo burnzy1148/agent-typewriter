@@ -41,6 +41,12 @@ const IGNORE_RETRY_MS = 2000;
  */
 const REBUILD_RECENT_MS = 10_000;
 
+/**
+ * A create event this soon after a baseline capture read the same write of
+ * the file is that capture having read a new file: it is recorded from empty.
+ */
+const SWALLOWED_CREATE_MS = 10_000;
+
 /** At most this many files left out for the budget are opened to tell text from binary for the log. */
 const PROBE_LIMIT = 1000;
 
@@ -762,6 +768,7 @@ export class Recorder implements vscode.Disposable {
 
     // Everything else gets an in-memory snapshot, newest first, within the budget.
     const stats: BudgetCandidate[] = [];
+    const mtimes = new Map<string, number>();
     const writtenMeanwhile = new Set<string>();
     // In a rebuild, a file with a baseline written just before or during it keeps that baseline.
     const recentlyWritten = (key: string, mtime: number) =>
@@ -775,7 +782,10 @@ export class Recorder implements vscode.Disposable {
       const key = uri.toString();
       if (recentlyWritten(key, st.mtime) || writtenDuringCapture(st.mtime, startedAt, Date.now())) writtenMeanwhile.add(key);
       // A file stamped in the future counts as the newest.
-      else stats.push({ key, size: st.size, mtime: Math.min(st.mtime, startedAt) });
+      else {
+        stats.push({ key, size: st.size, mtime: Math.min(st.mtime, startedAt) });
+        mtimes.set(key, st.mtime);
+      }
     });
     if (stale()) return;
     let used = 0;
@@ -786,6 +796,8 @@ export class Recorder implements vscode.Disposable {
       const uri = uris.get(key)!;
       const snap = await this.readText(uri, s);
       if (snap === undefined || stale() || known(key)) return undefined;
+      // A change on its way through the debounce: its read takes the baseline.
+      if (!before && (this.timers.has(key) || this.flushes.has(key))) return undefined;
       if (before) {
         // Written between its stat and this read: the current baseline is what that change starts from.
         const old = before.snapshots.get(key);
@@ -795,7 +807,7 @@ export class Recorder implements vscode.Disposable {
           return undefined;
         }
       }
-      snapshots.set(key, snap);
+      snapshots.set(key, { ...snap, captured: { at: Date.now(), mtime: mtimes.get(key)! } });
       return snap.text.length;
     });
     if (stale()) return;
@@ -982,7 +994,7 @@ export class Recorder implements vscode.Disposable {
     const scope = this.scopeOf(uri);
     const relPath = this.displayOf(scope, uri);
     const s = this.settings();
-    const previous = this.snapshots.get(key) ?? (await this.takeGitBaseline(key, s));
+    let previous = this.snapshots.get(key) ?? (await this.takeGitBaseline(key, s));
     if (dropped()) return;
 
     // A change read mid-save waits for the save to finish, so the comparison
@@ -1035,6 +1047,10 @@ export class Recorder implements vscode.Disposable {
       this.ownSaves.delete(key);
       return;
     }
+    // A new file a baseline capture read before its create event arrived: what
+    // came before the capture's text is nothing.
+    const captured = previous?.captured;
+    if (burst.created && captured && captured.mtime === exists.mtime && burst.firstArrival - captured.at < SWALLOWED_CREATE_MS) previous = undefined;
     if (previous === undefined && (await this.newlyIgnored(uri))) {
       if (dropped()) return;
       this.note(`newly ignored ${relPath}`);
@@ -1309,6 +1325,8 @@ async function inBatches<T>(items: T[], fn: (item: T) => Promise<void>, size = 6
 interface Snapshot {
   text: string;
   eol: Eol;
+  /** Set when a baseline capture took it: when, and the file's mtime then. */
+  captured?: { at: number; mtime: number };
 }
 
 async function stat(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {

@@ -214,6 +214,31 @@ test('rebuild: stop during the rebuild swaps nothing in', { skip: noGit }, async
   assert.equal(t.recorder.watchedCount, 0);
 });
 
+test('a new file a filter refresh reads before its create event arrives is recorded as a create', async () => {
+  const dir = tempDir('at-rec-race-');
+  write(dir, 'src/a.ts', 'a\n');
+  const t = recorderOn(settings({ gitBaselines: false }), dir);
+  await t.recorder.start();
+  write(dir, 'src/new.ts', 'brand new\n');
+  await t.recorder.refreshFilter();
+  assert.ok(t.recorder.hasBaseline(t.uri(path.join(dir, 'src/new.ts'))), 'the refresh did not read the new file');
+  mock.fire('create', path.join(dir, 'src/new.ts'));
+  await t.settle();
+  assert.deepEqual(t.events().map((e) => [e.kind, e.before, e.after]), [['create', '', 'brand new\n']]);
+});
+
+test('a refresh leaves a file with a change in its debounce to that change', async () => {
+  const dir = tempDir('at-rec-race2-');
+  const t = recorderOn(settings({ gitBaselines: false, debounceMs: 300 }), dir);
+  await t.recorder.start();
+  write(dir, 'src/new.ts', 'brand new\n');
+  mock.fire('create', path.join(dir, 'src/new.ts'));
+  await t.recorder.refreshFilter();
+  assert.equal(t.recorder.hasBaseline(t.uri(path.join(dir, 'src/new.ts'))), false);
+  await t.settle();
+  assert.deepEqual(t.events().map((e) => [e.kind, e.before]), [['create', '']]);
+});
+
 // --- at-l3q.9.1: nested workspace folders.
 
 for (const order of ['outer first', 'inner first'] as const) {
