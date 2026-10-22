@@ -25,6 +25,9 @@ import type { Settings } from './config';
 /** How long a change read mid-save waits for the save to finish. */
 const SAVE_SETTLE_MAX_MS = 1000;
 
+/** How many recent watcher events and read outcomes the recorder keeps for diagnostics. */
+const ACTIVITY_LIMIT = 200;
+
 /**
  * Watches the workspace and turns each settled file write into a timeline
  * event carrying the full before/after text.
@@ -70,6 +73,8 @@ export class Recorder implements vscode.Disposable {
   readonly onDidChangeScope = this.scopeEmitter.event;
   private running = false;
   private readonly decoder = new TextDecoder('utf-8');
+  /** Recent watcher events and what reading each one did, oldest first. */
+  private readonly activity: string[] = [];
 
   constructor(
     private readonly timeline: Timeline,
@@ -138,6 +143,28 @@ export class Recorder implements vscode.Disposable {
   /** True if this workspace path passes the current filters. */
   matches(uri: vscode.Uri): boolean {
     return this.passes(uri);
+  }
+
+  /**
+   * Recent watcher events, what reading each one did, and what is still held,
+   * for telling a change the watcher never reported from one the recorder dropped.
+   */
+  describeActivity(): string {
+    const debouncing = [...this.timers.keys()].map((k) => relPathOf(vscode.Uri.parse(k)));
+    return [
+      ...this.activity,
+      `debouncing: ${debouncing.length > 0 ? debouncing.join(', ') : 'none'}; held for reordering: ${this.reorder.size}`,
+    ].join('\n');
+  }
+
+  /** The path `flush` would show for this file, so watcher and outcome lines match. */
+  private traceName(uri: vscode.Uri): string {
+    return this.displayOf(this.scopeOf(uri), uri);
+  }
+
+  private note(message: string): void {
+    this.activity.push(`${new Date().toISOString().slice(11, 23)} ${message}`);
+    if (this.activity.length > ACTIVITY_LIMIT) this.activity.shift();
   }
 
   /** True once this file has a baseline, so its next change will be recorded. */
@@ -233,6 +260,7 @@ export class Recorder implements vscode.Disposable {
       }
       await this.captureBaseline();
       this.log.appendLine(`${reason}: watching ${this.watchedCount} files (${this.describeFilter()}).`);
+      this.note(`${reason.toLowerCase()}: watching ${this.watchedCount} files`);
     });
     this.filterWork = work.catch(() => {});
     return work;
@@ -252,6 +280,7 @@ export class Recorder implements vscode.Disposable {
     }
     await this.captureBaseline();
     this.log.appendLine(`Baselines rebuilt: watching ${this.watchedCount} files.`);
+    this.note(`baselines rebuilt: watching ${this.watchedCount} files`);
   }
 
   /** Adds every held change to the timeline now, in write order. */
@@ -357,18 +386,18 @@ export class Recorder implements vscode.Disposable {
     watcher.onDidCreate(
       (uri) => {
         this.noteGitEntry(uri, true);
-        this.schedule(uri, true);
+        this.schedule(uri, 'create');
       },
       null,
       subs,
     );
-    watcher.onDidChange((uri) => this.schedule(uri, false), null, subs);
+    watcher.onDidChange((uri) => this.schedule(uri, 'change'), null, subs);
     watcher.onDidDelete(
       (uri) => {
         this.noteGitEntry(uri, false);
         const current = this.scopes.get(key);
         if (current && !current.own) this.checkCheckoutGone(current);
-        this.schedule(uri, false);
+        this.schedule(uri, 'delete');
       },
       null,
       subs,
@@ -615,10 +644,13 @@ export class Recorder implements vscode.Disposable {
     return snap;
   }
 
-  private schedule(uri: vscode.Uri, created: boolean): void {
+  private schedule(uri: vscode.Uri, event: 'create' | 'change' | 'delete'): void {
     if (!this.running || uri.scheme !== 'file') return;
     if (this.ignored.size > 0 && uri.path.endsWith('/.gitignore')) this.scheduleIgnoreRefresh();
-    if (!this.passes(uri)) return;
+    const passes = this.passes(uri);
+    this.note(`watcher ${event} ${this.traceName(uri)}${passes ? '' : ' (filtered out)'}`);
+    if (!passes) return;
+    const created = event === 'create';
     const key = uri.toString();
     const now = Date.now();
     const existing = this.timers.get(key);
@@ -627,7 +659,10 @@ export class Recorder implements vscode.Disposable {
       timer: setTimeout(() => {
         this.timers.delete(key);
         this.flush(uri, burst)
-          .catch((err) => this.log.appendLine(`Failed to record ${relPathOf(uri)}: ${String(err)}`))
+          .catch((err) => {
+            this.note(`read failed ${this.traceName(uri)}: ${String(err)}`);
+            this.log.appendLine(`Failed to record ${relPathOf(uri)}: ${String(err)}`);
+          })
           .finally(burst.done);
       }, this.settings().debounceMs),
       created: created || (existing?.created ?? false),
@@ -640,7 +675,10 @@ export class Recorder implements vscode.Disposable {
 
   private async flush(uri: vscode.Uri, burst: Burst): Promise<void> {
     // The checkout or its worktrees may have changed since the burst started.
-    if (!this.running || !this.passes(uri)) return;
+    if (!this.running || !this.passes(uri)) {
+      this.note(`${this.running ? 'no longer matches the filter' : 'recorder stopped'}, dropped ${this.traceName(uri)}`);
+      return;
+    }
     const key = uri.toString();
     const scope = this.scopeOf(uri);
     const relPath = this.displayOf(scope, uri);
@@ -660,21 +698,32 @@ export class Recorder implements vscode.Disposable {
       // A chosen worktree being removed deletes all its files; that is the
       // checkout going away, not a change to replay.
       if (scope && !scope.own && !(await stat(vscode.Uri.joinPath(scope.checkout, '.git')))) {
+        this.note(`checkout removed, dropped ${relPath}`);
         this.snapshots.delete(key);
         return;
       }
       if (previous !== undefined) {
         this.snapshots.delete(key);
         this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.firstArrival);
+      } else {
+        this.note(`gone, no baseline ${relPath}`);
       }
       return;
     }
-    if (exists.type !== vscode.FileType.File) return;
-    if (previous === undefined && (await this.newlyIgnored(uri))) return;
+    if (exists.type !== vscode.FileType.File) {
+      this.note(`not a file ${relPath}`);
+      return;
+    }
+    if (previous === undefined && (await this.newlyIgnored(uri))) {
+      this.note(`newly ignored ${relPath}`);
+      return;
+    }
     const writtenAt = clampOrderKey(exists.mtime, burst.firstArrival, burst.lastArrival, s.reorderWindowMs);
 
-    const snap = await this.readText(uri, s, exists.size);
+    let readError: unknown;
+    const snap = await this.readText(uri, s, exists.size, (err) => (readError = err));
     if (snap === undefined) {
+      this.note(readError === undefined ? `binary or too large ${relPath}` : `unreadable ${relPath}: ${String(readError)}`);
       this.snapshots.delete(key);
       return;
     }
@@ -684,6 +733,7 @@ export class Recorder implements vscode.Disposable {
     this.ownSaves.delete(key);
     const decision = s.ignoreOwnSaves ? decideOwnSave(saved?.text, snap.text) : ({ kind: 'external' } as const);
     if (decision.kind === 'own') {
+      this.note(`own save ${relPath}`);
       this.snapshots.set(key, snap);
       return;
     }
@@ -702,10 +752,16 @@ export class Recorder implements vscode.Disposable {
       // No baseline: a brand-new file is typed from empty; an unknown existing
       // file just gets its baseline now.
       if (burst.created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt);
-      else this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
+      else {
+        this.note(`baseline captured ${relPath}`);
+        this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
+      }
       return;
     }
-    if (previous.text === snap.text) return;
+    if (previous.text === snap.text) {
+      this.note(`unchanged ${relPath}`);
+      return;
+    }
     this.record(uri, relPath, 'modify', previous.text, snap.text, snap.eol, writtenAt);
   }
 
@@ -731,15 +787,23 @@ export class Recorder implements vscode.Disposable {
       linesAdded: added,
       linesRemoved: removed,
     };
+    this.note(`recorded ${kind} ${relPath}`);
     this.reorder.add(event, writtenAt, event.uri);
   }
 
-  private async readText(uri: vscode.Uri, s: Settings, knownSize?: number): Promise<Snapshot | undefined> {
+  /** Undefined for binary, oversized, or unreadable files; `onError` hears why a read failed. */
+  private async readText(
+    uri: vscode.Uri,
+    s: Settings,
+    knownSize?: number,
+    onError?: (err: unknown) => void,
+  ): Promise<Snapshot | undefined> {
     try {
       const size = knownSize ?? (await vscode.workspace.fs.stat(uri)).size;
       if (size > s.maxFileSizeKB * 1024) return undefined;
       return this.decode(await vscode.workspace.fs.readFile(uri), s);
-    } catch {
+    } catch (err) {
+      onError?.(err);
       return undefined;
     }
   }
