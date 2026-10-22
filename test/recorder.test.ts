@@ -22,7 +22,8 @@ function settings(over: Partial<Settings> = {}): Settings {
     respectGitignore: false,
     activeProfile: '',
     profiles: {},
-    charsPerSecond: 35,
+    charsPerMinute: 2100,
+    speedFromDeprecatedSetting: false,
     languageSpeeds: {},
     jitter: 0,
     catchUpFactor: 0,
@@ -38,6 +39,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     persistHistory: false,
     ignoreOwnSaves: true,
     viewColumn: 'beside',
+    mirrorStatusRow: true,
     ...over,
   };
 }
