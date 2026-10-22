@@ -127,3 +127,43 @@ export function parseExtensionList(input: string): string[] {
     .map((e) => e.trim().replace(/^\*?\./, '').toLowerCase())
     .filter(Boolean);
 }
+
+/**
+ * Globs matched from the root, the way VS Code reads `files.watcherExclude`:
+ * a path is covered when it, or a directory above it, matches one. Unlike
+ * PathFilter, a glob without a slash names a path at the root, not a file
+ * name anywhere. Negated globs are ignored.
+ */
+export class RootGlobs {
+  private readonly globs: Minimatch[];
+  /** Directory -> covered, filled as directories are checked. */
+  private readonly dirs = new Map<string, boolean>();
+
+  constructor(globs: string[]) {
+    this.globs = clean(globs)
+      .filter((g) => !g.startsWith('!'))
+      .map((g) => new Minimatch(g.replace(/^\/+/, ''), { dot: true, nocase: false }));
+  }
+
+  get size(): number {
+    return this.globs.length;
+  }
+
+  /** True when the root-relative path or a directory above it matches. */
+  covers(relPath: string): boolean {
+    const path = relPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+    const slash = path.lastIndexOf('/');
+    if (slash !== -1 && this.coversDir(path.slice(0, slash))) return true;
+    return this.globs.some((g) => g.match(path));
+  }
+
+  private coversDir(dir: string): boolean {
+    let hit = this.dirs.get(dir);
+    if (hit === undefined) {
+      const slash = dir.lastIndexOf('/');
+      hit = (slash !== -1 && this.coversDir(dir.slice(0, slash))) || this.globs.some((g) => g.match(dir));
+      this.dirs.set(dir, hit);
+    }
+    return hit;
+  }
+}

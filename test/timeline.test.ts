@@ -102,6 +102,15 @@ test('PathFilter.excludesDir: only globs that cover the whole directory prune it
   assert.ok(!g.excludesDir('nested/top'), 'a slashed glob matches from the root only');
 });
 
+test('PathFilter: malformed, braced, comma and directory-name excludes neither throw nor prune what they do not cover', () => {
+  const f = new PathFilter({ include: [], exclude: ['**/node_modules/**', 'dist/**', '**/*.{log', '**/*.{log,tmp}', '**/[z-a].ts', '**/notes,old.md', '**/notes', '*.log', 'a\\b/**'], extensions: [] });
+  assert.ok(f.excludesDir('node_modules') && f.excludesDir('dist'));
+  for (const dir of ['docs/notes', 'notes', 'src']) assert.ok(!f.excludesDir(dir), `${dir} pruned`);
+  assert.ok(!new PathFilter({ include: [], exclude: ['!foo/**'], extensions: [] }).excludesDir('foo'));
+  for (const rel of ['src/app.ts', 'docs/notes/todo.md', 'docs/notes,old.md/x.ts', 'z.ts']) assert.ok(f.matches(rel), `${rel} rejected`);
+  for (const rel of ['app.log', 'src/x.tmp', 'node_modules/p/i.js', 'docs/notes']) assert.ok(!f.matches(rel), `${rel} accepted`);
+});
+
 // Skip to next picks the playing change's seq + 1, or cursor + 1 when nothing plays (extension.ts).
 function skipTarget(t: Timeline): number {
   return (t.all().find((e) => t.stateOf(e.seq) === 'playing')?.seq ?? t.cursor) + 1;

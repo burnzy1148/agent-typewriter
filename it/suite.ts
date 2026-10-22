@@ -1432,6 +1432,205 @@ export async function run(): Promise<void> {
     await sleep(500);
   }
 
+  // REC2: baselines. Fixtures are the committed files under src/rec2/ (runTest.ts).
+  {
+    const filesCfg = () => vscode.workspace.getConfiguration('files');
+    const restoreReorder = cfg().inspect('reorderWindowMs')?.workspaceValue;
+    await cfg().update('reorderWindowMs', 0, WS);
+    const writeBytes = (rel: string, data: Uint8Array) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return fs.writeFileSync(path.join(root, rel), data);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if ((code !== 'EBUSY' && code !== 'EPERM') || attempt >= 100) throw err;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        }
+      }
+    };
+    const restart = async () => {
+      await vscode.commands.executeCommand('agentTypewriter.stop');
+      await vscode.commands.executeCommand('agentTypewriter.start');
+    };
+    const settledRec2 = async () => {
+      await sleep(1000);
+      api.recorder.drainHeld();
+      await until('playback to settle', idle);
+    };
+    /** Edits a file that has a baseline and checks its change starts from `before`. */
+    const firstEdit = async (rel: string, before: string, after: string, what: string) => {
+      await until(`${rel} baseline`, () => api.recorder.hasBaseline(uriOf(rel)), 20000);
+      const at = timeline.all().length;
+      write(rel, after);
+      await until(`${what}: ${rel} recorded`, () => eventsFor(rel, at).length > 0, 20000);
+      await settledRec2();
+      assert.deepEqual(eventsFor(rel, at).map((e) => [e.kind, e.before]), [['modify', before]], `${what}: wrong change for ${rel}`);
+    };
+
+    // E1. files.exclude hides a file from the Explorer, not from the watcher: it still gets a baseline.
+    await filesCfg().update('exclude', { '**/rec2/hidden.ts': true }, WS);
+    await restart();
+    await firstEdit('src/rec2/hidden.ts', lf(disk('src/rec2/hidden.ts')), 'export const hidden = 2;\n', 'files.exclude');
+    await filesCfg().update('exclude', undefined, WS);
+    console.log('[it] REC2: files.exclude does not cost a baseline ok');
+
+    // E2. files.watcherExclude: hidden files get no baseline, and the setting applies live.
+    fs.mkdirSync(path.join(root, 'src/wx'), { recursive: true });
+    await sleep(1000);
+    write('src/wx/w.ts', 'export const w = 1;\n');
+    await until('wx/w.ts baseline', () => api.recorder.hasBaseline(uriOf('src/wx/w.ts')), 20000);
+    await filesCfg().update('watcherExclude', { '**/wx/**': true }, WS);
+    await until('watcherExclude to apply', () => !api.recorder.matches(uriOf('src/wx/w.ts')), 10000);
+    await until('baseline of a file hidden from the watcher dropped', () => !api.recorder.hasBaseline(uriOf('src/wx/w.ts')), 10000);
+    await filesCfg().update('watcherExclude', undefined, WS);
+    await until('watcherExclude removal to apply', () => api.recorder.matches(uriOf('src/wx/w.ts')), 10000);
+    // The replaced watchers need a moment to start reporting.
+    await sleep(2000);
+    await firstEdit('src/wx/w.ts', 'export const w = 1;\n', 'export const w = 2;\n', 'watcherExclude removed');
+    console.log('[it] REC2: files.watcherExclude ok');
+
+    // E3. Exclude globs that ripgrep reads differently: files they do not cover keep their baselines.
+    const restoreExcl = cfg().inspect('exclude')?.workspaceValue;
+    fs.mkdirSync(path.join(root, 'src/notes'), { recursive: true });
+    await sleep(1000);
+    write('src/notes/todo.ts', 'export const todo = 1;\n');
+    await settledRec2();
+    await cfg().update('exclude', [...cfg().get<string[]>('exclude', []), '**/*.{log', '**/notes'], WS);
+    await sleep(500);
+    await restart();
+    await firstEdit('src/notes/todo.ts', 'export const todo = 1;\n', 'export const todo = 2;\n', 'odd exclude globs');
+    await cfg().update('exclude', restoreExcl, WS);
+    await sleep(500);
+    console.log('[it] REC2: exclude globs ok');
+
+    // E4. A file stamped in the future still gets a baseline.
+    write('src/rec2/future.ts', 'export const future = 1;\n');
+    await settledRec2();
+    const future = new Date('2035-01-01T00:00:00Z');
+    fs.utimesSync(path.join(root, 'src/rec2/future.ts'), future, future);
+    await restart();
+    await firstEdit('src/rec2/future.ts', 'export const future = 1;\n', 'export const future = 2;\n', 'future mtime');
+    console.log('[it] REC2: future mtime ok');
+
+    // E5, E6. Symlinks: files under a linked directory get no baseline; a linked file does.
+    const dirLink = path.join(root, 'src/rec2link');
+    const unlinkDir = () => {
+      // A junction on Windows is removed like a directory.
+      try {
+        fs.unlinkSync(dirLink);
+      } catch {
+        fs.rmdirSync(dirLink);
+      }
+    };
+    let linked = true;
+    try {
+      fs.symlinkSync(path.join(root, 'src/rec2'), dirLink, 'junction');
+      try {
+        fs.symlinkSync('agents.ts', path.join(root, 'src/rec2/claude.ts'), 'file');
+      } catch (err) {
+        unlinkDir();
+        throw err;
+      }
+    } catch (err) {
+      linked = false;
+      console.log(`[it] REC2: symlinks unavailable here (${(err as NodeJS.ErrnoException).code}); skipping the symlink checks`);
+    }
+    if (linked) {
+      await settledRec2();
+      await restart();
+      await until('rec2 baselines', () => api.recorder.hasBaseline(uriOf('src/rec2/agents.ts')), 20000);
+      assert.equal(api.recorder.hasBaseline(uriOf('src/rec2link/agents.ts')), false, 'a file under a linked directory has a baseline');
+      assert.ok(api.recorder.hasBaseline(uriOf('src/rec2/claude.ts')), 'a linked file has no baseline');
+      // As sed -i does: a temp file renamed over the link.
+      const agentsText = lf(disk('src/rec2/agents.ts'));
+      const atLink = timeline.all().length;
+      write('src/rec2/claude.tmp', agentsText.replace('one', 'ONE'));
+      fs.renameSync(path.join(root, 'src/rec2/claude.tmp'), path.join(root, 'src/rec2/claude.ts'));
+      await until('link replaced by a file recorded', () => eventsFor('src/rec2/claude.ts', atLink).length > 0, 20000);
+      await settledRec2();
+      assert.deepEqual(eventsFor('src/rec2/claude.ts', atLink).map((e) => [e.kind, e.before]), [['modify', agentsText]]);
+      // A link put in place of a committed file.
+      const plainText = lf(disk('src/rec2/plain.ts'));
+      const atPlain = timeline.all().length;
+      fs.rmSync(path.join(root, 'src/rec2/plain.ts'));
+      fs.symlinkSync('agents.ts', path.join(root, 'src/rec2/plain.ts'), 'file');
+      await until('file replaced by a link recorded', () => eventsFor('src/rec2/plain.ts', atPlain).length > 0, 20000);
+      await settledRec2();
+      assert.deepEqual(eventsFor('src/rec2/plain.ts', atPlain).map((e) => [e.kind, e.before, e.after]), [['modify', plainText, agentsText]]);
+      unlinkDir();
+      fs.rmSync(path.join(root, 'src/rec2/plain.ts'));
+      write('src/rec2/plain.ts', plainText);
+      await settledRec2();
+      console.log('[it] REC2: symlinks ok');
+    }
+
+    // E7. A committed file over maxFileSizeKB gets no git baseline and is not recorded.
+    await cfg().update('maxFileSizeKB', 1, WS);
+    await until('big.ts baseline dropped', () => !api.recorder.hasBaseline(uriOf('src/rec2/big.ts')), 20000);
+    assert.ok(api.recorder.hasBaseline(uriOf('src/rec2/toggle.ts')), 'a small committed file lost its baseline');
+    const atBig = timeline.all().length;
+    write('src/rec2/big.ts', disk('src/rec2/big.ts') + '// more\n');
+    await settledRec2();
+    assert.deepEqual(eventsFor('src/rec2/big.ts', atBig), [], 'a file over maxFileSizeKB was recorded');
+    await cfg().update('maxFileSizeKB', undefined, WS);
+    await until('big.ts baseline back', () => api.recorder.hasBaseline(uriOf('src/rec2/big.ts')), 20000);
+    console.log('[it] REC2: oversized committed file ok');
+
+    // E8. Toggling gitBaselines while an agent writes keeps the write.
+    const toggleText = lf(disk('src/rec2/toggle.ts'));
+    const atToggle = timeline.all().length;
+    const toggled = cfg().update('gitBaselines', false, WS);
+    write('src/rec2/toggle.ts', toggleText + 'export const toggled = 1;\n');
+    await toggled;
+    await until('write during the toggle recorded', () => eventsFor('src/rec2/toggle.ts', atToggle).length > 0, 20000);
+    await settledRec2();
+    assert.deepEqual(eventsFor('src/rec2/toggle.ts', atToggle).map((e) => [e.kind, e.before]), [['modify', toggleText]]);
+    await cfg().update('gitBaselines', true, WS);
+    await sleep(1000);
+    console.log('[it] REC2: write while toggling gitBaselines ok');
+
+    // E9. Files are read in their encoding: an editor save of a windows-1252 file is an own save.
+    await filesCfg().update('encoding', 'windows1252', WS);
+    writeBytes('src/rec2/latin.ts', Buffer.from('export const s = "café";\n', 'latin1'));
+    await until('latin.ts baseline', () => api.recorder.hasBaseline(uriOf('src/rec2/latin.ts')), 20000);
+    await settledRec2();
+    const atLatin = timeline.all().length;
+    const latinDoc = await vscode.workspace.openTextDocument(path.join(root, 'src/rec2/latin.ts'));
+    assert.equal(lf(latinDoc.getText()), 'export const s = "café";\n', 'VS Code did not read the file as windows-1252');
+    const latinEd = await vscode.window.showTextDocument(latinDoc);
+    await latinEd.edit((b) => b.insert(new vscode.Position(1, 0), 'export const t = "naïve";\n'));
+    await latinDoc.save();
+    const savedLatin = lf(latinDoc.getText());
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    await settledRec2();
+    assert.deepEqual(eventsFor('src/rec2/latin.ts', atLatin), [], 'an own save of a windows-1252 file was recorded');
+    writeBytes('src/rec2/latin.ts', Buffer.from(savedLatin + 'export const u = "über";\n', 'latin1'));
+    await until('outside write to latin.ts recorded', () => eventsFor('src/rec2/latin.ts', atLatin).length > 0, 20000);
+    await settledRec2();
+    assert.deepEqual(
+      eventsFor('src/rec2/latin.ts', atLatin).map((e) => [e.kind, e.before, lf(e.after)]),
+      [['modify', savedLatin, savedLatin + 'export const u = "über";\n']],
+    );
+    await filesCfg().update('encoding', undefined, WS);
+    // UTF-16 with a byte order mark is text, not binary.
+    const utf16 = (text: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    const atWide = timeline.all().length;
+    writeBytes('src/rec2/wide.ts', utf16('export const wide = 1;\n'));
+    await until('UTF-16 file created', () => eventsFor('src/rec2/wide.ts', atWide).length > 0, 20000);
+    await settledRec2();
+    writeBytes('src/rec2/wide.ts', utf16('export const wide = 2;\n'));
+    await until('UTF-16 file changed', () => eventsFor('src/rec2/wide.ts', atWide).length > 1, 20000);
+    await settledRec2();
+    assert.deepEqual(eventsFor('src/rec2/wide.ts', atWide).map((e) => [e.kind, e.before]), [
+      ['create', ''],
+      ['modify', 'export const wide = 1;\n'],
+    ]);
+    console.log('[it] REC2: file encodings ok');
+
+    await cfg().update('reorderWindowMs', restoreReorder, WS);
+    await sleep(500);
+  }
+
   // --- 18. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.
   await until('idle before reload setup', idle);

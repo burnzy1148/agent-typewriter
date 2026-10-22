@@ -33,7 +33,13 @@ export async function listIgnored(folder: string, run: GitRunner = runGit): Prom
     const out = await run(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], folder);
     return { kind: 'ok', ignored: new IgnoredPaths(dropCollapsedDirs([...parsePathList(out.toString('utf8'))])) };
   } catch (err) {
-    if (isGitUnavailable(err)) return { kind: 'unavailable', reason: String((err as Error).message ?? err) };
+    // git ran and exited with an error code: not a repository. A string code
+    // is git failing to start or finish (EMFILE, EAGAIN, an output too large),
+    // which may pass; only a missing folder (ENOCWD) is again not a repository.
+    const code = (err as { code?: unknown } | undefined)?.code;
+    if (isGitUnavailable(err) || (typeof code === 'string' && code !== 'ENOCWD')) {
+      return { kind: 'unavailable', reason: String((err as Error).message ?? err) };
+    }
     return { kind: 'not-repo' };
   }
 }

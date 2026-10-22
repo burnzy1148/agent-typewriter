@@ -13,7 +13,9 @@ import {
   parseLsFiles,
   parsePathList,
   readBlob,
+  fillBudget,
   selectWithinBudget,
+  writtenDuringCapture,
   type GitRunner,
 } from '../src/gitBaseline';
 import { checkIgnored, listIgnored } from '../src/gitIgnore';
@@ -99,6 +101,58 @@ test('selectWithinBudget: zero budget selects nothing but empty files', () => {
     { key: 'empty', size: 0, mtime: 2 },
   ];
   assert.deepEqual(selectWithinBudget(c, 0), new Set(['empty']));
+});
+
+test('fillBudget: binaries give their reserved bytes back, so an older text file still fits', async () => {
+  const KB = 1024;
+  const c = [
+    { key: 'notes.md', size: 100 * KB, mtime: 1 },
+    { key: 'a.png', size: 500 * KB, mtime: 3 },
+    { key: 'b.png', size: 500 * KB, mtime: 2 },
+  ];
+  const loaded: string[] = [];
+  const left = await fillBudget(c, 1024 * KB, async ({ key, size }) => {
+    if (key.endsWith('.png')) return undefined;
+    loaded.push(key);
+    return size;
+  });
+  assert.deepEqual(loaded, ['notes.md']);
+  assert.deepEqual(left, []);
+});
+
+test('fillBudget: when every file loads, it keeps the plain newest-first selection', async () => {
+  const c = [
+    { key: 'old', size: 40, mtime: 1 },
+    { key: 'huge', size: 500, mtime: 9 },
+    { key: 'new', size: 40, mtime: 3 },
+    { key: 'mid', size: 40, mtime: 2 },
+    { key: 'empty', size: 0, mtime: 0 },
+  ];
+  for (const budget of [0, 80, 100, 120, 1000]) {
+    const loaded = new Set<string>();
+    const left = await fillBudget(c, budget, async ({ key, size }) => (loaded.add(key), size), 2);
+    assert.deepEqual(loaded, selectWithinBudget(c, budget), `budget ${budget}`);
+    assert.deepEqual(new Set(left.map((x) => x.key)), new Set(c.map((x) => x.key).filter((k) => !loaded.has(k))));
+  }
+});
+
+test('fillBudget: a file that keeps fewer bytes than its size frees the rest', async () => {
+  const c = [
+    { key: 'a', size: 60, mtime: 2 },
+    { key: 'b', size: 60, mtime: 1 },
+  ];
+  const left = await fillBudget(c, 100, async ({ key }) => (key === 'a' ? 30 : 60));
+  assert.deepEqual(left, []);
+});
+
+test('writtenDuringCapture: only mtimes from the capture start to just past the stat', () => {
+  const startedAt = 1_000_000;
+  const statAt = startedAt + 500;
+  assert.equal(writtenDuringCapture(startedAt - 1, startedAt, statAt), false, 'a past mtime is an existing file');
+  assert.equal(writtenDuringCapture(startedAt, startedAt, statAt), true);
+  assert.equal(writtenDuringCapture(statAt, startedAt, statAt), true);
+  assert.equal(writtenDuringCapture(statAt + 1500, startedAt, statAt), true, 'within the skew tolerance');
+  assert.equal(writtenDuringCapture(Date.parse('2035-01-01'), startedAt, statAt), false, 'a far future mtime is a stamped file');
 });
 
 function fakeRunner(byCommand: Record<string, Buffer | Error>): { run: GitRunner; calls: string[][] } {
