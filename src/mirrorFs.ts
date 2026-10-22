@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { Eol } from './planner';
 
 export const MIRROR_SCHEME = 'agent-typewriter';
 
@@ -13,11 +14,28 @@ export const MIRROR_SCHEME = 'agent-typewriter';
  * leaves its text alone (no save participants, no stripping of unusual line
  * terminators). The player still edits the open documents through
  * workspace.applyEdit, and keeps the text stored here with store().
+ *
+ * Reads wait until open() is called, so a mirror tab VS Code restores while
+ * the extension activates is not answered before the mirrors are refilled
+ * from the restored timeline.
  */
 export class MirrorFileSystem implements vscode.FileSystemProvider {
   private files = new Map<string, { data: Uint8Array; mtime: number; ctime: number }>();
   private readonly emitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
   readonly onDidChangeFile = this.emitter.event;
+  /** Pending until open(); undefined once open. */
+  private gate: Promise<void> | undefined;
+  private release: () => void = () => undefined;
+
+  constructor() {
+    this.gate = new Promise((resolve) => (this.release = resolve));
+  }
+
+  /** Lets reads through. Safe to call more than once. */
+  open(): void {
+    this.gate = undefined;
+    this.release();
+  }
 
   static uriFor(relPath: string): vscode.Uri {
     return vscode.Uri.from({ scheme: MIRROR_SCHEME, path: '/' + relPath.replace(/^\/+/, '') });
@@ -37,7 +55,11 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     return new vscode.Disposable(() => undefined);
   }
 
-  stat(uri: vscode.Uri): vscode.FileStat {
+  stat(uri: vscode.Uri): vscode.FileStat | Thenable<vscode.FileStat> {
+    return this.whenOpen(() => this.statNow(uri));
+  }
+
+  private statNow(uri: vscode.Uri): vscode.FileStat {
     const f = this.files.get(uri.path);
     if (f) {
       return { type: vscode.FileType.File, ctime: f.ctime, mtime: f.mtime, size: f.data.byteLength, permissions: vscode.FilePermission.Readonly };
@@ -46,7 +68,11 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     throw vscode.FileSystemError.FileNotFound(uri);
   }
 
-  readDirectory(uri: vscode.Uri): [string, vscode.FileType][] {
+  readDirectory(uri: vscode.Uri): [string, vscode.FileType][] | Thenable<[string, vscode.FileType][]> {
+    return this.whenOpen(() => this.readDirectoryNow(uri));
+  }
+
+  private readDirectoryNow(uri: vscode.Uri): [string, vscode.FileType][] {
     const prefix = uri.path.endsWith('/') ? uri.path : uri.path + '/';
     const out = new Map<string, vscode.FileType>();
     for (const p of this.files.keys()) {
@@ -63,10 +89,12 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     // Directories are implicit.
   }
 
-  readFile(uri: vscode.Uri): Uint8Array {
-    const f = this.files.get(uri.path);
-    if (!f) throw vscode.FileSystemError.FileNotFound(uri);
-    return f.data;
+  readFile(uri: vscode.Uri): Uint8Array | Thenable<Uint8Array> {
+    return this.whenOpen(() => {
+      const f = this.files.get(uri.path);
+      if (!f) throw vscode.FileSystemError.FileNotFound(uri);
+      return f.data;
+    });
   }
 
   writeFile(uri: vscode.Uri, content: Uint8Array): void {
@@ -74,6 +102,22 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     const existing = this.files.get(uri.path);
     this.files.set(uri.path, { data: content, mtime: now, ctime: existing?.ctime ?? now });
     this.emitter.fire([{ type: existing ? vscode.FileChangeType.Changed : vscode.FileChangeType.Created, uri }]);
+  }
+
+  /**
+   * Adds the files that are not here yet, announcing them in one event so a
+   * tab already showing "not found" reloads. Returns how many were added.
+   */
+  seed(files: Iterable<[vscode.Uri, Uint8Array]>): number {
+    const now = Date.now();
+    const added: vscode.FileChangeEvent[] = [];
+    for (const [uri, data] of files) {
+      if (this.files.has(uri.path)) continue;
+      this.files.set(uri.path, { data, mtime: now, ctime: now });
+      added.push({ type: vscode.FileChangeType.Created, uri });
+    }
+    if (added.length) this.emitter.fire(added);
+    return added.length;
   }
 
   /**
@@ -110,12 +154,24 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     ]);
   }
 
+  /** Runs a read now when open, otherwise once open() is called. */
+  private whenOpen<T>(read: () => T): T | Thenable<T> {
+    return this.gate ? this.gate.then(read) : read();
+  }
+
   private isDirectory(path: string): boolean {
     if (path === '/' || path === '') return true;
     const prefix = path.endsWith('/') ? path : path + '/';
     for (const p of this.files.keys()) if (p.startsWith(prefix)) return true;
     return false;
   }
+}
+
+const encoder = new TextEncoder();
+
+/** A mirror file's bytes: LF-normalized text with the recorded line ending put back. */
+export function mirrorBytes(text: string, eol: Eol): Uint8Array {
+  return encoder.encode(eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text);
 }
 
 /** Read-only before/after snapshots for the "Show Diff" command. */

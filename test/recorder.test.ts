@@ -396,6 +396,25 @@ test('a chosen worktree outside the folder is hidden only by files.watcherExclud
   assert.deepEqual(['src/a.ts', 'wx/w.ts', 'top/t.ts'].map(has), [true, false, true]);
 });
 
+test('a worktree added while recording is skipped even when its files are reported before its .git file', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  git(repo, 'worktree', 'add', '-q', '-b', 'late', '.worktrees/late');
+  // The watcher reports the checkout's files and a later write, but never the
+  // new .git file: the event can come late, or be missed for a new directory.
+  t.change(path.join(repo, '.worktrees/late/src/a.ts'), 'a\n', 'create');
+  t.change(path.join(repo, '.worktrees/late/src/late.ts'), 'late\n', 'create');
+  await t.settle();
+  t.change(path.join(repo, '.worktrees/late/src/late.ts'), 'late 2\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [], 'files of a worktree added while recording were recorded');
+  // The folder's own checkout is still recorded.
+  t.change(path.join(repo, 'src/a.ts'), 'a 2\n');
+  await t.settle();
+  assert.deepEqual(t.events().map((e) => e.relPath), ['src/a.ts']);
+});
+
 // --- at-l3q.9.7: exclude globs are applied as PathFilter reads them.
 
 test('malformed, braced, comma and directory-name exclude globs leave matching files their baselines', { skip: noGit }, async () => {

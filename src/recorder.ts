@@ -602,6 +602,26 @@ export class Recorder implements vscode.Disposable {
     }
   }
 
+  /**
+   * True when a file the recorder has no snapshot of sits in a linked worktree
+   * added under the scope since its worktrees were listed. The watcher can
+   * report such a checkout's files before its `.git` file, or miss that event
+   * for a new directory, so this looks for the `.git` file itself. The worktree
+   * is then skipped like a listed one, and git confirms on refresh.
+   */
+  private inNewWorktree(scope: Scope, uri: vscode.Uri): boolean {
+    const rel = this.relOf(scope, uri);
+    for (let end = rel.lastIndexOf('/'); end > 0; end = rel.lastIndexOf('/', end - 1)) {
+      const dir = rel.slice(0, end + 1);
+      if (scope.nested.has(dir) || !isLinkedWorktreeGitFile(vscode.Uri.joinPath(scope.root, dir, '.git').fsPath)) continue;
+      scope.nested.add(dir);
+      this.scheduleWorktreeRefresh();
+      this.note(`in a worktree added while recording, dropped ${this.traceName(uri)}`);
+      return true;
+    }
+    return false;
+  }
+
   private scheduleWorktreeRefresh(): void {
     clearTimeout(this.worktreeRefresh);
     this.worktreeRefresh = setTimeout(() => {
@@ -992,6 +1012,10 @@ export class Recorder implements vscode.Disposable {
       return;
     }
     const scope = this.scopeOf(uri);
+    if (scope && !this.snapshots.has(key) && this.inNewWorktree(scope, uri)) {
+      if (burst.session === this.session) this.ownSaves.delete(key);
+      return;
+    }
     const relPath = this.displayOf(scope, uri);
     const s = this.settings();
     let previous = this.snapshots.get(key) ?? (await this.takeGitBaseline(key, s));
