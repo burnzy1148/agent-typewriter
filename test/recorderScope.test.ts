@@ -619,3 +619,20 @@ test('removing the chosen worktree falls back even when its watcher reports noth
   await t.settle();
   assert.deepEqual(t.events(), []);
 });
+
+test('a removed chosen worktree while git cannot run asks for one refresh, not one every check, and falls back once git answers', { skip: noGit }, async () => {
+  const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n' });
+  const { state, lister } = flakyLister();
+  const t = recorderOn(settings(), { choices, lister }, repo);
+  await t.recorder.start();
+  state.fail = true;
+  await rm(side);
+  const refreshes = () => t.logs.filter((l) => l.startsWith('Worktrees changed')).length;
+  await until('refresh after the root is gone', () => refreshes() === 1, 15_000);
+  // Two more checks' worth: each would ask again without the guard.
+  await sleep(11_000);
+  assert.equal(refreshes(), 1, t.logs.join('\n'));
+  assert.equal(t.checkout()?.own, false, 'fell back while git could not answer');
+  state.fail = false;
+  await until('fallback once git answers', () => t.checkout()?.own === true, 40_000);
+});

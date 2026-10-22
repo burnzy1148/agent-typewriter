@@ -138,8 +138,10 @@ export class Recorder implements vscode.Disposable {
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
   private scopeWork: Promise<void> = Promise.resolve();
   private worktreeRefresh: NodeJS.Timeout | undefined;
-  /** Pending "is the chosen checkout gone?" checks, per folder URI. */
-  private readonly goneChecks = new Map<string, NodeJS.Timeout>();
+  /** Pending "is the chosen checkout gone?" checks, per folder URI, with when each is due. */
+  private readonly goneChecks = new Map<string, { timer: NodeJS.Timeout; at: number }>();
+  /** Per folder URI, the chosen checkout and what of it was missing when a check last asked for a refresh. */
+  private readonly goneRefreshed = new Map<string, string>();
   /** Per folder URI, directories hidden as new worktrees until a listing started after them settles them. */
   private readonly provisional = new Map<string, Array<ProvisionalDir & { root: string }>>();
   /** Numbers provisional directories and worktree listings, so a listing knows which directories it may have missed. */
@@ -438,8 +440,9 @@ export class Recorder implements vscode.Disposable {
     this.deletedDirs.clear();
     clearTimeout(this.ignoreRefresh);
     clearTimeout(this.worktreeRefresh);
-    for (const t of this.goneChecks.values()) clearTimeout(t);
+    for (const t of this.goneChecks.values()) clearTimeout(t.timer);
     this.goneChecks.clear();
+    this.goneRefreshed.clear();
     this.provisional.clear();
     clearTimeout(this.listRetry);
     this.listRetry = undefined;
@@ -546,7 +549,7 @@ export class Recorder implements vscode.Disposable {
       for (const [key, scope] of next) this.scopes.set(key, scope);
       // A chosen worktree git calls prunable is being removed: fall back once its root is gone.
       // Any other is checked now and then too, in case its watcher says nothing as it goes.
-      for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS);
+      for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS, true);
       this.scheduleWorktreeRetry();
       this.scopeEmitter.fire();
     });
@@ -813,6 +816,8 @@ export class Recorder implements vscode.Disposable {
         this.noteWorktreeEvent(uri, 'delete');
         const current = this.scopes.get(key);
         if (current && !current.own) {
+          // Something changed, so a refresh is worth asking for again.
+          this.goneRefreshed.delete(key);
           this.checkCheckoutGone(current);
           // Deletes are still coming: held ones wait for them to stop.
           if (this.deleteSettles.has(key)) this.settleDeletes(key);
@@ -833,24 +838,35 @@ export class Recorder implements vscode.Disposable {
    * While it stays chosen it is checked again, less often each time, down to
    * every GONE_CHECK_MAX_MS. One git still lists without its `.git`
    * (prunable) is being removed and falls back once its root is gone too.
+   * With `keepSooner`, a check already due sooner is left as it is.
    */
-  private checkCheckoutGone(scope: Scope, delayMs = 300): void {
+  private checkCheckoutGone(scope: Scope, delayMs = 300, keepSooner = false): void {
     const key = scope.folder.uri.toString();
-    clearTimeout(this.goneChecks.get(key));
-    this.goneChecks.set(
-      key,
-      setTimeout(() => {
-        this.goneChecks.delete(key);
-        const current = this.scopes.get(key);
-        if (!current || current.own) return;
-        void Promise.all([stat(vscode.Uri.joinPath(current.checkout, '.git')), stat(current.root)]).then(([git, root]) => {
-          if (!this.running || this.scopes.get(key)?.checkout.toString() !== current.checkout.toString()) return;
-          const prunable = this.scopes.get(key)!.prunable;
-          if (!root || (!git && !prunable)) this.scheduleWorktreeRefresh();
-          else this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS));
-        });
-      }, delayMs),
-    );
+    const at = Date.now() + delayMs;
+    const pending = this.goneChecks.get(key);
+    if (keepSooner && pending && pending.at <= at) return;
+    clearTimeout(pending?.timer);
+    const timer = setTimeout(() => {
+      this.goneChecks.delete(key);
+      const current = this.scopes.get(key);
+      if (!current || current.own) return;
+      void Promise.all([stat(vscode.Uri.joinPath(current.checkout, '.git')), stat(current.root)]).then(([git, root]) => {
+        if (!this.running || this.scopes.get(key)?.checkout.toString() !== current.checkout.toString()) return;
+        const prunable = this.scopes.get(key)!.prunable;
+        const missing = !root ? 'root' : !git && !prunable ? '.git' : '';
+        const seen = `${current.checkout.toString()}\0${missing}`;
+        // A refresh that kept this checkout (git could not run, say) is not
+        // asked for again until what is missing changes or a delete arrives.
+        if (missing && this.goneRefreshed.get(key) !== seen) {
+          this.goneRefreshed.set(key, seen);
+          this.scheduleWorktreeRefresh();
+        } else {
+          if (!missing) this.goneRefreshed.delete(key);
+          this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS));
+        }
+      });
+    }, delayMs);
+    this.goneChecks.set(key, { timer, at });
   }
 
   /**
