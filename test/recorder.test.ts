@@ -39,6 +39,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     persistHistory: false,
     ignoreOwnSaves: true,
     viewColumn: 'beside',
+    mirrorStatusRow: true,
     ...over,
   };
 }

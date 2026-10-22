@@ -39,6 +39,8 @@ export interface Settings extends FilterSettings {
   persistHistory: boolean;
   ignoreOwnSaves: boolean;
   viewColumn: 'beside' | 'active';
+  /** Show the CodeLens status row on the playback mirror. */
+  mirrorStatusRow: boolean;
 }
 
 /** Values from the repository settings file; they sit between user and workspace settings. */
@@ -94,7 +96,13 @@ export function readSettings(): Settings {
     persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     viewColumn: c.get('viewColumn', 'beside'),
+    mirrorStatusRow: c.get('mirrorStatusRow', true),
   };
+}
+
+/** Only `mirrorStatusRow`; the CodeLens provider reads it on every request. */
+export function readMirrorStatusRow(): boolean {
+  return layered(vscode.workspace.getConfiguration(SECTION)).get('mirrorStatusRow', true);
 }
 
 /** True when commands write workspace settings; false when no folder is open and they write user settings. */
