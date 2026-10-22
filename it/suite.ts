@@ -29,7 +29,18 @@ export async function run(): Promise<void> {
   const api = await ext.activate();
   const { timeline } = api;
   const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
-  const write = (rel: string, text: string) => fs.writeFileSync(path.join(root, rel), text);
+  // On Windows another process (VS Code, git, a watcher) can briefly hold a file open; retry instead of failing.
+  const write = (rel: string, text: string) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return fs.writeFileSync(path.join(root, rel), text);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if ((code !== 'EBUSY' && code !== 'EPERM') || attempt >= 100) throw err;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+  };
   const disk = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
   const mirrorText = (rel: string) =>
     vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel)?.getText();
@@ -579,12 +590,847 @@ export async function run(): Promise<void> {
   // branches worked on in parallel merge cleanly. Later recorder groups use
   // REC1's. Remove the anchors once the review groups have merged.
   // --- review group PLAY
+  // --- PLAY. Playback and mirror documents. Changes go straight onto the
+  // timeline with the recorder stopped, so only the player sets the timing.
+  {
+    await until('idle before playback checks', idle);
+    await vscode.commands.executeCommand('agentTypewriter.stop');
+    const undo: Array<() => Thenable<void>> = [];
+    const setting = async (section: string, key: string, value: unknown) => {
+      const old = vscode.workspace.getConfiguration(section).inspect(key)?.workspaceValue;
+      undo.push(() => vscode.workspace.getConfiguration(section).update(key, old, WS));
+      await vscode.workspace.getConfiguration(section).update(key, value, WS);
+    };
+    const push = (relPath: string, before: string, after: string, kind?: 'create' | 'modify' | 'delete', eol: '\n' | '\r\n' = '\n') =>
+      timeline.push({
+        uri: vscode.Uri.file(path.join(root, relPath)).toString(),
+        relPath,
+        time: Date.now(),
+        kind: kind ?? (before ? 'modify' : 'create'),
+        before,
+        after,
+        eol,
+        linesAdded: 0,
+        linesRemoved: 0,
+      });
+    const playedNow = (seq: number) => () => timeline.stateOf(seq) === 'played' && idle();
+    const play = async (relPath: string, before: string, after: string, kind?: 'create' | 'modify' | 'delete', eol?: '\n' | '\r\n') => {
+      const e = push(relPath, before, after, kind, eol);
+      await until(`${relPath} #${e.seq} playback`, playedNow(e.seq));
+      return e;
+    };
+    const playing = (seq: number) => () => timeline.stateOf(seq) === 'playing';
+    const isMirror = (d: vscode.TextDocument, rel: string) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel;
+    const mirrorEditor = (rel: string) => vscode.window.visibleTextEditors.find((ed) => isMirror(ed.document, rel));
+    /** Every text, and every content change, the mirror of `rel` goes through until disposed. */
+    const record = (rel: string) => {
+      const texts: string[] = [];
+      const changes: vscode.TextDocumentContentChangeEvent[] = [];
+      const sub = vscode.workspace.onDidChangeTextDocument((ev) => {
+        if (!isMirror(ev.document, rel) || ev.contentChanges.length === 0) return;
+        texts.push(ev.document.getText());
+        changes.push(...ev.contentChanges);
+      });
+      return { texts, changes, dispose: () => sub.dispose() };
+    };
+    /** Set once the mirror of `rel` shows a non-empty selection: a long deletion's selection pause. */
+    const selectionIn = (rel: string) => {
+      const seen = { selected: false, dispose: () => sub.dispose() };
+      const sub = vscode.window.onDidChangeTextEditorSelection((ev) => {
+        if (isMirror(ev.textEditor.document, rel) && !ev.selections[0].isEmpty) seen.selected = true;
+      });
+      return seen;
+    };
+
+    // Mirrors are read-only, so VS Code keeps U+2028 in them and every later hunk lands where planned.
+    await setting('editor', 'unusualLineTerminators', 'auto');
+    const sep1 = 'const sep = "a\u2028b";\nlet x = 1;\n';
+    const sep2 = sep1.replace('x = 1', 'x = 2');
+    await play('play/sep.ts', '', sep1);
+    await sleep(300);
+    assert.equal(mirrorText('play/sep.ts'), sep1, 'U+2028 was stripped from the mirror');
+    await play('play/sep.ts', sep1, sep2);
+    await sleep(300);
+    assert.equal(mirrorText('play/sep.ts'), sep2, 'a change after a U+2028 did not replay exactly');
+
+    // No save participants run on mirrors, and they never become dirty.
+    await setting('files', 'insertFinalNewline', true);
+    await setting('files', 'trimTrailingWhitespace', true);
+    await play('play/nofinal.ts', '', 'export const x = 1;');
+    await play('play/trail.ts', '', 'foo  \nbar\n');
+    for (const [rel, text] of [['play/nofinal.ts', 'export const x = 1;'], ['play/trail.ts', 'foo  \nbar\n']]) {
+      assert.equal(mirrorText(rel), text, `${rel}: a save participant changed the mirror`);
+      assert.equal(mirrorDoc(rel)?.isDirty, false, `${rel}: mirror left dirty`);
+    }
+    const nofinal = record('play/nofinal.ts');
+    await play('play/nofinal.ts', 'export const x = 1;', 'export const x = 2;');
+    nofinal.dispose();
+    // A line-ending switch shows up as a whole-document change to the same text; skip it.
+    const typing = nofinal.changes.filter((c) => !(c.text === 'export const x = 1;' && c.rangeLength === c.text.length));
+    assert.ok(typing.length > 0 && typing[0].rangeLength < 'export const x = 1;'.length, 'the next change began by replacing the whole mirror');
+    assert.equal(mirrorText('play/nofinal.ts'), 'export const x = 2;');
+
+    // Skip to Latest leaves a newest mirror it had to fix up clean: a new CRLF
+    // file, and a file with no line breaks while files.eol is CRLF.
+    await setting('files', 'eol', '\r\n');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    push('play/snapcrlf.ts', '', 'export const a = 1;\nexport const b = 2;\n', 'create', '\r\n');
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorDoc('play/snapcrlf.ts')?.eol, vscode.EndOfLine.CRLF, 'snapped CRLF mirror is not CRLF');
+    assert.equal(mirrorText('play/snapcrlf.ts'), 'export const a = 1;\r\nexport const b = 2;\r\n');
+    assert.equal(mirrorDoc('play/snapcrlf.ts')?.isDirty, false, 'Skip to Latest left a new CRLF mirror dirty');
+    push('play/snapone.ts', '', 'export const one = 1;');
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorDoc('play/snapone.ts')?.eol, vscode.EndOfLine.LF, 'snapped LF mirror took the CRLF default');
+    assert.equal(mirrorDoc('play/snapone.ts')?.isDirty, false, 'Skip to Latest left a one-line mirror dirty');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+
+    // A change recorded while Skip to Latest runs is never overwritten by the older snapshot.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 0);
+    let race = (await play('play/race.ts', '', 'export const race = 0;\n')).after;
+    for (const delay of [0, 20, 60]) {
+      const run = vscode.commands.executeCommand('agentTypewriter.catchUp');
+      await sleep(delay);
+      const newer = push('play/race.ts', race, race + `export const after${delay} = ${delay};\n`);
+      await run;
+      await until('playback after Skip to Latest', idle);
+      assert.equal(timeline.pendingCount(), 0);
+      assert.equal(timeline.stateOf(newer.seq), 'played');
+      assert.equal(mirrorText('play/race.ts'), newer.after, `Skip to Latest (+${delay} ms) left an older state in the mirror`);
+      race = newer.after;
+    }
+
+    // A seek made while Skip to Latest waits for the change being typed wins over the snap.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 1500);
+    await play('play/snapseek1.ts', '', 'export const one = 1;\n');
+    const sought = push('play/snapseek2.ts', '', 'export const two = 2;\n');
+    await until('the file-switch pause', playing(sought.seq));
+    const snapping = player.snapToLatest();
+    timeline.seek(sought.seq);
+    await snapping;
+    assert.equal(timeline.cursor, sought.seq, 'Skip to Latest overrode a seek made while it waited');
+    await until('replay after the seek', playedNow(sought.seq));
+    assert.equal(mirrorText('play/snapseek2.ts'), 'export const two = 2;\n');
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 0);
+
+    // Typing and backspacing keep surrogate pairs whole (one unit per tick at 3600 cpm).
+    await setting('agentTypewriter', 'charsPerMinute', 3600);
+    const emoji1 = '# Release\nok 👍🏻 done\na 𝐀 b\nline2\n';
+    const emoji2 = '# Release\nShip it 🚀 now\nok 👍🏿 done\na b\nline2 x\n';
+    const emoji = record('play/emoji.ts');
+    await play('play/emoji.ts', '', emoji1);
+    await play('play/emoji.ts', emoji1, emoji2);
+    emoji.dispose();
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const split = emoji.texts.find((t) => lone.test(t));
+    assert.equal(split, undefined, `a mirror state split a surrogate pair: ${JSON.stringify(split)}`);
+    assert.ok(emoji.changes.every((c) => c.rangeLength < 10), 'typing went wrong and the mirror was replaced at the end');
+    assert.equal(mirrorText('play/emoji.ts'), emoji2);
+
+    // Pause holds long and multi-line deletions, and delete events.
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    const funcs = 'KEEP\nfunction one() {\n  return 1;\n}\nKEEP2\nfunction two() {\n  return 2;\n}\nKEEP3\nfunction three() {\n  return 3;\n}\n';
+    const kept = 'KEEP\nKEEP2\nKEEP3\n';
+    await play('play/funcs.ts', '', funcs);
+    const holdsWhilePaused = async (label: string, seq: number) => {
+      await until(`${label} to start`, playing(seq));
+      await vscode.commands.executeCommand('agentTypewriter.togglePause');
+      await sleep(100);
+      const atPause = mirrorText('play/funcs.ts');
+      await sleep(2000);
+      assert.equal(mirrorText('play/funcs.ts'), atPause, `${label}: the mirror changed while paused`);
+      assert.equal(timeline.stateOf(seq), 'playing', `${label}: finished while paused`);
+      await vscode.commands.executeCommand('agentTypewriter.togglePause');
+      await until(`${label} playback`, playedNow(seq));
+    };
+    await holdsWhilePaused('multi-line deletions', push('play/funcs.ts', funcs, kept).seq);
+    assert.equal(mirrorText('play/funcs.ts'), kept);
+    await holdsWhilePaused('file deletion', push('play/funcs.ts', kept, '', 'delete').seq);
+    assert.equal(mirrorText('play/funcs.ts'), '');
+
+    // A seek while paused edits nothing more: not mid-typing, not after a deletion's selection pause.
+    await setting('agentTypewriter', 'charsPerMinute', 1200);
+    const first = await play('play/pause.ts', '', 'first\n');
+    const typed = 'first\nabcdefghijklmnopqrstuvwxyz\n';
+    const long = push('play/pause.ts', first.after, typed);
+    await until('a partial insert', () => (mirrorText('play/pause.ts') ?? '').startsWith('first\nab'));
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(300);
+    const atPause = mirrorText('play/pause.ts');
+    await scrubber.receive({ type: 'seek', seq: first.seq });
+    assert.equal(mirrorText('play/pause.ts'), atPause, 'the mirror changed after a seek while paused');
+    assert.equal(player.isPaused, true, 'seek changed the pause state');
+    await sleep(300);
+    assert.equal(mirrorText('play/pause.ts'), atPause, 'the mirror changed after a seek while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('replay after the seek', playedNow(long.seq));
+    assert.equal(mirrorText('play/pause.ts'), typed);
+
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    const lines = 'keep\nremove this line\nand this one\n';
+    const made = await play('play/seekdel.ts', '', lines);
+    const cutting = selectionIn('play/seekdel.ts');
+    const cut = push('play/seekdel.ts', lines, 'keep\n');
+    await until('deletion selected', () => cutting.selected);
+    cutting.dispose();
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await scrubber.receive({ type: 'seek', seq: made.seq });
+    assert.equal(mirrorText('play/seekdel.ts'), lines, 'a seek during the selection pause still deleted the selection');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('replay after the seek', playedNow(cut.seq));
+    assert.equal(mirrorText('play/seekdel.ts'), 'keep\n');
+
+    // Hiding the mirror tab during a pause does not abandon the change.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 1500);
+    let hideA = (await play('play/hideA.ts', '', 'export const a = 1;\n')).after;
+    await play('play/hideB.ts', '', 'line1\nline2\nline3\n');
+    const nextA = async () => (hideA = (await play('play/hideA.ts', hideA, hideA + '// again\n')).after);
+    /** Shows the hideA mirror in the column that shows hideB, which hides hideB's tab. */
+    const hideB = async () => {
+      const ed = mirrorEditor('play/hideB.ts');
+      assert.ok(ed, 'hideB mirror is not visible');
+      await vscode.window.showTextDocument(mirrorDoc('play/hideA.ts')!, { viewColumn: ed.viewColumn, preview: false, preserveFocus: true });
+    };
+    const closeB = async () => {
+      const tab = vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .find((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === 'agent-typewriter' && t.input.uri.path === '/play/hideB.ts');
+      assert.ok(tab, 'hideB mirror tab not found');
+      await vscode.window.tabGroups.close(tab);
+    };
+    const hiddenDuringSwitch = async (label: string, before: string, after: string, kind?: 'delete', hide = hideB) => {
+      await nextA();
+      const e = push('play/hideB.ts', before, after, kind);
+      await until(`${label} to start`, playing(e.seq));
+      await sleep(300);
+      await hide();
+      await until(`${label} playback`, playedNow(e.seq));
+      assert.equal(mirrorText('play/hideB.ts'), after, `${label}: hiding the tab during the file-switch pause abandoned the change`);
+    };
+    await hiddenDuringSwitch('delete event', 'line1\nline2\nline3\n', '', 'delete');
+    await setting('agentTypewriter', 'maxAnimatedChars', 20);
+    const bigText = `export const big = "${'x'.repeat(40)}";\n`;
+    await hiddenDuringSwitch('instant change', '', bigText);
+    await hiddenDuringSwitch('closed tab', bigText, bigText + '// typed\n', undefined, closeB);
+    assert.ok(mirrorEditor('play/hideB.ts'), 'the closed mirror tab was not shown again');
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 30);
+    const multi = 'line1\nline2\nline3\nline4\n';
+    await play('play/hideB.ts', bigText + '// typed\n', multi);
+    const selecting = selectionIn('play/hideB.ts');
+    const trimmed = push('play/hideB.ts', multi, 'line1\n');
+    await until('multi-line deletion selected', () => selecting.selected);
+    selecting.dispose();
+    await hideB();
+    await until('multi-line deletion playback', playedNow(trimmed.seq));
+    assert.equal(mirrorText('play/hideB.ts'), 'line1\n', 'hiding the tab during the selection pause abandoned the deletion');
+
+    // A mirror reverted mid-change (closed with its edits dropped, or File: Revert)
+    // is put back before the next hunk, so no hunk lands at a stale offset.
+    const r0 = 'const a = 1;\nconst b = 2;\nconst c = 3;\n';
+    const r1 = 'const a = 10;\nconst b = 20;\nconst c = 30;\n';
+    const r2 = 'const a = 100;\nconst b = 200;\nconst c = 300;\n';
+    await play('play/revert.ts', '', r0);
+    await setting('agentTypewriter', 'charsPerMinute', 480);
+    const revertMidChange = async (before: string, after: string, marker: string, command: string) => {
+      const seen = record('play/revert.ts');
+      const e = push('play/revert.ts', before, after);
+      await until(`${marker} typed`, () => (mirrorText('play/revert.ts') ?? '').startsWith(marker));
+      const ed = mirrorEditor('play/revert.ts')!;
+      await vscode.window.showTextDocument(ed.document, { viewColumn: ed.viewColumn, preserveFocus: false, preview: false });
+      const at = seen.texts.length;
+      await vscode.commands.executeCommand(command);
+      await until(`playback after ${command}`, playedNow(e.seq));
+      seen.dispose();
+      for (const t of seen.texts) {
+        for (const line of t.split('\n').filter((l) => /^const [bc]/.test(l))) {
+          assert.match(line, /^const [bc] = \d*;$/, `${command}: a hunk landed at a stale offset: ${JSON.stringify(t)}`);
+        }
+      }
+      for (const t of seen.texts.slice(at)) {
+        assert.ok(t === before || t.startsWith(marker), `${command}: typing went on from the reverted text: ${JSON.stringify(t)}`);
+      }
+      assert.equal(mirrorText('play/revert.ts'), after);
+    };
+    await revertMidChange(r0, r1, 'const a = 10;', 'workbench.action.revertAndCloseActiveEditor');
+    await revertMidChange(r1, r2, 'const a = 100;', 'workbench.action.files.revert');
+
+    for (const restore of undo.reverse()) await restore();
+    await vscode.commands.executeCommand('agentTypewriter.start');
+    console.log('[it] playback and mirrors ok');
+  }
 
   // --- review group SET
+  // Settings layering: wrong-typed VS Code settings resolve as if unset,
+  // object settings merge across user and workspace, and a repository file
+  // replaced by a directory stops applying.
+  {
+    // This bundle's own copy of the config module: it reads VS Code settings
+    // like the extension does, but has no repository file values.
+    const { readSettings, workspaceOverrides } = await import('../src/config');
+    const GLOBAL = vscode.ConfigurationTarget.Global;
+    const recordedSince = (rel: string, from: number) => timeline.all().slice(from).some((e) => e.relPath === rel);
+
+    // A profile's filters sit above the user setting and the file; turn it off so those show.
+    const savedProfile = cfg().inspect('activeProfile')?.workspaceValue;
+    await cfg().update('activeProfile', undefined, WS);
+
+    // A non-numeric pace falls back to the default instead of hanging playback.
+    await until('idle before SET', idle);
+    const savedPace = (['charsPerMinute', 'catchUpFactor'] as const).map((k) => [k, cfg().inspect(k)?.workspaceValue] as const);
+    await cfg().update('charsPerMinute', 'fast', WS);
+    await cfg().update('catchUpFactor', 'auto', WS);
+    assert.equal(readSettings().charsPerMinute, 350);
+    assert.equal(readSettings().catchUpFactor, 0.5);
+    const atPace = timeline.all().length;
+    write('src/setPace.ts', 'export const pace = 1;\n');
+    await until('setPace.ts recorded', () => recordedSince('src/setPace.ts', atPace), 20000);
+    await until('setPace.ts playback at the default pace', idle, 20000);
+    assert.equal(mirrorText('src/setPace.ts'), 'export const pace = 1;\n');
+    for (const [k, v] of savedPace) await cfg().update(k, v, WS);
+
+    // A string extensions setting counts as unset; recording and Stop/Start keep working.
+    const savedExtensions = cfg().inspect('extensions')?.workspaceValue;
+    await cfg().update('extensions', 'ts', WS);
+    assert.deepEqual(readSettings().extensions, [], 'a string extensions setting came through');
+    await cfg().update('extensions', ['md'], GLOBAL);
+    assert.deepEqual(readSettings().extensions, ['md'], 'a valid user value lost to a wrong-typed workspace value');
+    await cfg().update('extensions', undefined, GLOBAL);
+    await sleep(500);
+    const atTyped = timeline.all().length;
+    write('src/setTyped.ts', 'export const typed = 1;\n');
+    await until('write recorded with wrong-typed extensions', () => recordedSince('src/setTyped.ts', atTyped), 20000);
+    await vscode.commands.executeCommand('agentTypewriter.stop');
+    await vscode.commands.executeCommand('agentTypewriter.start');
+    assert.ok(api.recorder.isRunning, 'Start failed with wrong-typed extensions');
+    await sleep(1000);
+    const atRestart = timeline.all().length;
+    write('src/setTyped.ts', 'export const typed = 2;\n');
+    await until('write recorded after Stop/Start', () => recordedSince('src/setTyped.ts', atRestart), 20000);
+    await cfg().update('extensions', savedExtensions, WS);
+    await until('wrong-typed extensions playback', idle);
+
+    // A wrong-typed exclude keeps the contributed default list, and does not override the file.
+    const savedExclude = cfg().inspect('exclude')?.workspaceValue;
+    await cfg().update('exclude', '**/dist/**', WS);
+    assert.deepEqual(readSettings().exclude, cfg().inspect('exclude')?.defaultValue);
+    assert.deepEqual(workspaceOverrides(['exclude']), [], 'a wrong-typed workspace exclude reported as an override');
+    await cfg().update('exclude', savedExclude, WS);
+
+    // languageSpeeds merges user and workspace entries, as VS Code does.
+    await cfg().update('languageSpeeds', { markdown: 80 }, GLOBAL);
+    await cfg().update('languageSpeeds', { typescript: 20 }, WS);
+    assert.deepEqual(readSettings().languageSpeeds, { markdown: 80, typescript: 20 });
+    await cfg().update('languageSpeeds', undefined, WS);
+    await cfg().update('languageSpeeds', undefined, GLOBAL);
+
+    // A directory in place of the repository file drops the file's values.
+    const settingsFile = path.join(root, '.agent-typewriter.json');
+    const savedFile = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile, 'utf8') : undefined;
+    const excluded = vscode.Uri.file(path.join(root, 'src/skip/a.ts'));
+    fs.writeFileSync(settingsFile, JSON.stringify({ exclude: ['src/skip/**'] }));
+    await until('repository file exclude to apply', () => !api.recorder.matches(excluded), 10000);
+    fs.unlinkSync(settingsFile);
+    fs.mkdirSync(settingsFile);
+    await until('directory in place of the file to stop applying', () => api.recorder.matches(excluded), 10000);
+    fs.rmdirSync(settingsFile);
+    fs.writeFileSync(settingsFile, JSON.stringify({ exclude: ['src/skip/**'] }));
+    await until('file written again to apply', () => !api.recorder.matches(excluded), 10000);
+    if (savedFile === undefined) fs.unlinkSync(settingsFile);
+    else fs.writeFileSync(settingsFile, savedFile);
+    await cfg().update('activeProfile', savedProfile, WS);
+    await until('restored filters', () => api.recorder.matches(excluded), 10000);
+
+    // The settings writes above are recorded too, up to a reorder window later.
+    for (let n = -1; n !== timeline.all().length; ) {
+      n = timeline.all().length;
+      await sleep(reorderWindow + 1500);
+    }
+    await until('SET playback', idle);
+    console.log('[it] settings layering ok');
+  }
 
   // --- review group ACT
+  // ACT a. Watch Only This and Add to Watch on the workspace root write a
+  // folder-relative glob, and a folder named like a route ("[id]") matches itself.
+  const includeValue = () => cfg().inspect('include')?.workspaceValue;
+  const atRoot = timeline.all().length;
+  await vscode.commands.executeCommand('agentTypewriter.watchOnlyThis', folder.uri);
+  assert.deepEqual(includeValue(), ['**/*'], 'Watch Only This on the root did not write a whole-folder glob');
+  await sleep(500);
+  write('src/actRoot.ts', 'export const actRoot = 1;\n');
+  await until('write after Watch Only This on the root', () => eventsFor('src/actRoot.ts', atRoot).length === 1, 20000);
+  await vscode.commands.executeCommand('agentTypewriter.addToWatch', folder.uri);
+  assert.deepEqual(includeValue(), ['**/*'], 'Add to Watch on the root did not write a whole-folder glob');
+  await sleep(500);
+  write('src/actRoot.ts', 'export const actRoot = 2;\n');
+  await until('write after Add to Watch on the root', () => eventsFor('src/actRoot.ts', atRoot).length === 2, 20000);
+  fs.mkdirSync(path.join(root, 'src/[id]'), { recursive: true });
+  await sleep(1000);
+  await vscode.commands.executeCommand('agentTypewriter.watchOnlyThis', uriOf('src/[id]'));
+  assert.deepEqual(includeValue(), ['src/[[]id[]]/**'], 'glob characters in the selection were not escaped');
+  await sleep(500);
+  const atRoute = timeline.all().length;
+  write('src/[id]/page.ts', 'export const page = 1;\n');
+  await until('write in a [id] folder after Watch Only This', () => eventsFor('src/[id]/page.ts', atRoute).length === 1, 20000);
+  await vscode.commands.executeCommand('agentTypewriter.resetFilters');
+  await until('Watch Only This playback', idle);
+  console.log('[it] ACT: Watch Only This on the root and on [id] ok');
+
+  // ACT b. Raising maxFileSizeKB while watching takes baselines for files that now fit.
+  await cfg().update('maxFileSizeKB', 1, WS);
+  await settle();
+  const bigText = Array.from({ length: 120 }, (_, i) => `export const big${i} = ${i};\n`).join('');
+  const atBig = timeline.all().length;
+  write('src/big.ts', bigText);
+  await sleep(1500);
+  api.recorder.drainHeld();
+  assert.deepEqual(eventsFor('src/big.ts', atBig), [], 'a file over maxFileSizeKB was recorded');
+  await cfg().update('maxFileSizeKB', 512, WS);
+  await until('big.ts baseline after raising maxFileSizeKB', () => api.recorder.hasBaseline(uriOf('src/big.ts')), 20000);
+  write('src/big.ts', bigText + 'export const grown = true;\n');
+  await until('big.ts recorded', () => eventsFor('src/big.ts', atBig).length > 0, 20000);
+  await sleep(500);
+  await until('big.ts playback', idle);
+  const bigEvents = eventsFor('src/big.ts', atBig);
+  assert.equal(bigEvents.length, 1, `expected one big.ts change, got ${bigEvents.length}`);
+  assert.equal(bigEvents[0].kind, 'modify');
+  assert.equal(bigEvents[0].before, bigText, 'the first change after raising maxFileSizeKB does not start from the file text');
+  assert.equal(mirrorText('src/big.ts'), disk('src/big.ts'));
+  await cfg().update('maxFileSizeKB', undefined, WS);
+  console.log('[it] ACT: raising maxFileSizeKB ok');
+
+  // ACT c. Clear Buffer and Load Session replace changes still held for reordering.
+  const quiet = async () => {
+    for (let n = -1; n !== timeline.all().length; ) {
+      n = timeline.all().length;
+      await sleep(reorderWindow + 1500);
+    }
+    await until('playback before a quiet check', idle);
+  };
+  const heldNow = (rel: string) => api.recorder.describeActivity().includes(`recorded create ${rel}`);
+  await quiet();
+  write('src/actHeld.ts', 'export const held = 1;\n');
+  await until('actHeld.ts held for reordering', () => heldNow('src/actHeld.ts'), 20000);
+  await vscode.commands.executeCommand('agentTypewriter.clear');
+  await sleep(reorderWindow + 1500);
+  assert.deepEqual(timeline.all().map((e) => e.relPath), [], 'a change held at Clear Buffer came back after it');
+
+  write('src/actSaved.ts', 'export const saved = 1;\n');
+  await until('actSaved.ts recorded', () => eventsFor('src/actSaved.ts', 0).length === 1, 20000);
+  const actSession = path.join(path.dirname(process.env.IT_EXPECT!), 'act-session.json');
+  await vscode.commands.executeCommand('agentTypewriter.saveSession', vscode.Uri.file(actSession));
+  const savedPaths = timeline.all().map((e) => e.relPath);
+  write('src/actHeld2.ts', 'export const held2 = 1;\n');
+  await until('actHeld2.ts held for reordering', () => heldNow('src/actHeld2.ts'), 20000);
+  await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(actSession));
+  await sleep(reorderWindow + 1500);
+  assert.deepEqual(timeline.all().map((e) => e.relPath), savedPaths, 'a change held at Load Session was appended to the loaded one');
+  if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
+  await until('loaded session playback', idle);
+  console.log('[it] ACT: Clear Buffer and Load Session drain held changes ok');
+
+  // ACT d. A .git file is git metadata: never recorded, unlike a file next to it.
+  const libGitDir = `${root}-act-libgit`;
+  // One level deep, like otherRepo above: git writes actlib/.git as a gitfile.
+  fs.mkdirSync(path.join(root, 'actlib'));
+  await sleep(1000);
+  const atGitfile = timeline.all().length;
+  gitIn(path.join(root, 'actlib'), 'init', '-q', '--separate-git-dir', libGitDir);
+  await sleep(2000);
+  write('actlib/index.ts', 'export const lib = 1;\n');
+  await until('file next to a gitfile recorded', () => eventsFor('actlib/index.ts', atGitfile).length === 1, 20000);
+  await sleep(1500);
+  api.recorder.drainHeld();
+  assert.deepEqual(eventsFor('actlib/.git', atGitfile), [], 'a .git file was recorded');
+  await until('gitfile playback', idle);
+
+  // A focus refresh while recording counts worktrees added and removed elsewhere,
+  // and a chosen worktree's own .git file gets no baseline and is not recorded.
+  const worktreeCount = async () => (await api.refreshCheckouts()).get(folder.uri.toString())?.worktrees;
+  const countBefore = await worktreeCount();
+  assert.ok(countBefore, 'the folder has no checkouts');
+  const sideDir = `${root}-actside`;
+  gitIn(root, 'worktree', 'add', '-q', '-b', 'actside', sideDir);
+  assert.equal(await worktreeCount(), countBefore + 1, 'a refresh while recording missed a worktree added elsewhere');
+  await choose(sideDir);
+  await until('actside chosen', () => own() === false, 20000);
+  const sideUris = (rel: string) => [sideDir, fs.realpathSync.native(sideDir)].map((d) => vscode.Uri.file(path.join(d, rel)));
+  await until('actside baseline', () => sideUris('src/committed1.ts').some((u) => api.recorder.hasBaseline(u)), 20000);
+  assert.ok(!sideUris('.git').some((u) => api.recorder.hasBaseline(u)), "the chosen worktree's .git file got a baseline");
+  const atSide = timeline.all().length;
+  // A trailing newline more, which git ignores, so a baseline would see a change.
+  // In place: git hides the file on Windows, and a hidden file can't be opened for truncation.
+  const sideGitfile = fs.readFileSync(path.join(sideDir, '.git'), 'utf8');
+  fs.writeFileSync(path.join(sideDir, '.git'), sideGitfile + '\n', { flag: 'r+' });
+  await sleep(1500);
+  api.recorder.drainHeld();
+  assert.deepEqual(since(atSide).map((e) => `${e.kind} ${e.relPath}`), [], "rewriting the chosen worktree's .git file was recorded");
+  await choose('');
+  await until('own checkout after actside', () => own() === true, 20000);
+  gitIn(root, 'worktree', 'remove', '--force', sideDir);
+  assert.equal(await worktreeCount(), countBefore, 'a refresh while recording missed a worktree removed elsewhere');
+  console.log('[it] ACT: gitfiles and worktree count while recording ok');
+
+  // ACT e. The repository file's history settings beat the user's at the next
+  // activation: restore.ts checks every change comes back and stays saved.
+  const repoBefore = fs.existsSync(repoFile) ? JSON.parse(fs.readFileSync(repoFile, 'utf8')) : {};
+  fs.writeFileSync(repoFile, JSON.stringify({ ...repoBefore, historyLimit: 1000, persistHistory: true }));
+  await sleep(2000);
+  await cfg().update('historyLimit', 10, vscode.ConfigurationTarget.Global);
+  await cfg().update('persistHistory', false, vscode.ConfigurationTarget.Global);
+  const atHistory = timeline.all().length;
+  for (let i = 0; i < 12; i++) {
+    write(`src/actHistory${i}.ts`, `export const history${i} = ${i};\n`);
+    await sleep(150);
+  }
+  await until('history changes recorded', () => since(atHistory).filter((e) => e.relPath.startsWith('src/actHistory')).length === 12, 20000);
+  await until('history playback', idle);
+  assert.ok(timeline.all().length > 12, 'the user historyLimit cut the buffer though the repository file sets one');
+  assert.ok(api.store?.isRunning, 'the user persistHistory stopped saving though the repository file turns it on');
+  console.log(`[it] ACT: repository file history settings ok (${timeline.all().length} changes)`);
 
   // --- review group REC1
+  {
+    // Settings these sections change; restored at the end for the sections below.
+    const restoreExtensions = cfg().inspect('extensions')?.workspaceValue;
+    const setting = async (key: string, value: unknown) => {
+      await cfg().update(key, value, WS);
+      await sleep(200);
+    };
+    const relEvents = (from: number) => since(from).map((e) => `${e.kind} ${e.relPath}`);
+    const created = async (rel: string, text: string) => {
+      const at = timeline.all().length;
+      write(rel, text);
+      await until(`${rel} recorded`, () => eventsFor(rel, at).length > 0, 20000);
+      await until(`${rel} baseline`, () => api.recorder.hasBaseline(uriOf(rel)), 20000);
+      await until(`${rel} playback`, idle);
+    };
+    const settled = async () => {
+      await sleep(1000);
+      api.recorder.drainHeld();
+      await until('playback to settle', idle);
+    };
+    await setting('extensions', ['ts']);
+    // A read-only file is how these sections make an editor save fail; root can write it anyway.
+    const canFailSaves = process.getuid?.() !== 0;
+
+    // R1. A delete is ordered by its own watcher event, not by the earlier
+    // write it was merged with. Runs with the wide reorder window from step 8.
+    // The long debounce merges delA's write and delete into one burst; delB is
+    // written only once the watcher has reported that write.
+    await setting('debounceMs', 1500);
+    await created('src/delA.ts', 'export const delA = 1;\n');
+    const atDelete = timeline.all().length;
+    let delAReported = false;
+    const delProbe = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, 'src/delA.ts'));
+    delProbe.onDidChange(() => (delAReported = true));
+    write('src/delA.ts', 'export const delA = 2;\n');
+    await until('watcher to report the delA write', () => delAReported, 10000);
+    delProbe.dispose();
+    await sleep(50);
+    write('src/delB.ts', 'export const delB = 1;\n');
+    await sleep(50);
+    fs.unlinkSync(path.join(root, 'src/delA.ts'));
+    const deleteOf = (rel: string) => since(atDelete).find((e) => e.relPath === rel && e.kind === 'delete');
+    await until('delB and the delete of delA recorded', () => !!deleteOf('src/delA.ts') && eventsFor('src/delB.ts', atDelete).length === 1);
+    const order1 = relEvents(atDelete);
+    assert.ok(order1.indexOf('create src/delB.ts') < order1.indexOf('delete src/delA.ts'), `delete ordered before an earlier write: ${order1.join(', ')}`);
+    assert.ok(deleteOf('src/delA.ts')!.time >= eventsFor('src/delB.ts', atDelete)[0].time, 'delete time is before an earlier write');
+    await settled();
+    await setting('debounceMs', 100);
+    await setting('reorderWindowMs', 0);
+    console.log('[it] delete keyed at its own event ok');
+
+    // R2. Two reads of one file never overlap, so every change starts where the last one ended.
+    const assertChain = (rel: string, from: number, first: string, last: string) => {
+      let text = first;
+      for (const e of eventsFor(rel, from)) {
+        assert.equal(e.before, text, `${rel}: a change does not start where the previous one ended`);
+        text = e.after;
+      }
+      assert.equal(text, last, `${rel}: the changes do not end at the disk text`);
+      assert.equal(mirrorText(rel), disk(rel), `${rel}: mirror does not match disk`);
+    };
+    // Quick writes with no debounce.
+    await created('src/chain.ts', 'export const v = 0;\n');
+    await setting('debounceMs', 0);
+    const atChain = timeline.all().length;
+    for (let i = 1; i <= 6; i++) {
+      write('src/chain.ts', `export const v = ${i};\n`);
+      await sleep(i % 2 === 0 ? 60 : 10);
+    }
+    await until('last chain write recorded', () => eventsFor('src/chain.ts', atChain).at(-1)?.after === 'export const v = 6;\n');
+    await settled();
+    assertChain('src/chain.ts', atChain, 'export const v = 0;\n', 'export const v = 6;\n');
+    await setting('debounceMs', 200);
+    // A read waiting on a save that never finishes, and a second burst of the
+    // same file whose timer fires meanwhile.
+    let atChain2 = timeline.all().length;
+    if (canFailSaves) {
+      await created('src/chain2.ts', 'export const w = 0;\n');
+      const chainPath = path.join(root, 'src/chain2.ts');
+      const chainDoc = await vscode.workspace.openTextDocument(chainPath);
+      const chainEd = await vscode.window.showTextDocument(chainDoc);
+      await chainEd.edit((b) => b.insert(new vscode.Position(0, 0), '// unsaved by me\n'));
+      fs.chmodSync(chainPath, 0o444);
+      const chainSaved = await chainDoc.save();
+      fs.chmodSync(chainPath, 0o644);
+      assert.equal(chainSaved, false, 'expected the save of a read-only file to fail');
+      atChain2 = timeline.all().length;
+      write('src/chain2.ts', 'export const w = 1;\n');
+      await sleep(300);
+      write('src/chain2.ts', 'export const w = 2;\n');
+      await until('last chain2 write recorded', () => eventsFor('src/chain2.ts', atChain2).at(-1)?.after === 'export const w = 2;\n');
+      await settled();
+      await vscode.window.showTextDocument(chainDoc);
+      await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+      assertChain('src/chain2.ts', atChain2, 'export const w = 0;\n', 'export const w = 2;\n');
+    }
+    await setting('debounceMs', 100);
+    console.log(`[it] same-file changes chain ok (${eventsFor('src/chain.ts', atChain).length} and ${eventsFor('src/chain2.ts', atChain2).length} changes)`);
+
+    // R3. A save that fails (here the file is read-only) is not the next
+    // outside write's before text.
+    if (canFailSaves) {
+      await created('src/failedSave.ts', 'export const s = 0;\n');
+      const failPath = path.join(root, 'src/failedSave.ts');
+      const failDoc = await vscode.workspace.openTextDocument(failPath);
+      const failEd = await vscode.window.showTextDocument(failDoc);
+      await failEd.edit((b) => b.insert(new vscode.Position(0, 0), '// unsaved by me\n'));
+      fs.chmodSync(failPath, 0o444);
+      const savedOk = await failDoc.save();
+      fs.chmodSync(failPath, 0o644);
+      assert.equal(savedOk, false, 'expected the save of a read-only file to fail');
+      await vscode.window.showTextDocument(failDoc);
+      await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+      const atAfterFail = timeline.all().length;
+      write('src/failedSave.ts', 'export const s = 1;\n');
+      await until('write after a failed save recorded', () => eventsFor('src/failedSave.ts', atAfterFail).length === 1);
+      await settled();
+      const afterFail = eventsFor('src/failedSave.ts', atAfterFail);
+      assert.equal(afterFail.length, 1);
+      assert.equal(afterFail[0].before, 'export const s = 0;\n', 'a failed save became the before text');
+      console.log('[it] failed save ok');
+    }
+
+    // R4. A save of a file that is not recorded leaves nothing behind: once the
+    // file is recorded, its change starts from its baseline, not the saved text.
+    write('notes.md', 'start\n');
+    await sleep(300);
+    assert.equal(api.recorder.matches(uriOf('notes.md')), false);
+    const mdDoc = await vscode.workspace.openTextDocument(path.join(root, 'notes.md'));
+    const mdEd = await vscode.window.showTextDocument(mdDoc);
+    await mdEd.edit((b) => b.replace(new vscode.Range(0, 0, mdDoc.lineCount, 0), 'U user\n'));
+    await mdDoc.save();
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    write('notes.md', 'A agent\n');
+    await sleep(500);
+    const atMd = timeline.all().length;
+    await setting('extensions', ['ts', 'md']);
+    await until('notes.md baseline', () => api.recorder.hasBaseline(uriOf('notes.md')), 20000);
+    write('notes.md', 'A2 agent\n');
+    await until('notes.md recorded', () => eventsFor('notes.md', atMd).length > 0);
+    await settled();
+    assert.deepEqual(
+      eventsFor('notes.md', atMd).map((e) => [e.kind, e.before]),
+      [['modify', 'A agent\n']],
+      'a save made while the file was filtered out became its before text',
+    );
+    await setting('extensions', ['ts']);
+    console.log('[it] own saves of unrecorded files ok');
+
+    // R5. Saving through a symlink is an own save of the file it leads to.
+    await created('src/linkTarget.ts', 'export const target = 1;\n');
+    fs.mkdirSync(path.join(root, 'src/linkDirReal'));
+    await sleep(1000);
+    await created('src/linkDirReal/a.ts', 'export const inLinkedDir = 1;\n');
+    let linked = true;
+    try {
+      fs.symlinkSync('linkTarget.ts', path.join(root, 'src/linkFile.ts'), 'file');
+      fs.symlinkSync('linkDirReal', path.join(root, 'src/linkDir'), 'dir');
+    } catch (err) {
+      linked = false;
+      console.log(`[it] symlinks unavailable here (${(err as NodeJS.ErrnoException).code}); skipping the symlink save check`);
+    }
+    if (linked) {
+      await settled();
+      const saveVia = async (rel: string) => {
+        const d = await vscode.workspace.openTextDocument(path.join(root, rel));
+        const e = await vscode.window.showTextDocument(d);
+        await e.edit((b) => b.insert(new vscode.Position(0, 0), '// saved through a link\n'));
+        await d.save();
+        const text = lf(d.getText());
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        return text;
+      };
+      const atLink = timeline.all().length;
+      const linkSaved = await saveVia('src/linkFile.ts');
+      await saveVia('src/linkDir/a.ts');
+      await settled();
+      assert.deepEqual(relEvents(atLink), [], 'a save through a symlink was recorded');
+      write('src/linkTarget.ts', linkSaved + "export const agent = 'agent';\n");
+      await until('write to the link target recorded', () => eventsFor('src/linkTarget.ts', atLink).length > 0);
+      await settled();
+      const targetEvents = eventsFor('src/linkTarget.ts', atLink);
+      assert.equal(targetEvents.length, 1);
+      assert.equal(targetEvents[0].before, linkSaved, 'the write after a save through a link does not start from the saved text');
+      console.log('[it] saves through symlinks ok');
+    }
+
+    // R6. Deleting a directory deletes each recorded file in it.
+    // One level at a time: Linux watchers can miss a directory created inside another new one.
+    fs.mkdirSync(path.join(root, 'src/olddir'));
+    await sleep(1000);
+    fs.mkdirSync(path.join(root, 'src/olddir/sub'));
+    await sleep(1000);
+    const oldFiles = ['src/olddir/a.ts', 'src/olddir/b.ts', 'src/olddir/sub/c.ts'];
+    for (const rel of oldFiles) await created(rel, `export const f = '${rel}';\n`);
+    const watchedBefore = api.recorder.watchedCount;
+    const atRm = timeline.all().length;
+    fs.rmSync(path.join(root, 'src/olddir'), { recursive: true });
+    await until('a delete per file', () => oldFiles.every((rel) => eventsFor(rel, atRm).some((e) => e.kind === 'delete')));
+    await settled();
+    for (const rel of oldFiles) {
+      assert.deepEqual(eventsFor(rel, atRm).map((e) => [e.kind, e.before]), [['delete', `export const f = '${rel}';\n`]], `${rel}: expected one delete`);
+      assert.equal(api.recorder.hasBaseline(uriOf(rel)), false, `${rel} kept its baseline`);
+      assert.equal(mirrorText(rel), '', `${rel}: mirror not emptied`);
+    }
+    assert.equal(api.recorder.watchedCount, watchedBefore - oldFiles.length);
+
+    // A renamed directory is a delete of each old path and a create of each new one.
+    fs.mkdirSync(path.join(root, 'src/mv1'));
+    await sleep(1000);
+    for (const n of ['c', 'd']) await created(`src/mv1/${n}.ts`, `export const ${n} = 1;\n`);
+    const atMv = timeline.all().length;
+    fs.renameSync(path.join(root, 'src/mv1'), path.join(root, 'src/mv2'));
+    const mvExpected = ['delete src/mv1/c.ts', 'delete src/mv1/d.ts', 'create src/mv2/c.ts', 'create src/mv2/d.ts'];
+    await until('rename recorded', () => mvExpected.every((x) => relEvents(atMv).includes(x)));
+    await settled();
+    assert.deepEqual([...relEvents(atMv)].sort(), [...mvExpected].sort(), 'a directory rename is not one delete and one create per file');
+    assert.ok(api.recorder.hasBaseline(uriOf('src/mv2/c.ts')), 'a moved file has no baseline');
+    const atMvEdit = timeline.all().length;
+    write('src/mv2/c.ts', 'export const c = 2;\n');
+    await until('edit of a moved file recorded', () => eventsFor('src/mv2/c.ts', atMvEdit).length === 1);
+    assert.equal(eventsFor('src/mv2/c.ts', atMvEdit)[0].kind, 'modify');
+    assert.equal(eventsFor('src/mv2/c.ts', atMvEdit)[0].before, 'export const c = 1;\n');
+
+    // A tree prepared outside the workspace and moved in records a create per file, nested ones too.
+    const outside = `${root}-pkg`;
+    fs.mkdirSync(path.join(outside, 'inner'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'x.ts'), 'export const x = 1;\n');
+    fs.writeFileSync(path.join(outside, 'inner', 'y.ts'), 'export const y = 1;\n');
+    fs.writeFileSync(path.join(outside, 'inner', 'skip.txt'), 'not recorded\n');
+    const atPkg = timeline.all().length;
+    fs.renameSync(outside, path.join(root, 'src/pkg'));
+    await until('moved-in tree recorded', () => ['src/pkg/x.ts', 'src/pkg/inner/y.ts'].every((rel) => eventsFor(rel, atPkg).length > 0));
+    await settled();
+    assert.deepEqual([...relEvents(atPkg)].sort(), ['create src/pkg/inner/y.ts', 'create src/pkg/x.ts']);
+    console.log('[it] directory delete and rename ok');
+
+    // R7. A file replaced by a directory of the same name is deleted.
+    await created('src/thing.ts', 'file text\n');
+    const atThing = timeline.all().length;
+    fs.unlinkSync(path.join(root, 'src/thing.ts'));
+    fs.mkdirSync(path.join(root, 'src/thing.ts'));
+    write('src/thing.ts/inner.ts', 'export const inner = 1;\n');
+    await until('replaced file deleted', () => eventsFor('src/thing.ts', atThing).some((e) => e.kind === 'delete'));
+    await settled();
+    assert.deepEqual(eventsFor('src/thing.ts', atThing).map((e) => [e.kind, e.before]), [['delete', 'file text\n']]);
+    assert.equal(mirrorText('src/thing.ts'), '', 'the replaced file mirror was not emptied');
+    assert.equal(api.recorder.hasBaseline(uriOf('src/thing.ts')), false, 'the replaced file kept its baseline');
+    const atBack2 = timeline.all().length;
+    // The watcher may report this as one change of src/thing.ts.
+    fs.rmSync(path.join(root, 'src/thing.ts'), { recursive: true });
+    write('src/thing.ts', 'brand new\n');
+    await until('file at the old path again', () => eventsFor('src/thing.ts', atBack2).length > 0);
+    await until('directory file deleted', () => eventsFor('src/thing.ts/inner.ts', atBack2).some((e) => e.kind === 'delete'));
+    await settled();
+    assert.deepEqual(eventsFor('src/thing.ts', atBack2).map((e) => [e.kind, e.before]), [['create', '']]);
+    assert.equal(api.recorder.hasBaseline(uriOf('src/thing.ts/inner.ts')), false, 'a file of the replaced directory kept its baseline');
+    console.log('[it] file replaced by a directory ok');
+
+    // R8. A case-only rename deletes the old spelling, also on case-insensitive filesystems.
+    await created('src/CaseName.ts', 'export const caseName = 1;\n');
+    const watchedCase = api.recorder.watchedCount;
+    const atCase = timeline.all().length;
+    fs.renameSync(path.join(root, 'src/CaseName.ts'), path.join(root, 'src/casename.ts'));
+    await until('case rename recorded', () => ['delete src/CaseName.ts', 'create src/casename.ts'].every((x) => relEvents(atCase).includes(x)));
+    await settled();
+    assert.deepEqual([...relEvents(atCase)].sort(), ['create src/casename.ts', 'delete src/CaseName.ts']);
+    assert.equal(api.recorder.hasBaseline(uriOf('src/CaseName.ts')), false, 'the old spelling kept its baseline');
+    assert.equal(api.recorder.watchedCount, watchedCase, 'a case-only rename grew the watched count');
+    assert.equal(mirrorText('src/CaseName.ts'), '', 'the old spelling mirror was not emptied');
+    console.log('[it] case-only rename ok');
+
+    // R10. A case-only rename of a directory deletes each file under the old spelling.
+    fs.mkdirSync(path.join(root, 'src/CaseDir'));
+    await sleep(1000);
+    await created('src/CaseDir/a.ts', 'export const inCaseDir = 1;\n');
+    const watchedCaseDir = api.recorder.watchedCount;
+    const atCaseDir = timeline.all().length;
+    fs.renameSync(path.join(root, 'src/CaseDir'), path.join(root, 'src/casedir'));
+    await until('directory case rename recorded', () => ['delete src/CaseDir/a.ts', 'create src/casedir/a.ts'].every((x) => relEvents(atCaseDir).includes(x)));
+    await settled();
+    assert.deepEqual([...relEvents(atCaseDir)].sort(), ['create src/casedir/a.ts', 'delete src/CaseDir/a.ts']);
+    assert.equal(api.recorder.hasBaseline(uriOf('src/CaseDir/a.ts')), false, 'the old directory spelling kept its baseline');
+    assert.equal(api.recorder.watchedCount, watchedCaseDir, 'a case-only directory rename grew the watched count');
+    console.log('[it] case-only directory rename ok');
+
+    // R11. A directory created inside an excluded tree is not walked.
+    const restoreExclude = cfg().inspect('exclude')?.workspaceValue;
+    await setting('exclude', [...cfg().get<string[]>('exclude', []), 'src/skipme/**']);
+    await until('exclude to apply', () => !api.recorder.matches(uriOf('src/skipme/x.ts')), 10000);
+    fs.mkdirSync(path.join(root, 'src/skipme'));
+    await sleep(1000);
+    const preparedSkip = `${root}-skip`;
+    fs.mkdirSync(path.join(preparedSkip, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(preparedSkip, 'deep', 'x.ts'), 'export const skipped = 1;\n');
+    fs.renameSync(preparedSkip, path.join(root, 'src/skipme/inner'));
+    await sleep(1500);
+    assert.match(api.recorder.describeActivity(), /watcher create src\/skipme\/inner/, 'the watcher did not report the moved-in directory');
+    assert.doesNotMatch(api.recorder.describeActivity(), /in directory create src\/skipme/, 'a directory inside an excluded tree was walked');
+    await setting('exclude', restoreExclude);
+    console.log('[it] excluded trees not walked ok');
+
+    // R9. A read in flight when recording stops writes nothing, so the next
+    // session starts from the disk text at restart.
+    await created('src/stopFlush.ts', 'C0\n');
+    const holdSave = vscode.workspace.onWillSaveTextDocument((e) => {
+      if (path.basename(e.document.uri.fsPath) === 'stopFlush.ts') e.waitUntil(sleep(800));
+    });
+    const stopDoc = await vscode.workspace.openTextDocument(path.join(root, 'src/stopFlush.ts'));
+    const stopEd = await vscode.window.showTextDocument(stopDoc);
+    await stopEd.edit((b) => b.insert(new vscode.Position(0, 0), '// mine\n'));
+    const saving = stopDoc.save();
+    await sleep(50);
+    write('src/stopFlush.ts', 'C1\n');
+    // The debounce fires and the read waits on the save that is still running.
+    await sleep(400);
+    await vscode.commands.executeCommand('agentTypewriter.stop');
+    const atStop = timeline.all().length;
+    await saving;
+    holdSave.dispose();
+    await sleep(1300);
+    assert.equal(api.recorder.watchedCount, 0, 'a read in flight at stop stored a baseline');
+    assert.equal(api.recorder.hasBaseline(uriOf('src/stopFlush.ts')), false);
+    assert.equal(timeline.all().length, atStop, 'a read in flight at stop recorded a change');
+    await vscode.window.showTextDocument(stopDoc);
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+    write('src/stopFlush.ts', 'C2\n');
+    await sleep(100);
+    await vscode.commands.executeCommand('agentTypewriter.start');
+    await until('stopFlush.ts baseline after restart', () => api.recorder.hasBaseline(uriOf('src/stopFlush.ts')), 20000);
+    const atRestart = timeline.all().length;
+    write('src/stopFlush.ts', 'C3\n');
+    await until('first change after restart', () => eventsFor('src/stopFlush.ts', atRestart).length > 0);
+    await settled();
+    assert.deepEqual(eventsFor('src/stopFlush.ts', atRestart).map((e) => [e.before, e.after]), [['C2\n', 'C3\n']]);
+    console.log('[it] stop during a read ok');
+
+    await cfg().update('extensions', restoreExtensions, WS);
+    await cfg().update('reorderWindowMs', reorderWindow, WS);
+    await sleep(500);
+  }
 
   // --- 18. Leave two queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace.

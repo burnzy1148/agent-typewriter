@@ -86,11 +86,15 @@ export class Timeline {
     this.emit();
   }
 
-  /** Moves the cursor so playback resumes at `seq` (earlier = replay, later = skip). */
+  /**
+   * Moves the cursor so playback resumes at `seq` (earlier = replay, later =
+   * skip). The change being typed is overtaken, so it stops counting as playing.
+   */
   seek(seq: number): void {
     const first = this.events[0]?.seq ?? this.nextSeq;
     this.cursorSeq = Math.min(Math.max(seq, first), this.nextSeq);
     this.generation++;
+    this.playingSeq = undefined;
     this.emit();
   }
 
@@ -98,6 +102,7 @@ export class Timeline {
   seekToEnd(): void {
     this.cursorSeq = this.nextSeq;
     this.generation++;
+    this.playingSeq = undefined;
     this.emit();
   }
 
@@ -168,6 +173,11 @@ export class Timeline {
 
   get cursor(): number {
     return this.cursorSeq;
+  }
+
+  /** Changes on every cursor jump (seek, skip, clear, restore), so a caller can tell one happened while it waited. */
+  get jumps(): number {
+    return this.generation;
   }
 
   onDidChange(listener: Listener): { dispose(): void } {

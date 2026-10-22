@@ -29,3 +29,12 @@ test('decideOwnSave: after-own before text is LF-normalized', () => {
 test('decideOwnSave: an empty save then an outside write is after-own', () => {
   assert.deepEqual(decideOwnSave('', 'new\n'), { kind: 'after-own', before: '' });
 });
+
+test('decideOwnSave: a save that never finished still matches as own', () => {
+  assert.deepEqual(decideOwnSave('U user edits\n', 'U user edits\n', false), { kind: 'own' });
+});
+
+test('decideOwnSave: a save that never finished and differs from disk is external, not after-own', () => {
+  // The save may have written nothing, so its text is not the before text.
+  assert.deepEqual(decideOwnSave('U user edits\n', 'A2\n', false), { kind: 'external' });
+});

@@ -1,3 +1,5 @@
+import { isFiniteNumber } from './numberSetting';
+
 /** Base speed when no settings layer sets one. */
 export const DEFAULT_CHARS_PER_MINUTE = 350;
 
@@ -35,8 +37,4 @@ export function baseCharsPerMinute(
 ): number {
   const v = Object.prototype.hasOwnProperty.call(languageSpeeds, languageId) ? languageSpeeds[languageId] : undefined;
   return isFiniteNumber(v) && v > 0 ? v : charsPerMinute;
-}
-
-function isFiniteNumber(v: unknown): v is number {
-  return typeof v === 'number' && Number.isFinite(v);
 }

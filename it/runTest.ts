@@ -79,8 +79,94 @@ async function main() {
   // --- review group PLAY: launches
 
   // --- review group ACT: launches
+  // The repository file's autoStart applies at activation: true there starts
+  // watching, false there beats a user-level true. Each launch runs this probe.
+  const actRepoFile = path.join(workspace, '.agent-typewriter.json');
+  const actRepo = fs.existsSync(actRepoFile) ? JSON.parse(fs.readFileSync(actRepoFile, 'utf8')) : {};
+  const actUserFile = path.join(userData, 'User', 'settings.json');
+  const actProbe = path.join(userData, 'act-autostart.js');
+  fs.writeFileSync(
+    actProbe,
+    `const vscode = require('vscode');
+exports.run = async () => {
+  const api = await vscode.extensions.getExtension('burnzy1148.agent-typewriter').activate();
+  const expected = process.env.IT_ACT_AUTOSTART === 'true';
+  const deadline = Date.now() + (expected ? 30000 : 3000);
+  while ((expected ? !api.recorder.isRunning : true) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  if (api.recorder.isRunning !== expected) throw new Error('autoStart ' + expected + ' in .agent-typewriter.json was not applied at activation');
+  await vscode.commands.executeCommand('agentTypewriter.stop');
+  console.log('[it] ACT: autoStart ' + expected + ' from the repository file ok');
+};
+`,
+  );
+  for (const [fileValue, userValue] of [
+    [true, undefined],
+    [false, true],
+  ] as const) {
+    fs.writeFileSync(actRepoFile, JSON.stringify({ ...actRepo, autoStart: fileValue }));
+    const user = fs.existsSync(actUserFile) ? JSON.parse(fs.readFileSync(actUserFile, 'utf8')) : {};
+    user['agentTypewriter.autoStart'] = userValue;
+    fs.mkdirSync(path.dirname(actUserFile), { recursive: true });
+    fs.writeFileSync(actUserFile, JSON.stringify(user, null, 2));
+    await runTests({ extensionDevelopmentPath, extensionTestsPath: actProbe, launchArgs, extensionTestsEnv: { IT_ACT_AUTOSTART: String(fileValue) } });
+  }
+  // Leave later launches the settings the reload check ran with.
+  fs.writeFileSync(actRepoFile, JSON.stringify(actRepo));
+  const actUser = JSON.parse(fs.readFileSync(actUserFile, 'utf8'));
+  delete actUser['agentTypewriter.autoStart'];
+  fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
 
   // --- review group REC1: launches
+  // A saved multi-root workspace [a, b] where b has a sibling worktree, for
+  // adding and removing folders while recording (folders.ts). Adding a folder
+  // to a single-folder window restarts the extension host, so it needs its own
+  // launch. folders.ts is bundled here because the "it" script in package.json
+  // only bundles suite.ts, restore.ts and runTest.ts.
+  const esbuild = require(path.join(extensionDevelopmentPath, 'node_modules', 'esbuild'));
+  esbuild.buildSync({
+    entryPoints: [path.join(extensionDevelopmentPath, 'it', 'folders.ts')],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node18',
+    external: ['vscode'],
+    outfile: path.resolve(__dirname, 'folders.js'),
+    logLevel: 'warning',
+  });
+  const multi = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-multi-'));
+  const gitAt = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', '-c', 'core.autocrlf=false', ...args], { cwd, stdio: 'ignore' });
+  for (const name of ['a', 'b', 'c']) {
+    const repo = path.join(multi, name);
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src/x.ts'), `export const x = '${name}';\n`);
+    gitAt(repo, 'init', '-q');
+    gitAt(repo, 'add', '-A');
+    gitAt(repo, 'commit', '-q', '-m', 'initial');
+  }
+  gitAt(path.join(multi, 'b'), 'worktree', 'add', '-q', '-b', 'feature', path.join(multi, 'b-feature'));
+  const multiFile = path.join(multi, 'multi.code-workspace');
+  fs.writeFileSync(
+    multiFile,
+    JSON.stringify({
+      folders: [{ path: 'a' }, { path: 'b' }],
+      settings: {
+        'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.debounceMs': 100,
+        'agentTypewriter.reorderWindowMs': 0,
+        'agentTypewriter.charsPerMinute': 240000,
+        'agentTypewriter.jitter': 0,
+        'agentTypewriter.persistHistory': false,
+      },
+    }),
+  );
+  const multiUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'folders.js'),
+    launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...launchArgs.slice(2)],
+    extensionTestsEnv: { IT_MULTI: multi },
+  });
 }
 
 main().catch((err) => {
