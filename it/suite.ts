@@ -766,7 +766,10 @@ export async function run(): Promise<void> {
     }
 
     // R6. Deleting a directory deletes each recorded file in it.
-    fs.mkdirSync(path.join(root, 'src/olddir/sub'), { recursive: true });
+    // One level at a time: Linux watchers can miss a directory created inside another new one.
+    fs.mkdirSync(path.join(root, 'src/olddir'));
+    await sleep(1000);
+    fs.mkdirSync(path.join(root, 'src/olddir/sub'));
     await sleep(1000);
     const oldFiles = ['src/olddir/a.ts', 'src/olddir/b.ts', 'src/olddir/sub/c.ts'];
     for (const rel of oldFiles) await created(rel, `export const f = '${rel}';\n`);
