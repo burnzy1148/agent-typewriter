@@ -60,6 +60,33 @@ test('latestStates keeps the newest event per file', () => {
   assert.equal(s.get('b')?.after, 'x');
 });
 
+test('mirrorStates shows the newest played after text, else the earliest before text', () => {
+  const t = new Timeline(10);
+  assert.equal(t.mirrorStates().size, 0);
+  const a1 = t.push(ev('a', '', '1'));
+  t.push(ev('b', 'b0', 'b1'));
+  t.push(ev('b', 'b1', 'b2'));
+  const c = t.push({ ...ev('c', 'c0', 'c1'), eol: '\r\n' });
+  t.push(ev('a', '1', '2'));
+  t.push(ev('a', '2', '3'));
+  t.push({ ...ev('d', 'gone', ''), kind: 'delete' });
+  // Only a's first change played: b shows its earliest before text.
+  t.seek(a1.seq + 1);
+  assert.deepEqual(t.mirrorStates().get('a'), { text: '1', eol: '\n' });
+  assert.deepEqual(t.mirrorStates().get('b'), { text: 'b0', eol: '\n' });
+  t.seekToEnd();
+  const s = t.mirrorStates();
+  assert.deepEqual(s.get('a'), { text: '3', eol: '\n' });
+  assert.deepEqual(s.get('b'), { text: 'b2', eol: '\n' });
+  assert.deepEqual(s.get('c'), { text: 'c1', eol: '\r\n' });
+  assert.deepEqual(s.get('d'), { text: '', eol: '\n' });
+  // Played and queued changes to one file: the newest played after text wins.
+  t.seek(c.seq + 1);
+  assert.deepEqual(t.mirrorStates().get('a'), { text: '1', eol: '\n' });
+  assert.deepEqual(t.mirrorStates().get('c'), { text: 'c1', eol: '\r\n' });
+  assert.deepEqual(t.mirrorStates().get('d'), { text: 'gone', eol: '\n' });
+});
+
 test('filter: extension allow-list', () => {
   const f = new PathFilter({ include: ['**/*'], exclude: [], extensions: ['ts', '.Java'] });
   assert.ok(f.matches('src/a.ts'));
