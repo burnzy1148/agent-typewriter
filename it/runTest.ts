@@ -79,6 +79,42 @@ async function main() {
   // --- review group PLAY: launches
 
   // --- review group ACT: launches
+  // The repository file's autoStart applies at activation: true there starts
+  // watching, false there beats a user-level true. Each launch runs this probe.
+  const actRepoFile = path.join(workspace, '.agent-typewriter.json');
+  const actRepo = fs.existsSync(actRepoFile) ? JSON.parse(fs.readFileSync(actRepoFile, 'utf8')) : {};
+  const actUserFile = path.join(userData, 'User', 'settings.json');
+  const actProbe = path.join(userData, 'act-autostart.js');
+  fs.writeFileSync(
+    actProbe,
+    `const vscode = require('vscode');
+exports.run = async () => {
+  const api = await vscode.extensions.getExtension('burnzy1148.agent-typewriter').activate();
+  const expected = process.env.IT_ACT_AUTOSTART === 'true';
+  const deadline = Date.now() + (expected ? 30000 : 3000);
+  while ((expected ? !api.recorder.isRunning : true) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  if (api.recorder.isRunning !== expected) throw new Error('autoStart ' + expected + ' in .agent-typewriter.json was not applied at activation');
+  await vscode.commands.executeCommand('agentTypewriter.stop');
+  console.log('[it] ACT: autoStart ' + expected + ' from the repository file ok');
+};
+`,
+  );
+  for (const [fileValue, userValue] of [
+    [true, undefined],
+    [false, true],
+  ] as const) {
+    fs.writeFileSync(actRepoFile, JSON.stringify({ ...actRepo, autoStart: fileValue }));
+    const user = fs.existsSync(actUserFile) ? JSON.parse(fs.readFileSync(actUserFile, 'utf8')) : {};
+    user['agentTypewriter.autoStart'] = userValue;
+    fs.mkdirSync(path.dirname(actUserFile), { recursive: true });
+    fs.writeFileSync(actUserFile, JSON.stringify(user, null, 2));
+    await runTests({ extensionDevelopmentPath, extensionTestsPath: actProbe, launchArgs, extensionTestsEnv: { IT_ACT_AUTOSTART: String(fileValue) } });
+  }
+  // Leave later launches the settings the reload check ran with.
+  fs.writeFileSync(actRepoFile, JSON.stringify(actRepo));
+  const actUser = JSON.parse(fs.readFileSync(actUserFile, 'utf8'));
+  delete actUser['agentTypewriter.autoStart'];
+  fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
 
   // --- review group REC1: launches
   // A saved multi-root workspace [a, b] where b has a sibling worktree, for
