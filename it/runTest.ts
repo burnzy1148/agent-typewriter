@@ -110,6 +110,11 @@ exports.run = async () => {
     fs.writeFileSync(actUserFile, JSON.stringify(user, null, 2));
     await runTests({ extensionDevelopmentPath, extensionTestsPath: actProbe, launchArgs, extensionTestsEnv: { IT_ACT_AUTOSTART: String(fileValue) } });
   }
+  // Leave later launches the settings the reload check ran with.
+  fs.writeFileSync(actRepoFile, JSON.stringify(actRepo));
+  const actUser = JSON.parse(fs.readFileSync(actUserFile, 'utf8'));
+  delete actUser['agentTypewriter.autoStart'];
+  fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
 
   // --- review group REC1: launches
 }

@@ -17,11 +17,14 @@ export type BlockedBy = 'git' | 'extension' | 'exclude' | 'include';
 export class PathFilter {
   private readonly include: string[];
   private readonly exclude: string[];
+  /** `<dir glob>/**` excludes that prune a directory walk; a negated one ("!src/**") excludes what it does not name, so never. */
+  private readonly pruning: string[];
   private readonly extensions: Set<string>;
 
   constructor(settings: FilterSettings) {
     this.include = clean(settings.include);
     this.exclude = clean(settings.exclude);
+    this.pruning = this.exclude.filter((g) => g.endsWith('/**') && !new Minimatch(g).negate).map((g) => g.slice(0, -3));
     this.extensions = new Set(
       settings.extensions.map((e) => e.trim().replace(/^\*?\./, '').toLowerCase()).filter(Boolean),
     );
@@ -46,14 +49,12 @@ export class PathFilter {
   /**
    * True when an exclude glob rules out everything under this directory, so a
    * directory walk can skip it. Only `<dir glob>/**` patterns count; anything
-   * else may still leave some files in the directory recorded. A negated glob
-   * ("!src/**") excludes what it does not name, so it never prunes.
+   * else may still leave some files in the directory recorded, and negated
+   * globs never prune.
    */
   excludesDir(relDir: string): boolean {
     const dir = relDir.replace(/\\/g, '/').replace(/\/+$/, '');
-    return this.exclude.some(
-      (g) => g.endsWith('/**') && !new Minimatch(g).negate && minimatch(dir, g.slice(0, -3), { dot: true, nocase: false }),
-    );
+    return this.pruning.some((g) => minimatch(dir, g, { dot: true, nocase: false }));
   }
 
   describe(): string {
@@ -73,7 +74,23 @@ export class PathFilter {
 export function literalGlob(relPath: string): string {
   return escape(relPath.replace(/\\/g, '/'), { windowsPathsNoEscape: true, magicalBraces: true })
     .replace(/^!/, '@(!)')
-    .replace(/^#/, '[#]');
+    .replace(/^#/, '[#]')
+    // Filters trim globs; a space in a class survives that.
+    .replace(/^ +| +$/g, (spaces) => '[ ]'.repeat(spaces.length));
+}
+
+/**
+ * The first selected file that the filter still rejects because of its
+ * extension or an exclude glob, the rules a selection can't override. Folders
+ * are skipped: their files are what the include covers.
+ */
+export function stillFiltered(filter: PathFilter, picked: Array<{ rel: string; isFile: boolean }>): { rel: string; by: 'extension' | 'exclude' } | undefined {
+  for (const { rel, isFile } of picked) {
+    if (!isFile) continue;
+    const by = filter.blockedBy(rel);
+    if (by === 'extension' || by === 'exclude') return { rel, by };
+  }
+  return undefined;
 }
 
 /**

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
-import { parseExtensionList, PathFilter, selectionGlob } from './filter';
+import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
@@ -76,7 +76,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
   // Calls overlap (scope events, focus, folder changes); only the newest one's answer is kept.
   let checkoutsGen = 0;
-  const refreshCheckouts = async () => {
+  const refreshCheckouts = async (): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>> => {
     const gen = ++checkoutsGen;
     const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -94,10 +94,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       const shown = chosen ?? c.own;
       next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: shown ? checkoutName(shown) : '', worktrees: c.worktrees.length });
     }
-    if (gen !== checkoutsGen) return;
+    if (gen !== checkoutsGen) return next;
     checkouts.clear();
     for (const [k, v] of next) checkouts.set(k, v);
     refreshStatus();
+    return next;
   };
 
   let lastDropped = 0;
@@ -351,23 +352,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   const warnIfStillFiltered = (picked: Array<{ uri: vscode.Uri; isFile: boolean }>) => {
     const s = readSettings();
-    const f = new PathFilter(s);
-    for (const { uri } of picked.filter((p) => p.isFile)) {
-      const rel = relPathOf(uri);
-      const by = f.blockedBy(rel);
-      if (by === 'extension') {
-        void vscode.window
-          .showWarningMessage(
-            `Agent Typewriter: ${rel} is still filtered out by the extension list (${s.extensions.join(', ')}).`,
-            'Clear Extension Filter',
-          )
-          .then((pick) => pick && updateSetting('extensions', []));
-        return;
-      }
-      if (by === 'exclude') {
-        void vscode.window.showWarningMessage(`Agent Typewriter: ${rel} is still filtered out by the exclude list (${s.exclude.join(', ')}).`);
-        return;
-      }
+    const blocked = stillFiltered(new PathFilter(s), picked.map((p) => ({ rel: relPathOf(p.uri), isFile: p.isFile })));
+    if (blocked?.by === 'extension') {
+      void vscode.window
+        .showWarningMessage(
+          `Agent Typewriter: ${blocked.rel} is still filtered out by the extension list (${s.extensions.join(', ')}).`,
+          'Clear Extension Filter',
+        )
+        .then((pick) => pick && updateSetting('extensions', []));
+    } else if (blocked?.by === 'exclude') {
+      void vscode.window.showWarningMessage(`Agent Typewriter: ${blocked.rel} is still filtered out by the exclude list (${s.exclude.join(', ')}).`);
     }
   };
 
@@ -637,11 +631,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  const testRefreshCheckouts = async () => {
-    await refreshCheckouts();
-    return new Map(checkouts);
-  };
-  return { timeline, player, recorder, store, scrubber, refreshCheckouts: testRefreshCheckouts };
+  return { timeline, player, recorder, store, scrubber, refreshCheckouts };
 }
 
 /** Local time as yyyy-mm-dd-hhmm, for default session file names. */

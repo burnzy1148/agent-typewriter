@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { literalGlob, PathFilter, selectionGlob } from '../src/filter';
+import { literalGlob, PathFilter, selectionGlob, stillFiltered } from '../src/filter';
 
 const only = (include: string[]) => new PathFilter({ include, exclude: [], extensions: [] });
 
@@ -23,6 +23,7 @@ test('literalGlob: a selected file or folder matches itself and nothing else', (
     ['!dir', '!dir/x.ts', 'dir/x.ts'],
     ['#notes.md', undefined, 'notes.md'],
     ['src/a.ts', undefined, 'src/b.ts'],
+    ['src/ notes.md ', undefined, 'src/notes.md'],
   ];
   for (const [selected, under, unrelated] of cases) {
     const isDir = under !== undefined;
@@ -93,4 +94,22 @@ test('PathFilter.excludesDir: negated globs never prune a directory holding reco
       for (const dir of dirsOf(file)) assert.ok(!f.excludesDir(dir), `${exclude}: pruned ${dir} though ${file} is recorded`);
     }
   }
+});
+
+test('stillFiltered: folders never warn; files name the rule a selection cannot override', () => {
+  const f = new PathFilter({ include: ['src/**'], exclude: ['src/generated/**'], extensions: ['ts', 'tsx'] });
+  assert.equal(stillFiltered(f, [{ rel: 'src', isFile: false }]), undefined, 'a folder was checked as a file');
+  assert.equal(stillFiltered(f, [{ rel: 'src/a.ts', isFile: true }]), undefined);
+  assert.deepEqual(stillFiltered(f, [{ rel: 'README.md', isFile: true }]), { rel: 'README.md', by: 'extension' });
+  assert.deepEqual(stillFiltered(f, [{ rel: 'src/generated/a.ts', isFile: true }]), { rel: 'src/generated/a.ts', by: 'exclude' });
+  // Only the include rejects it, and the selection just set the include.
+  assert.equal(stillFiltered(f, [{ rel: 'lib/a.ts', isFile: true }]), undefined);
+  assert.deepEqual(
+    stillFiltered(f, [
+      { rel: 'docs', isFile: false },
+      { rel: 'src/a.ts', isFile: true },
+      { rel: 'notes.md', isFile: true },
+    ]),
+    { rel: 'notes.md', by: 'extension' },
+  );
 });
