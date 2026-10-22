@@ -31,20 +31,40 @@ export type IgnoredResult =
 export async function listIgnored(folder: string, run: GitRunner = runGit): Promise<IgnoredResult> {
   try {
     const out = await run(['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], folder);
-    return { kind: 'ok', ignored: new IgnoredPaths(parsePathList(out.toString('utf8'))) };
+    const entries = [...parsePathList(out.toString('utf8'))];
+    // Git also collapses an untracked directory to `dir/` when everything in it
+    // happens to be ignored. Keep a directory only when git ignores it itself;
+    // the ignored files inside one it does not are listed one by one.
+    const keep = await Promise.all(entries.map((e) => !e.endsWith('/') || ignoresDirectory(folder, e.slice(0, -1), run)));
+    return { kind: 'ok', ignored: new IgnoredPaths(entries.filter((_, i) => keep[i])) };
   } catch (err) {
     if (isGitUnavailable(err)) return { kind: 'unavailable', reason: String((err as Error).message ?? err) };
     return { kind: 'not-repo' };
   }
 }
 
-/** Whether git ignores this one path. Any failure counts as not ignored. */
-export async function checkIgnored(folder: string, path: string, run: GitRunner = runGit): Promise<boolean> {
+/**
+ * Runs `git check-ignore -q` on one path: true when git ignores it, false on
+ * exit 1, and `onFailure` when git could not tell.
+ */
+async function checkIgnore(folder: string, path: string, run: GitRunner, onFailure: boolean): Promise<boolean> {
   try {
     await run(['check-ignore', '-q', '--', path], folder);
     return true;
-  } catch {
-    // Exit 1 means not ignored; anything else means git could not tell.
-    return false;
+  } catch (err) {
+    return (err as { code?: unknown } | undefined)?.code === 1 ? false : onFailure;
   }
+}
+
+/** Whether git ignores this one path. Any failure counts as not ignored. */
+export function checkIgnored(folder: string, path: string, run: GitRunner = runGit): Promise<boolean> {
+  return checkIgnore(folder, path, run, false);
+}
+
+/**
+ * Whether git ignores the directory itself, checked without the trailing slash
+ * (with it, `star/*` reports `star/` as ignored). A failure keeps the directory.
+ */
+function ignoresDirectory(folder: string, dir: string, run: GitRunner): Promise<boolean> {
+  return checkIgnore(folder, dir, run, true);
 }

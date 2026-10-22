@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { IgnoredPaths, checkIgnored, listIgnored } from '../src/gitIgnore';
 import type { GitRunner } from '../src/gitBaseline';
+import { git, noGit, tempRepo, write } from './gitFixture';
 
 const LS = 'ls-files --others --ignored --exclude-standard --directory -z';
 
@@ -28,9 +29,56 @@ test('IgnoredPaths: files exactly, directories as prefixes', () => {
 });
 
 test('listIgnored: parses NUL-separated output, paths with spaces', async () => {
-  const r = await listIgnored('/ws', runner({ [LS]: Buffer.from('dist/\0my notes.log\0') }));
+  const r = await listIgnored('/ws', runner({ [LS]: Buffer.from('dist/\0my notes.log\0'), 'check-ignore -q -- dist': Buffer.alloc(0) }));
   assert.equal(r.kind, 'ok');
   assert.ok(r.kind === 'ok' && r.ignored.has('dist/out.js') && r.ignored.has('my notes.log'));
+});
+
+test('listIgnored: a directory git lists only because its contents are ignored is not ignored itself', async () => {
+  const notIgnored = Object.assign(new Error('exit 1'), { code: 1 });
+  const r = await listIgnored(
+    '/ws',
+    runner({
+      [LS]: Buffer.from('logs/\0logs/run.log\0star/\0star/x.txt\0gen/\0odd/\0'),
+      'check-ignore -q -- logs': notIgnored,
+      'check-ignore -q -- star': notIgnored,
+      'check-ignore -q -- gen': Buffer.alloc(0),
+      // odd: check-ignore fails some other way, so the directory stays.
+    }),
+  );
+  assert.equal(r.kind, 'ok');
+  if (r.kind !== 'ok') return;
+  assert.equal(r.ignored.has('logs/'), false);
+  assert.equal(r.ignored.has('logs/README.md'), false);
+  assert.equal(r.ignored.has('logs/run.log'), true);
+  assert.equal(r.ignored.has('star/keep.md'), false);
+  assert.equal(r.ignored.has('star/x.txt'), true);
+  assert.equal(r.ignored.has('gen/a.ts'), true);
+  assert.equal(r.ignored.has('odd/a.ts'), true);
+});
+
+test('listIgnored (real git): new files in an untracked directory of ignored files are not ignored', { skip: noGit }, async () => {
+  const repo = tempRepo();
+  write(repo, '.gitignore', '*.log\nnode_modules/\ngen\nstar/*\n!star/keep.md\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-q', '-m', 'init');
+  write(repo, 'logs/run.log', 'x\n');
+  write(repo, 'node_modules/x/i.js', 'x\n');
+  write(repo, 'gen/a.ts', 'x\n');
+  write(repo, 'star/x.txt', 'x\n');
+  const r = await listIgnored(repo);
+  assert.equal(r.kind, 'ok');
+  if (r.kind !== 'ok') return;
+  write(repo, 'logs/README.md', 'x\n');
+  assert.equal(await checkIgnored(repo, 'logs/README.md'), false);
+  assert.equal(r.ignored.has('logs/README.md'), false);
+  assert.equal(r.ignored.has('logs/'), false);
+  assert.equal(r.ignored.has('logs/run.log'), true);
+  assert.equal(r.ignored.has('node_modules/'), true);
+  assert.equal(r.ignored.has('node_modules/x/i.js'), true);
+  assert.equal(r.ignored.has('gen/b.ts'), true);
+  assert.equal(r.ignored.has('star/keep.md'), false);
+  assert.equal(r.ignored.has('star/x.txt'), true);
 });
 
 test('listIgnored: not a repository, git missing', async () => {
