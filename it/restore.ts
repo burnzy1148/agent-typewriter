@@ -102,6 +102,53 @@ export async function run(): Promise<void> {
 
   // Review fix groups add their sections directly below their own anchor (see suite.ts).
   // --- review group PLAY
+  // --- PLAY. After a reload the mirror filesystem starts empty. Skip to Latest
+  // fills every file's mirror, not only the newest one, with its line ending.
+  {
+    assert.ok(
+      (ext.packageJSON.activationEvents as string[]).includes('onFileSystem:agent-typewriter'),
+      'restored mirror tabs do not activate the extension',
+    );
+    const at = (rel: string, seq: number, kind: string, before: string, after: string, eol: string) => ({
+      seq,
+      uri: vscode.Uri.file(path.join(root, rel)).toString(),
+      relPath: rel,
+      time: Date.now(),
+      kind,
+      before,
+      after,
+      eol,
+      linesAdded: 1,
+      linesRemoved: 0,
+    });
+    const r1 = 'export const reload1 = 1;\n';
+    const r1b = 'export const reload1 = 11;\n';
+    const r2 = 'export const reload2 = 2;\n';
+    const sessionFile = path.join(path.dirname(process.env.IT_EXPECT!), 'never-played.json');
+    fs.writeFileSync(
+      sessionFile,
+      JSON.stringify({
+        format: 'agent-typewriter-session',
+        version: 1,
+        savedAt: Date.now(),
+        cursor: 4,
+        events: [
+          at('play/reload1.ts', 1, 'create', '', r1, '\r\n'),
+          at('play/reload2.ts', 2, 'create', '', r2, '\n'),
+          at('play/reload1.ts', 3, 'modify', r1, r1b, '\r\n'),
+        ],
+      }),
+    );
+    await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(sessionFile));
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    const read = async (rel: string) =>
+      new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel })));
+    assert.equal(await read('play/reload2.ts'), r2, 'Skip to Latest did not fill a mirror that was never played');
+    assert.equal(await read('play/reload1.ts'), r1b.replace(/\n/g, '\r\n'), 'Skip to Latest lost the newest mirror or its CRLF');
+    assert.equal(timeline.pendingCount(), 0);
+    if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    console.log('[it] Skip to Latest fills unplayed mirrors ok');
+  }
 
   // --- review group ACT
 
