@@ -127,6 +127,9 @@ class UnsavableChoices implements CheckoutChoices {
   }
 }
 
+/** Deletes a path, retrying while Windows reports it busy. */
+const rm = (p: string) => fs.rmSync(p, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+
 const doc = (file: string, text: string) => ({ uri: vscode.Uri.file(file), getText: () => text });
 const live = () => mock.watchers.filter((w) => !w.disposed).length;
 
@@ -437,12 +440,12 @@ test('a nested worktree whose .git file is deleted stays skipped: no baselines, 
   git(repo, 'worktree', 'add', '-q', '-b', 'feature', feature);
   const t = recorderOn(settings(), {}, repo);
   await t.recorder.start();
-  fs.rmSync(path.join(feature, '.git'));
+  rm(path.join(feature, '.git'));
   t.fire('delete', path.join(feature, '.git'));
   await until('worktrees re-read', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
   assert.match(t.recorder.describeFilter(), /other worktrees skipped/);
   assert.equal(t.recorder.hasBaseline(t.uri(path.join(feature, 'src', 'a.ts'))), false);
-  fs.rmSync(path.join(feature, 'src', 'a.ts'));
+  rm(path.join(feature, 'src', 'a.ts'));
   t.fire('delete', path.join(feature, 'src', 'a.ts'));
   await t.settle();
   assert.deepEqual(t.events(), []);
@@ -453,16 +456,17 @@ test('a chosen worktree whose .git is deleted stays chosen until its root is gon
   const t = recorderOn(settings(), { choices }, repo);
   await t.recorder.start();
   assert.equal(t.checkout()?.own, false);
-  fs.rmSync(path.join(side, '.git'));
+  rm(path.join(side, '.git'));
   t.fire('delete', path.join(side, '.git'));
   await until('worktrees re-read', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
   assert.equal(t.checkout()?.own, false, 'fell back while the worktree still has files');
-  fs.rmSync(path.join(side, 'src', 'a.ts'));
+  rm(path.join(side, 'src', 'a.ts'));
   t.fire('delete', path.join(side, 'src', 'a.ts'));
   await t.settle();
   assert.deepEqual(t.events(), []);
   // The rest goes, with no event for the root itself.
-  fs.rmSync(side, { recursive: true, force: true });
+  // Windows refuses while a git process the recorder started still runs in it.
+  fs.rmSync(side, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
   await until('fallback', () => t.checkout()?.own === true);
   assert.ok(t.logs.some((l) => l.includes('is no longer a worktree')));
   await t.settle(HOLD_MS);
@@ -475,7 +479,7 @@ test('removing the chosen worktree records nothing, even for files deleted well 
   const { repo, side, choices } = repoWithChosenSibling({ 'LICENSE.ts': 'mit\n', 'src/a.ts': 'a\n', 'src/b.ts': 'b\n' });
   const t = recorderOn(settings(), { choices }, repo);
   await t.recorder.start();
-  fs.rmSync(path.join(side, 'LICENSE.ts'));
+  rm(path.join(side, 'LICENSE.ts'));
   t.fire('delete', path.join(side, 'LICENSE.ts'));
   await sleep(800);
   git(repo, 'worktree', 'remove', '--force', side);
@@ -490,7 +494,7 @@ test('a repeated delete event for a held file keeps it held: removing the worktr
   const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n', 'src/b.ts': 'b\n' });
   const t = recorderOn(settings(), { choices }, repo);
   await t.recorder.start();
-  fs.rmSync(path.join(side, 'src', 'a.ts'));
+  rm(path.join(side, 'src', 'a.ts'));
   t.fire('delete', path.join(side, 'src', 'a.ts'));
   await t.settle();
   // A late duplicate of the same delete, as a lagging watcher sends.
@@ -507,7 +511,7 @@ test('a delete in a chosen worktree that stays is recorded from its baseline aft
   const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n', 'src/b.ts': 'b\n' });
   const t = recorderOn(settings(), { choices }, repo);
   await t.recorder.start();
-  fs.rmSync(path.join(side, 'src', 'a.ts'));
+  rm(path.join(side, 'src', 'a.ts'));
   t.fire('delete', path.join(side, 'src', 'a.ts'));
   await t.settle();
   assert.deepEqual(t.events(), [], 'recorded before the wait');
@@ -523,7 +527,7 @@ test('a file deleted and rewritten during the wait is recorded as delete, then c
   const t = recorderOn(settings(), { choices }, repo);
   await t.recorder.start();
   const file = path.join(side, 'src', 'a.ts');
-  fs.rmSync(file);
+  rm(file);
   t.fire('delete', file);
   await t.settle();
   t.change(file, 'a again\n', 'create');
@@ -541,7 +545,7 @@ test('stopping or switching checkouts while a delete is held records nothing', {
   const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n', 'src/b.ts': 'b\n' });
   const t = recorderOn(settings(), { choices }, repo);
   await t.recorder.start();
-  fs.rmSync(path.join(side, 'src', 'a.ts'));
+  rm(path.join(side, 'src', 'a.ts'));
   t.fire('delete', path.join(side, 'src', 'a.ts'));
   await t.settle();
   await t.recorder.setCheckout(t.folder, undefined);
@@ -550,7 +554,7 @@ test('stopping or switching checkouts while a delete is held records nothing', {
   assert.deepEqual(t.events(), []);
 
   await t.recorder.setCheckout(t.folder, side);
-  fs.rmSync(path.join(side, 'src', 'b.ts'));
+  rm(path.join(side, 'src', 'b.ts'));
   t.fire('delete', path.join(side, 'src', 'b.ts'));
   await t.settle();
   t.recorder.stop();

@@ -1718,6 +1718,7 @@ export async function run(): Promise<void> {
         }
       }
     };
+    const rm = (p: string) => fs.rmSync(p, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
     const skipped = (dir: string) => !api.recorder.matches(vscode.Uri.file(path.join(dir, 'src', 'probe.ts')));
     /** Waits past the debounce, the worktree refresh and a chosen worktree's delete hold, then checks nothing was recorded. */
     const nothingSince = async (from: number, what: string) => {
@@ -1758,13 +1759,13 @@ export async function run(): Promise<void> {
     await until('new nested worktree skipped', () => skipped(pruneDir), 20000);
     await sleep(1500);
     const atPrune = timeline.all().length;
-    fs.rmSync(path.join(pruneDir, '.git'));
+    rm(path.join(pruneDir, '.git'));
     await sleep(2000);
     assert.equal(api.recorder.hasBaseline(vscode.Uri.file(path.join(pruneDir, 'src', 'committed1.ts'))), false, 'a worktree without its .git got baselines');
     assert.ok(skipped(pruneDir), 'a worktree without its .git is no longer skipped');
-    fs.rmSync(path.join(pruneDir, 'src', 'committed1.ts'));
+    rm(path.join(pruneDir, 'src', 'committed1.ts'));
     await nothingSince(atPrune, 'a file deleted in a worktree without its .git was recorded');
-    fs.rmSync(pruneDir, { recursive: true, force: true });
+    rm(pruneDir);
     await gitRetry(root, 'worktree', 'prune');
     await nothingSince(atPrune, 'removing the rest of a worktree without its .git was recorded');
     console.log('[it] REC3: worktree without its .git ok');
@@ -1779,8 +1780,9 @@ export async function run(): Promise<void> {
     gitIn(otherRepo2, 'commit', '-q', '-m', 'initial');
     // One level deep: Linux watchers can miss a directory created inside another new one.
     fs.mkdirSync(path.join(root, 'rec3'));
+    await sleep(1000);
     fs.mkdirSync(path.join(root, 'rec3', 'worktrees'));
-    await sleep(1500);
+    await sleep(1000);
     const atForeign = timeline.all().length;
     await gitRetry(otherRepo2, 'worktree', 'add', '-q', '-b', 'bwt', path.join(root, 'rec3', 'bwt'));
     await until('foreign worktree checkout recorded', () => eventsFor('rec3/bwt/foreign.ts', atForeign).some((e) => e.kind === 'create'), 20000);
@@ -1790,7 +1792,7 @@ export async function run(): Promise<void> {
     await gitRetry(otherRepo2, 'worktree', 'remove', '--force', path.join(root, 'rec3', 'bwt'));
     await gitRetry(root, 'rm', '-q', '-f', 'rec3/worktrees/foo');
     await gitRetry(root, 'rm', '-q', '-f', '.gitmodules');
-    fs.rmSync(path.join(root, '.git', 'modules'), { recursive: true, force: true });
+    rm(path.join(root, '.git', 'modules'));
     await sleep(2000);
     api.recorder.drainHeld();
     await until('foreign removal playback', idle);
@@ -1808,13 +1810,13 @@ export async function run(): Promise<void> {
     await until('rec3 sibling baselines', () => sideFile('src/committed3.ts').some((u) => api.recorder.hasBaseline(u)), 20000);
     const committed3 = lf(fs.readFileSync(path.join(rec3Side, 'src', 'committed3.ts'), 'utf8'));
     const atRealDelete = timeline.all().length;
-    fs.rmSync(path.join(rec3Side, 'src', 'committed3.ts'));
+    rm(path.join(rec3Side, 'src', 'committed3.ts'));
     const deleted3 = `${sideLabel}/src/committed3.ts`;
     await until('delete in the chosen worktree recorded', () => eventsFor(deleted3, atRealDelete).length > 0, 20000);
     assert.deepEqual(eventsFor(deleted3, atRealDelete).map((e) => [e.kind, e.before]), [['delete', committed3]]);
     await until('chosen worktree delete playback', idle);
     const atRemoval = timeline.all().length;
-    fs.rmSync(path.join(rec3Side, 'src', 'committed2.ts'));
+    rm(path.join(rec3Side, 'src', 'committed2.ts'));
     await sleep(800);
     await gitRetry(root, 'worktree', 'remove', '--force', rec3Side);
     await until('fallback after removing the rec3 sibling', () => own() === true, 20000);
