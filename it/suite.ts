@@ -29,7 +29,18 @@ export async function run(): Promise<void> {
   const api = await ext.activate();
   const { timeline } = api;
   const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
-  const write = (rel: string, text: string) => fs.writeFileSync(path.join(root, rel), text);
+  // On Windows another process (VS Code, git, a watcher) can briefly hold a file open; retry instead of failing.
+  const write = (rel: string, text: string) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return fs.writeFileSync(path.join(root, rel), text);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if ((code !== 'EBUSY' && code !== 'EPERM') || attempt >= 100) throw err;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+  };
   const disk = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
   const mirrorText = (rel: string) =>
     vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel)?.getText();
