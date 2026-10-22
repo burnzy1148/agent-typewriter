@@ -68,7 +68,9 @@ test('PathFilter.blockedBy names the rule that rejects a path', () => {
 test('PathFilter: .git files are never recorded, whatever the settings', () => {
   for (const exclude of [['**/.git/**'], [], ['dist/**']]) {
     const f = new PathFilter({ include: ['**/*'], exclude, extensions: [] });
-    for (const p of ['.git', 'vendor/lib/.git', 'a/b/.GIT', 'side\\.git']) assert.ok(!f.matches(p), `${p} with exclude ${exclude}`);
+    for (const p of ['.git', 'vendor/lib/.git', 'a/b/.GIT']) assert.ok(!f.matches(p), `${p} with exclude ${exclude}`);
+    // A backslash separates directories only on Windows; elsewhere `side\\.git` is one file name.
+    assert.equal(f.matches('side\\.git'), process.platform !== 'win32', `side\\.git with exclude ${exclude}`);
     for (const p of ['.gitignore', '.gitmodules', 'src/.git-hooks.ts', 'foo.git', '.github/ci.yml']) assert.ok(f.matches(p), `${p} with exclude ${exclude}`);
   }
   // Directory pruning is unchanged: only .git directories are pruned, by the default exclude.

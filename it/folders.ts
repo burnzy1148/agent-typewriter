@@ -5,10 +5,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import type { AgentTypewriterApi } from '../src/extension';
+import { runRec4 } from './rec4';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function run(): Promise<void> {
+  // The REC4 launch has its own workspace and checks.
+  if (process.env.IT_REC4) return runRec4();
   const ext = vscode.extensions.getExtension<AgentTypewriterApi>('burnzy1148.agent-typewriter');
   assert.ok(ext, 'extension not found');
   const api = await ext.activate();

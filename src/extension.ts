@@ -9,7 +9,7 @@ import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
 import { activeProfileOf, describeProfile, isValidProfileName } from './profiles';
 import { Recorder, relPathOf, type CheckoutChoices, type CheckoutInfo, type FolderCheckouts } from './recorder';
-import { CheckoutChoiceFile, checkoutName, pathKey } from './worktrees';
+import { CheckoutChoiceFile, checkoutName, folderCheckoutChoice, pathKey } from './worktrees';
 import { scrubberState } from './scrubberState';
 import { ScrubberView } from './scrubberView';
 import { REPO_SETTINGS_FILE } from './repoSettings';
@@ -84,7 +84,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   // ------------------------------------------------------------ status
 
-  /** The checkout each folder records (or will record once started), by folder URI; only folders in git. */
+  /**
+   * The checkout each folder records (or will record once started), by folder
+   * URI; only folders in git. `worktrees` counts the checkouts the chooser
+   * offers: one more than git lists for a folder with no checkout of its own.
+   */
   const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
   // Calls overlap (scope events, focus, folder changes); only the newest one's answer is kept.
   let checkoutsGen = 0;
@@ -97,14 +101,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       if (live) {
         // What is recorded comes from the recorder; the count from a fresh
         // listing, since worktrees added or removed elsewhere send no event.
-        const worktrees = c?.worktrees.length ?? live.worktrees;
+        const worktrees = c ? folderCheckoutChoice(folder.name, c.own, c.worktrees).choices : live.worktrees + (live.container ? 1 : 0);
         if (worktrees > 0) next.set(folder.uri.toString(), { own: live.own, name: live.name, worktrees });
         continue;
       }
       if (!c) continue;
       const chosen = c.chosen !== undefined ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.chosen!)) : undefined;
-      const shown = chosen ?? c.own;
-      next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: shown ? checkoutName(shown) : '', worktrees: c.worktrees.length });
+      const choice = folderCheckoutChoice(folder.name, c.own, c.worktrees);
+      next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: chosen ? checkoutName(chosen) : choice.name, worktrees: choice.choices });
     }
     if (gen !== checkoutsGen) return next;
     checkouts.clear();
@@ -495,7 +499,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const candidates: Array<[vscode.WorkspaceFolder, FolderCheckouts]> = [];
     for (const folder of only ? [only] : folders) {
       const c = await recorder.checkoutsOf(folder);
-      if (c && (c.worktrees.length > 1 || pathArg !== undefined)) candidates.push([folder, c]);
+      if (c && (folderCheckoutChoice(folder.name, c.own, c.worktrees).choices > 1 || pathArg !== undefined)) candidates.push([folder, c]);
     }
     if (candidates.length === 0) {
       const which = only?.name ?? (folders.length === 1 ? folders[0].name : undefined);
@@ -507,7 +511,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     let target = candidates[0];
     if (candidates.length > 1) {
       const pick = await vscode.window.showQuickPick(
-        candidates.map(([folder, c]) => ({ label: folder.name, detail: `${c.worktrees.length} checkouts`, entry: [folder, c] as const })),
+        candidates.map(([folder, c]) => ({ label: folder.name, detail: `${folderCheckoutChoice(folder.name, c.own, c.worktrees).choices} checkouts`, entry: [folder, c] as const })),
         { title: 'Agent Typewriter: choose a checkout for which folder?' },
       );
       if (!pick) return;
@@ -521,11 +525,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const current = pathKey(c.chosen ?? c.own?.path ?? folder.uri.fsPath);
     const mark = (p: string) => (pathKey(p) === current ? 'current' : undefined);
     const others = c.worktrees.filter((w) => w !== c.own);
+    const self = folderCheckoutChoice(folder.name, c.own, c.worktrees);
     const pick = await vscode.window.showQuickPick(
       [
         {
-          label: c.own ? checkoutName(c.own) : folder.name,
-          description: ["this folder's checkout", mark(c.own?.path ?? folder.uri.fsPath)].filter(Boolean).join(' · '),
+          label: self.label,
+          description: [self.description, mark(c.own?.path ?? folder.uri.fsPath)].filter(Boolean).join(' · '),
           detail: c.own?.path ?? folder.uri.fsPath,
           path: undefined as string | undefined,
         },
