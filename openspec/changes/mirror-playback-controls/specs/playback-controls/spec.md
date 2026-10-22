@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Playback mirror
-The playback mirror SHALL be the mirror document of the change being typed. When no change is being typed, it SHALL be the mirror document most recently played into, including by skip to latest. Before anything has been played there SHALL be no playback mirror. Controls on mirror tabs SHALL appear only on the playback mirror.
+The playback mirror SHALL be the mirror document of the change being typed. When no change is being typed, it SHALL be the mirror document most recently played into, including by skip to latest. Before anything has been played, and after a session is loaded until one of its changes plays, there SHALL be no playback mirror. Controls on mirror tabs SHALL appear only on the playback mirror.
 
 #### Scenario: Playback moves to another file
 - **WHEN** a change to `a.ts` finishes and the next change, to `b.ts`, starts typing
@@ -17,16 +17,24 @@ The playback mirror SHALL be the mirror document of the change being typed. When
 - **WHEN** the extension has just activated and no change has been played
 - **THEN** no mirror tab shows the controls
 
+#### Scenario: Session loaded
+- **WHEN** playback last played `a.ts` and the user loads a saved session
+- **THEN** no mirror tab shows the controls until a change from the loaded session plays
+
 #### Scenario: Real files untouched
 - **WHEN** the real file `a.ts` is open in a tab next to its mirror
 - **THEN** the real file's tab shows no playback controls
 
 ### Requirement: Mirror title bar controls
-The playback mirror's editor title bar SHALL show buttons to replay all, play or pause, finish the current change instantly, skip to the next change, and skip to the latest change. Each button SHALL behave the same as the matching command.
+The playback mirror's editor title bar SHALL show buttons to replay all, play or pause, finish the current change instantly, skip to the next change, and skip to the latest change. Each button SHALL behave the same as the matching command. While the buffer is empty, only play or pause SHALL show, in the title bar and in the status row.
 
 #### Scenario: Skip to latest from the title bar
 - **WHEN** three changes are queued and the user presses skip to latest in the playback mirror's title bar
 - **THEN** every mirror document shows its newest recorded state and nothing is queued
+
+#### Scenario: Buffer cleared
+- **WHEN** the user clears the buffer
+- **THEN** the playback mirror's title bar and status row offer play or pause and no replay, finish, or skip controls
 
 #### Scenario: Finish current from the title bar
 - **WHEN** a change is being typed and the user presses finish current in the playback mirror's title bar
@@ -49,6 +57,10 @@ The playback mirror SHALL show a row above its first line, without changing the 
 #### Scenario: Row while typing
 - **WHEN** change #12 to `src/a.ts` is being typed, it is the 4th of 12 changes in the buffer, 3 are queued, and the speed is 2x
 - **THEN** the row reads as typing `#12 src/a.ts`, position 4 of 12, 3 queued, and 2x
+
+#### Scenario: File name with icon syntax
+- **WHEN** the change being typed is to `docs/$(home)-notes.md`
+- **THEN** the row's readout shows the file name as typed, not an icon
 
 #### Scenario: Row does not touch the text
 - **WHEN** a change has been played into the playback mirror with the row showing

@@ -55,6 +55,12 @@ export function describePlayback(s: PlaybackFacts): { label: string; position: s
   return { label: (s.paused ? 'Paused before ' : 'Next: ') + describe(s.changes[s.index]) + queued, position };
 }
 
+/** The readout at the end of the mirror's status row, with icon syntax in file names shown as typed. */
+export function rowReadout(s: Pick<ScrubberState, 'label' | 'position'>): string {
+  // CodeLens titles render $(name) as an icon; a backslash keeps it literal.
+  return `${s.label} \u00b7 ${s.position}`.replace(/\$\([A-Za-z0-9-]+(?:~[A-Za-z]+)?\)/g, (m) => `\\${m}`);
+}
+
 const SIMPLE = new Set(['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll']);
 
 /** Validates a message posted by the webview; anything unexpected comes back undefined. */

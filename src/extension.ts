@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
+import { readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
 import { MirrorControls } from './mirrorControls';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
@@ -52,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const playbackState = () =>
     scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning });
   const scrubber = new ScrubberView(playbackState);
-  const mirrorControls = new MirrorControls(player, playbackState, () => readSettings().mirrorStatusRow);
+  const mirrorControls = new MirrorControls(player, playbackState, readMirrorStatusRow, () => timeline.all().length > 0);
   const store = context.storageUri
     ? new TimelineStore(context.storageUri.fsPath, timeline, (line) => log.appendLine(line))
     : undefined;
@@ -192,13 +192,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   });
 
   // The two states of the mirror's play/pause button; a stale click never flips playback back.
-  register('agentTypewriter.pause', () => {
-    if (!player.isPaused) player.togglePause();
-  });
-
-  register('agentTypewriter.resume', () => {
-    if (player.isPaused) player.togglePause();
-  });
+  register('agentTypewriter.pause', () => player.setPaused(true));
+  register('agentTypewriter.resume', () => player.setPaused(false));
 
   register('agentTypewriter.finishCurrent', () => player.finishCurrent());
 
@@ -217,7 +212,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
     timeline.seekToStart();
     await player.interrupt();
-    if (player.isPaused) player.togglePause();
+    player.setPaused(false);
   });
 
   register('agentTypewriter.replayFrom', async (arg?: ChangeItem | number) => {
@@ -225,7 +220,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (seq === undefined) return;
     timeline.seek(seq);
     await player.interrupt();
-    if (player.isPaused) player.togglePause();
+    player.setPaused(false);
   });
 
   // Like replayFrom, but keeps the pause state; past the newest change it skips to latest.
@@ -333,11 +328,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       }
     }
     // Loaded sessions start paused at their first change; the user resumes when ready.
-    if (!player.isPaused) player.togglePause();
+    player.setPaused(true);
     // Changes recorded while the prompts were open are replaced too.
     recorder.drainHeld();
     timeline.restore(session.events, session.events[0].seq);
     await player.interrupt();
+    player.forgetPlaybackMirror();
     log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
     vscode.window.setStatusBarMessage(`Agent Typewriter: loaded ${timeline.all().length} change(s). Resume playback to start.`, 6000);
   });
@@ -633,7 +629,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       const saved = store.load();
       if (saved && saved.events.length > 0) {
         const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
-        if (pending > 0 && !player.isPaused) player.togglePause();
+        if (pending > 0) player.setPaused(true);
         timeline.restore(saved.events, saved.cursor);
         const queued = timeline.pendingCount();
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);

@@ -37,7 +37,7 @@ The title bar shows `agentTypewriter.pause` (`$(debug-pause)`) when `!agentTypew
 
 Using `togglePause` with a state-dependent icon was rejected for that reason. Menu-level `toggled` icons aren't available for `editor/title` in the targeted API. Both new commands are hidden from the palette with `when: false`, because `togglePause` already covers that.
 
-`agentTypewriter.paused` is set from `refreshStatus`, and `setContext` is only called when the value changes.
+`agentTypewriter.paused` is set from `refreshStatus`, and `setContext` is only called when the value changes. `agentTypewriter.hasChanges` hides replay all, finish, next, and latest while the buffer is empty, matching the row. `Player.setPaused` replaces the toggle-if-needed pattern the existing replay, load, and restore paths used.
 
 ### CodeLens provider scoped to the playback mirror
 
@@ -52,7 +52,7 @@ New `src/mirrorControls.ts` registers a provider with `{ scheme: MIRROR_SCHEME }
 | `2x` | `setSpeed` (no argument, so it opens the quick pick) |
 | readout, e.g. `Typing #12 src/a.ts · 3 queued · 4 / 12` | `agentTypewriter.scrubber.focus` |
 
-The provider fires `onDidChangeCodeLenses` from `refreshStatus` and from `onDidChangePlaybackMirror`. Bursts are coalesced to one event per 100 ms, the same as `ScrubberView.refresh`. VS Code's own `editor.codeLens: false` already hides lenses, so nothing extra is needed for that part of the spec.
+The provider fires `onDidChangeCodeLenses` from `refreshStatus` and from `onDidChangePlaybackMirror`. VS Code restarts its CodeLens timer on every change event and asks again only after 250 ms without one, so events come at most every 300 ms, and only when the row's text, the playback mirror, or the setting changed. Events every 100 ms during a burst of recorded changes would keep the row from updating at all. The readout escapes `$(name)` in file names, which CodeLens would otherwise draw as an icon. VS Code's own `editor.codeLens: false` already hides lenses, so nothing extra is needed for that part of the spec.
 
 A webview or HTML overlay on the editor isn't possible through the extension API. Decorations with `before` content can't be clicked. That makes CodeLens the only clickable in-editor option.
 
@@ -73,5 +73,5 @@ The panel currently builds its label in its inline script (`statusText`). That l
 - [The row lags behind typing] VS Code restarts its CodeLens timer on every edit and only asks again after 250 ms without edits, so while a change is being typed the row keeps what it showed when typing started. On a tab switch it shows the row it last got for that file. → The player marks the playback mirror before showing its tab, so the request made as the tab opens gets the row. The readout catches up at pauses and between changes; during fast catch-up a file's first row can wait for a pause. The status bar and panel stay live. Showing the row on every mirror would avoid the missing first row, and was declined to keep the controls on the playback tab only.
 - [The row moves the mirror's content down one line, and it shows up in screen recordings] → `mirrorStatusRow` turns it off. The README's "The panels" section says so.
 - [Five extra icons crowd the mirror's title bar] → They only appear on the one playback mirror tab, and VS Code lets the user hide any of them from the title bar's context menu.
-- [The stale context key after Clear Buffer] Clearing doesn't close mirror tabs. → The playback mirror stays until something else plays. That matches what is on screen, because the tab still shows that file.
+- [The stale context key after Clear Buffer] Clearing doesn't close mirror tabs. → The playback mirror stays until something else plays, because the tab still shows that file; with the buffer empty only play or pause shows there. Loading a session forgets the playback mirror, since the loaded changes may not touch that file.
 - [`resourcePath in` matching on Windows] Mirror paths are built by `MirrorFileSystem.uriFor` with forward slashes on every platform, and the key is set from the same `Uri.path`. → The integration test runs on Windows CI.

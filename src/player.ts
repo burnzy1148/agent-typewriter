@@ -78,6 +78,18 @@ export class Player implements vscode.Disposable {
     this.manualSpeed = Math.max(0.1, multiplier);
   }
 
+  /** Pauses or resumes; does nothing when playback is already in that state. */
+  setPaused(paused: boolean): void {
+    if (this.paused !== paused) this.togglePause();
+  }
+
+  /** Until the next change plays there is no playback mirror, e.g. after loading another session. */
+  forgetPlaybackMirror(): void {
+    if (this.playbackPath === undefined) return;
+    this.playbackPath = undefined;
+    this.mirrorChanged.fire();
+  }
+
   togglePause(): boolean {
     this.paused = !this.paused;
     this.poke();

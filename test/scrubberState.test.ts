@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Timeline, type NewChangeEvent } from '../src/timeline';
-import { describePlayback, parseScrubberMessage, scrubberState, type PlaybackFacts } from '../src/scrubberState';
+import { describePlayback, parseScrubberMessage, rowReadout, scrubberState, type PlaybackFacts } from '../src/scrubberState';
 
 function ev(relPath: string): NewChangeEvent {
   return { uri: 'file:///w/' + relPath, relPath, time: 0, kind: 'modify', before: '', after: 'x', eol: '\n', linesAdded: 1, linesRemoved: 0 };
@@ -115,6 +115,16 @@ test('state carries the label and position', () => {
   const s = scrubberState(t, player);
   assert.equal(s.label, `Typing #${a.seq} a.ts`);
   assert.equal(s.position, '1 / 1');
+});
+
+test('row readout keeps icon syntax in file names literal', () => {
+  assert.equal(rowReadout({ label: 'Next: #3 a.ts', position: '1 / 3' }), 'Next: #3 a.ts \u00b7 1 / 3');
+  assert.equal(
+    rowReadout({ label: 'Typing #3 docs/$(home)-notes.md', position: '1 / 3' }),
+    'Typing #3 docs/\\$(home)-notes.md \u00b7 1 / 3',
+  );
+  // Not icon syntax, so nothing to escape.
+  assert.equal(rowReadout({ label: 'Next: #4 $(odd name.ts', position: '2 / 3' }), 'Next: #4 $(odd name.ts \u00b7 2 / 3');
 });
 
 test('valid messages parse', () => {

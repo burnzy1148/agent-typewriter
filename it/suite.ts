@@ -372,8 +372,9 @@ export async function run(): Promise<void> {
   // The provider command needs the document loaded.
   const realA = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')));
   assert.deepEqual(await row(realA.uri), [], 'row on the real file');
-  const otherMirror = vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path !== aMirror.path);
-  if (otherMirror) assert.deepEqual(await row(otherMirror.uri), [], 'row on another mirror');
+  // src/existing.ts was played in section 1, so its mirror exists.
+  const otherMirror = await vscode.workspace.openTextDocument(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/src/existing.ts' }));
+  assert.deepEqual(await row(otherMirror.uri), [], 'row on another mirror');
   await vscode.commands.executeCommand('agentTypewriter.resume');
   assert.equal(player.isPaused, false, 'resume did not resume');
   await vscode.commands.executeCommand('agentTypewriter.resume');
@@ -1070,6 +1071,7 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(actSession));
   await sleep(reorderWindow + 1500);
   assert.deepEqual(timeline.all().map((e) => e.relPath), savedPaths, 'a change held at Load Session was appended to the loaded one');
+  assert.equal(player.playbackRelPath, undefined, 'Load Session kept the previous playback mirror');
   if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
   await until('loaded session playback', idle);
   console.log('[it] ACT: Clear Buffer and Load Session drain held changes ok');

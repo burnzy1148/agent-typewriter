@@ -100,6 +100,11 @@ export function readSettings(): Settings {
   };
 }
 
+/** Only `mirrorStatusRow`; the CodeLens provider reads it on every request. */
+export function readMirrorStatusRow(): boolean {
+  return layered(vscode.workspace.getConfiguration(SECTION)).get('mirrorStatusRow', true);
+}
+
 /** True when commands write workspace settings; false when no folder is open and they write user settings. */
 export function writesWorkspace(): boolean {
   return (vscode.workspace.workspaceFolders?.length ?? 0) > 0;

@@ -282,7 +282,7 @@
       "editor/title": [
         {
           "command": "agentTypewriter.replayAll",
-          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
           "group": "navigation@1"
         },
         {
@@ -297,17 +297,17 @@
         },
         {
           "command": "agentTypewriter.finishCurrent",
-          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
           "group": "navigation@3"
         },
         {
           "command": "agentTypewriter.skipToNext",
-          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
           "group": "navigation@4"
         },
         {
           "command": "agentTypewriter.catchUp",
-          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
           "group": "navigation@5"
         }
       ],
