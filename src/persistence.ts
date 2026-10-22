@@ -62,6 +62,10 @@ export class TimelineStore {
   private lastOmitted = 0;
   /** Bumped by every write; a slower async write that was overtaken does not replace a newer file. */
   private writeId = 0;
+  /** writeId of the async write in flight, if any. */
+  private writingId: number | undefined;
+  /** The saved file could not be read or moved aside; saving waits until it can be moved. */
+  private unreadableInPlace = false;
 
   constructor(
     private readonly folder: string,
@@ -87,20 +91,44 @@ export class TimelineStore {
     let bytes: Buffer;
     try {
       bytes = fs.readFileSync(this.path);
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      this.log(`Could not read the saved timeline (${errorText(err)}). Starting empty.`);
+      this.setAside();
       return undefined;
     }
     try {
       return sessionFromBytes(bytes);
     } catch (err) {
       this.log(`Could not restore the saved timeline: ${err instanceof Error ? err.message : String(err)}. Starting empty.`);
-      try {
-        fs.renameSync(this.path, path.join(this.folder, UNREADABLE));
-      } catch {
-        // Leave it; the next save replaces it.
-      }
+      this.setAside();
       return undefined;
     }
+  }
+
+  /** Moves an unreadable saved file aside. If that fails, saving holds off so the file is not replaced. */
+  private setAside(): void {
+    if (this.moveAside()) return;
+    this.unreadableInPlace = true;
+    this.log(`Could not move it to ${UNREADABLE} either; the timeline will not be saved until it can be.`);
+  }
+
+  private moveAside(): boolean {
+    try {
+      fs.renameSync(this.path, path.join(this.folder, UNREADABLE));
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT';
+    }
+  }
+
+  /** False while an unreadable saved file is still in the way of saving. */
+  private canSave(): boolean {
+    if (this.unreadableInPlace && this.moveAside()) {
+      this.unreadableInPlace = false;
+      this.log(`Moved the unreadable saved timeline to ${UNREADABLE}.`);
+    }
+    return !this.unreadableInPlace;
   }
 
   /** Saves on every timeline change from now on, and once right away. */
@@ -110,8 +138,9 @@ export class TimelineStore {
     this.markDirty();
   }
 
-  /** Stops saving. Pending changes are not written. */
+  /** Stops saving. Pending changes are not written, and a write in flight does not replace the file. */
   stop(): void {
+    this.writeId++;
     this.subscription?.dispose();
     this.subscription = undefined;
     if (this.timer) clearTimeout(this.timer);
@@ -124,15 +153,21 @@ export class TimelineStore {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     await this.writing;
+    // The awaited write re-arms the timer for changes made meanwhile; this write covers them.
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
     if (this.dirty) await this.write();
   }
 
-  /** Synchronous final save, for deactivation. */
+  /** Synchronous final save, for deactivation. Also covers an async write still in flight, which may never finish. */
   flushSync(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    if (!this.dirty) return;
+    const inFlight = this.writing !== undefined && this.writingId === this.writeId;
+    if (!this.dirty && !inFlight) return;
+    if (!this.canSave()) return;
     this.dirty = false;
+    // Overtakes the write in flight, which then skips its rename.
     this.writeId++;
     try {
       fs.mkdirSync(this.folder, { recursive: true });
@@ -144,9 +179,9 @@ export class TimelineStore {
     }
   }
 
-  /** Removes the saved timeline. */
+  /** Removes the saved timeline, including a copy moved aside as unreadable. */
   deleteSaved(): void {
-    for (const f of [this.path, this.path + '.tmp', this.path + '.sync.tmp']) {
+    for (const f of [this.path, this.path + '.tmp', this.path + '.sync.tmp', path.join(this.folder, UNREADABLE)]) {
       try {
         fs.rmSync(f, { force: true });
       } catch {
@@ -170,21 +205,27 @@ export class TimelineStore {
   }
 
   private write(): Promise<void> {
+    // Still dirty, so the next save (at the latest the final one) tries the move again.
+    if (!this.canSave()) return Promise.resolve();
     this.dirty = false;
     const id = ++this.writeId;
     const json = this.serialize();
+    this.writingId = id;
     this.writing = (async () => {
+      const tmp = this.path + '.tmp';
       try {
         await fs.promises.mkdir(this.folder, { recursive: true });
-        const tmp = this.path + '.tmp';
         await fs.promises.writeFile(tmp, await gzip(json));
         // Synchronous from the check to the rename, so a final save in between cannot be overwritten.
         if (id === this.writeId) fs.renameSync(tmp, this.path);
+        // Overtaken or stopped: leave no copy of the code text behind. Writes are serialized, so tmp is ours.
+        else fs.rmSync(tmp, { force: true });
       } catch (err) {
         this.log(`Could not save the timeline: ${String(err)}`);
       }
     })().finally(() => {
       this.writing = undefined;
+      this.writingId = undefined;
       // Changes that came in while writing get their own save.
       if (this.dirty && this.isRunning) this.markDirty();
     });
@@ -203,4 +244,10 @@ export class TimelineStore {
     const envelope = JSON.stringify({ format: session.format, version: session.version, savedAt: session.savedAt, cursor: session.cursor });
     return envelope.slice(0, -1) + `,"events":${this.cachedEvents.json}}`;
   }
+}
+
+function errorText(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code;
+  const message = err instanceof Error ? err.message : String(err);
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
 }
