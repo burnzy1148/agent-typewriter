@@ -311,7 +311,8 @@ test('at-l3q.11.5 worktreeLabels: labels never collide', () => {
   distinct(two);
   assert.equal(two[0], 'repo');
   // A parent-prefixed label equal to another worktree's plain name.
-  distinct(labelsOf([wt('a', 'one', 'fix'), wt('b', 'two', 'fix'), wt('c', 'one-fix')]));
+  // A plain name no other worktree has keeps it; the others move away.
+  assert.deepEqual(labelsOf([wt('a', 'one', 'fix'), wt('b', 'two', 'fix'), wt('c', 'one-fix')]), ['a-one-fix', 'two-fix', 'one-fix']);
   distinct(labelsOf([wt('x', 'a-fix'), wt('y', 'a', 'fix'), wt('z', 'b', 'fix')]));
   // a-b/c and a/b-c join to the same string at every level.
   distinct(labelsOf([wt('a-b', 'c'), wt('a', 'b-c')]));
@@ -390,6 +391,27 @@ test('at-l3q.11.6 folderLabels: same-named folders get distinct, single-segment 
   distinct(both);
   for (const l of both) assert.ok(!/[\\/]/.test(l));
   assert.deepEqual(folderLabels([{ name: 'app', path: '/a/app' }, { name: 'app', path: '/a/app' }]), ['a-app', 'a-app-2'], 'even the same path');
+  assert.deepEqual(
+    folderLabels([
+      { name: 'app', path: '/w/client/app' },
+      { name: 'app', path: '/w/server/app' },
+      { name: 'client-app', path: '/w/client-app' },
+    ]),
+    ['w-client-app', 'server-app', 'client-app'],
+    'a uniquely named folder keeps its name',
+  );
+  assert.deepEqual(
+    folderLabels(
+      [
+        { name: 'app', path: '/w/client/app', given: 'app' },
+        { name: 'app', path: '/w/server/app' },
+      ],
+      ['api'],
+    ),
+    ['app', 'server-app'],
+    'a given prefix is kept',
+  );
+  assert.deepEqual(folderLabels([{ name: 'api', path: '/x/api' }], ['api']), ['x-api'], 'a taken prefix is not reused');
   assert.equal(checkoutDisplayPath('server-app', 'feature', 'src/a.ts'), 'server-app/feature/src/a.ts');
 });
 

@@ -294,22 +294,27 @@ export function uniqueLabels(entries: Array<{ names: string[]; given?: string }>
   const level = new Map<number, number>();
   const firsts = new Map<string, number>();
   for (const i of open) firsts.set(names[i][0], (firsts.get(names[i][0]) ?? 0) + 1);
+  // A name no other entry has and nothing has taken stays as it is: the others move away from it.
+  const plain = new Set(open.filter((i) => firsts.get(names[i][0]) === 1 && !used.has(names[i][0])));
   // Two that share a directory name both get their parent's, as they always have.
   for (const i of open) level.set(i, (firsts.get(names[i][0]) ?? 0) > 1 ? Math.min(1, names[i].length - 1) : 0);
   const label = (i: number) => names[i].slice(0, level.get(i)! + 1).reverse().join('-');
   for (;;) {
     const counts = new Map<string, number>();
     for (const i of open) counts.set(label(i), (counts.get(label(i)) ?? 0) + 1);
-    const bump = open.filter((i) => ((counts.get(label(i)) ?? 0) > 1 || used.has(label(i))) && level.get(i)! < names[i].length - 1);
+    const bump = open.filter(
+      (i) => !plain.has(i) && ((counts.get(label(i)) ?? 0) > 1 || used.has(label(i))) && level.get(i)! < names[i].length - 1,
+    );
     if (bump.length === 0) break;
     for (const i of bump) level.set(i, level.get(i)! + 1);
   }
-  // Out of names: the first keeps a shared label, the rest get a number no other label has.
+  // Out of names: plain names first, then the first of a shared label keeps
+  // it, and the rest get a number no other label has.
   const counts = new Map<string, number>();
   for (const i of open) counts.set(label(i), (counts.get(label(i)) ?? 0) + 1);
   const unique = new Set(open.map(label).filter((l) => counts.get(l) === 1 && !used.has(l)));
   const out = entries.map((e) => e.given ?? '');
-  for (const i of open) {
+  for (const i of [...plain, ...open.filter((j) => !plain.has(j))]) {
     const base = label(i);
     let l = base;
     for (let k = 2; used.has(l) || (l !== base && unique.has(l)); k++) l = `${base}-${k}`;
@@ -346,14 +351,16 @@ export function worktreeLabels(
 /**
  * Display-path prefix per workspace folder in a multi-root workspace: its
  * name as one path segment, with its parent directories' names added while two
- * folders would share one. `path` is the folder's URI path.
+ * folders would share one. `path` is the folder's URI path. A folder with a
+ * `given` prefix keeps it, and no new prefix is one of `taken`.
  */
-export function folderLabels(folders: Array<{ name: string; path: string }>): string[] {
+export function folderLabels(folders: Array<{ name: string; path: string; given?: string }>, taken: Iterable<string> = []): string[] {
   return uniqueLabels(
     folders.map((f) => {
       const dirs = f.path.replace(/\/+$/, '').split('/').filter(Boolean).reverse();
-      return { names: [f.name, ...dirs.slice(1)] };
+      return { names: [f.name, ...dirs.slice(1)], given: f.given };
     }),
+    taken,
   );
 }
 
@@ -393,7 +400,7 @@ export function checkoutDisplayPath(folderName: string, label: string, rel: stri
  */
 export class CheckoutChoiceFile {
   private readonly choices = new Map<string, string>();
-  /** Per folder key, the display label given to each chosen worktree, by its `pathKey`. */
+  /** Per folder key, the display label given to each chosen worktree, by its `pathKey`; the recorder keeps folder prefixes here too. */
   private readonly labels = new Map<string, Map<string, string>>();
 
   constructor(readonly file: string) {

@@ -125,6 +125,7 @@ for (const reverse of [false, true]) {
     const x = path.join(feature, 'packages', 'app', 'src', 'x.ts');
     assert.ok(t.recorder.hasBaseline(vscode.Uri.file(x)), 'src/** within the inner folder did not match');
     t.change(x, 'x2\n');
+    await t.settle();
     t.change(path.join(feature, 'src', 'y.ts'), 'y2\n');
     await t.settle();
     assert.deepEqual(t.events(), [
@@ -366,4 +367,78 @@ test('at-l3q.11.7 without a choices file, labels last for the session', { skip: 
   t.change(path.join(fix, 'src', 'a.ts'), 'A1\n');
   await t.settle();
   assert.deepEqual(t.events(), [['modify', 'fix/src/a.ts']]);
+});
+
+test('at-l3q.11.6 a folder keeps its prefix when a same-named folder is added, and across a reload', async () => {
+  const base = tempDir('at-rl-multi-');
+  const client = path.join(base, 'client', 'app');
+  const api = path.join(base, 'api');
+  const server = path.join(base, 'server', 'app');
+  write(client, 'src/index.ts', 'C0\n');
+  write(api, 'a.ts', 'a\n');
+  write(server, 'src/index.ts', 'S0\n');
+  const file = path.join(tempDir('at-rl-choices-'), 'checkouts.json');
+  const t = recorderOn(settings({ gitBaselines: false }), [client, api], new CheckoutChoiceFile(file));
+  await t.recorder.start();
+  t.change(path.join(client, 'src', 'index.ts'), 'C1\n');
+  await t.settle();
+  // The user adds server/app, also named app.
+  mock.folders.push({ uri: vscode.Uri.file(server) as never, name: 'app', index: 2 });
+  await t.recorder.refreshFilter('Workspace folders changed');
+  t.change(path.join(client, 'src', 'index.ts'), 'C2\n');
+  await t.settle();
+  t.change(path.join(server, 'src', 'index.ts'), 'S1\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [
+    ['modify', 'app/src/index.ts'],
+    ['modify', 'app/src/index.ts'],
+    ['modify', 'server-app/src/index.ts'],
+  ]);
+  t.recorder.dispose();
+
+  // A new window on all three: each keeps the prefix it was given.
+  mock.reset();
+  const again = recorderOn(settings({ gitBaselines: false }), [client, api, server], new CheckoutChoiceFile(file));
+  await again.recorder.start();
+  again.change(path.join(client, 'src', 'index.ts'), 'C3\n');
+  await again.settle();
+  again.change(path.join(server, 'src', 'index.ts'), 'S2\n');
+  await again.settle();
+  assert.deepEqual(again.events(), [
+    ['modify', 'app/src/index.ts'],
+    ['modify', 'server-app/src/index.ts'],
+  ]);
+});
+
+test('at-l3q.11.3 a remembered label the folder now has a directory for is replaced in the next session only', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'A0\n' });
+  const fix = path.join(repo, '.worktrees', 'fix');
+  git(repo, 'worktree', 'add', '-q', '-b', 'fix', fix);
+  const file = path.join(tempDir('at-rl-choices-'), 'checkouts.json');
+  const choices = new CheckoutChoiceFile(file);
+  choices.set(key(repo), fix);
+  const t = recorderOn(settings(), [repo], choices);
+  await t.recorder.start();
+  const a = path.join(fix, 'src', 'a.ts');
+  t.change(a, 'A1\n');
+  await t.settle();
+  // The main checkout gains a top-level fix/ directory while recording: the label holds for the session.
+  write(repo, 'fix/a.ts', 'mine\n');
+  await t.recorder.refreshFilter('Worktrees changed');
+  t.change(a, 'A2\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [
+    ['modify', 'fix/src/a.ts'],
+    ['modify', 'fix/src/a.ts'],
+  ]);
+  t.recorder.dispose();
+
+  mock.reset();
+  const again = recorderOn(settings(), [repo], new CheckoutChoiceFile(file));
+  await again.recorder.start();
+  again.change(a, 'A3\n');
+  await again.settle();
+  const [relPath] = again.timeline.all().map((e) => e.relPath);
+  assert.ok(relPath.endsWith('/src/a.ts') && !relPath.startsWith('fix/'), `still shares the folder's fix/: ${relPath}`);
+  assert.ok(again.logs.some((l) => l.includes('gets a new display name')));
 });

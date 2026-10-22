@@ -34,6 +34,9 @@ import { ReorderBuffer, clampOrderKey } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
+/** Where display prefixes of workspace folders are remembered among labels; folder keys are URIs, so never this. */
+const FOLDER_PREFIXES = 'folders';
+
 /** How long a change read mid-save waits for the save to finish. */
 const SAVE_SETTLE_MAX_MS = 1000;
 
@@ -122,8 +125,10 @@ export class Recorder implements vscode.Disposable {
   private ignoreRetried = false;
   /** The checkout each workspace folder records while running, keyed by folder URI. */
   private readonly scopes = new Map<string, Scope>();
-  /** Chosen worktree labels per folder URI, by worktree `pathKey`, when `choices` cannot keep them. */
+  /** Chosen worktree labels per folder URI, by worktree `pathKey`, and folder prefixes, when `choices` cannot keep them. */
   private readonly labels = new Map<string, Map<string, string>>();
+  /** Remembered worktree labels checked this session against the folder's top-level entries, as `folder\0worktree` keys. */
+  private readonly labelsChecked = new Set<string>();
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
   private scopeWork: Promise<void> = Promise.resolve();
   private worktreeRefresh: NodeJS.Timeout | undefined;
@@ -683,14 +688,16 @@ export class Recorder implements vscode.Disposable {
    * its files keep their mirrors while other worktrees come and go, or a new
    * one. A new label is unique among the folder's labels and never names a
    * top-level entry of the folder other than a worktree, so the folder's own
-   * files can't share its display paths.
+   * files can't share its display paths. A remembered label is checked
+   * against those entries once per session, the first time it is used.
    */
   private async labelFor(folder: vscode.WorkspaceFolder, chosen: Worktree, worktrees: Worktree[]): Promise<string> {
     const folderKey = folder.uri.toString();
-    const given = this.choices.labelsOf ? this.choices.labelsOf(folderKey) : (this.labels.get(folderKey) ?? new Map<string, string>());
+    const given = this.labelsIn(folderKey);
     const chosenKey = pathKey(chosen.path);
     const known = given.get(chosenKey);
-    if (known !== undefined) return known;
+    const checked = `${folderKey}\0${chosenKey}`;
+    if (known !== undefined && this.labelsChecked.has(checked)) return known;
     let entries: string[] = [];
     try {
       entries = await fs.promises.readdir(folder.uri.fsPath);
@@ -698,23 +705,70 @@ export class Recorder implements vscode.Disposable {
       // Unreadable: nothing in it to collide with.
     }
     const worktreeDirs = new Set(worktrees.map((w) => relativeInside(folder.uri.fsPath, w.path)));
-    const listed = new Map(worktrees.flatMap((w) => (given.has(pathKey(w.path)) ? [[w.path, given.get(pathKey(w.path))!] as const] : [])));
-    const elsewhere = [...given].filter(([k]) => !worktrees.some((w) => pathKey(w.path) === k)).map(([, l]) => l);
-    const taken = [...entries.filter((e) => !worktreeDirs.has(e)), ...elsewhere];
-    const list = worktrees.includes(chosen) ? worktrees : [...worktrees, chosen];
-    const label = worktreeLabels(list, { given: listed, taken }).get(chosen.path) ?? checkoutName(chosen);
-    if (this.choices.setLabel) {
-      try {
-        const r = await this.choices.setLabel(folderKey, chosenKey, label);
-        if (r instanceof Error) this.log.appendLine(`Could not save the label ${label} of checkout ${chosen.path}: ${r.message}`);
-      } catch (err) {
-        this.log.appendLine(`Could not save the label ${label} of checkout ${chosen.path}: ${String(err)}`);
-      }
-    } else {
-      if (!this.labels.has(folderKey)) this.labels.set(folderKey, new Map());
-      this.labels.get(folderKey)!.set(chosenKey, label);
+    const taken = entries.filter((e) => !worktreeDirs.has(e));
+    this.labelsChecked.add(checked);
+    if (known !== undefined) {
+      if (!taken.includes(known)) return known;
+      this.log.appendLine(`${folder.name} now has its own ${known}, so checkout ${chosen.path} gets a new display name.`);
     }
+    const others = [...given].filter(([k]) => k !== chosenKey);
+    const listed = new Map(worktrees.flatMap((w) => others.filter(([k]) => k === pathKey(w.path)).map(([, l]) => [w.path, l] as const)));
+    const elsewhere = others.filter(([k]) => !worktrees.some((w) => pathKey(w.path) === k)).map(([, l]) => l);
+    const list = worktrees.includes(chosen) ? worktrees : [...worktrees, chosen];
+    const label = worktreeLabels(list, { given: listed, taken: [...taken, ...elsewhere] }).get(chosen.path) ?? checkoutName(chosen);
+    this.rememberLabel(folderKey, chosenKey, label);
     return label;
+  }
+
+  /** Labels remembered under `outerKey` (a folder URI, or FOLDER_PREFIXES), by inner key. */
+  private labelsIn(outerKey: string): ReadonlyMap<string, string> {
+    return this.choices.labelsOf ? this.choices.labelsOf(outerKey) : (this.labels.get(outerKey) ?? new Map<string, string>());
+  }
+
+  /** Remembers a label for good where `choices` can, else for the session; a failed save is logged. */
+  private rememberLabel(outerKey: string, innerKey: string, label: string): void {
+    const failed = (why: unknown) => this.log.appendLine(`Could not save the display name ${label}: ${why instanceof Error ? why.message : String(why)}`);
+    if (!this.choices.setLabel) {
+      if (!this.labels.has(outerKey)) this.labels.set(outerKey, new Map());
+      this.labels.get(outerKey)!.set(innerKey, label);
+      return;
+    }
+    try {
+      void Promise.resolve(this.choices.setLabel(outerKey, innerKey, label)).then((r) => r instanceof Error && failed(r), failed);
+    } catch (err) {
+      failed(err);
+    }
+  }
+
+  /**
+   * A folder's display-path prefix in a multi-root workspace, or undefined
+   * with one folder: its name, made unique among the folders' prefixes (see
+   * `folderLabels`). Once given, a folder keeps its prefix, so its files keep
+   * their mirrors as folders come and go.
+   */
+  private folderPrefixOf(folder: vscode.WorkspaceFolder): string | undefined {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length < 2) return undefined;
+    const given = this.labelsIn(FOLDER_PREFIXES);
+    const known = given.get(folder.uri.toString());
+    if (known !== undefined) return known;
+    const open = new Set(folders.map((f) => f.uri.toString()));
+    const labels = folderLabels(
+      folders.map((f) => ({ name: f.name, path: f.uri.path, given: given.get(f.uri.toString()) })),
+      [...given].filter(([k]) => !open.has(k)).map(([, l]) => l),
+    );
+    folders.forEach((f, i) => {
+      if (!given.has(f.uri.toString())) this.rememberLabel(FOLDER_PREFIXES, f.uri.toString(), labels[i]);
+    });
+    const i = folders.findIndex((f) => f.uri.toString() === folder.uri.toString());
+    return i === -1 ? folderLabels([{ name: folder.name, path: folder.uri.path }])[0] : labels[i];
+  }
+
+  /** Path used for display and mirror documents: prefixed with the folder's display prefix in multi-root workspaces, so files never collide. */
+  private displayPathOf(uri: vscode.Uri): string {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    const prefix = folder && this.folderPrefixOf(folder);
+    return prefix === undefined ? relPathOf(uri) : `${prefix}/${relPathOf(uri)}`;
   }
 
   /** Replaces every scope's watcher, so new ones pick up changed watcher settings. */
@@ -818,8 +872,8 @@ export class Recorder implements vscode.Disposable {
 
   /** Path used for display and mirrors: a chosen worktree's label goes in front, so checkouts never share a mirror. */
   private displayOf(scope: Scope | undefined, uri: vscode.Uri): string {
-    if (!scope || scope.own) return displayPathOf(uri);
-    return checkoutDisplayPath(folderPrefixOf(scope.folder) ?? '', scope.label, this.relOf(scope, uri));
+    if (!scope || scope.own) return this.displayPathOf(uri);
+    return checkoutDisplayPath(this.folderPrefixOf(scope.folder) ?? '', scope.label, this.relOf(scope, uri));
   }
 
   /**
@@ -1669,6 +1723,7 @@ interface HeldDelete {
 /**
  * Where the checkout chosen for each folder is remembered, keyed by folder
  * URI, and the display label each chosen worktree was given, by its `pathKey`.
+ * Folder prefixes are kept as labels too, under FOLDER_PREFIXES by folder URI.
  * Without the label methods, labels last for the session.
  */
 export interface CheckoutChoices {
@@ -1794,28 +1849,6 @@ function foldKey(key: string): string {
 /** Path used for filtering: relative to its workspace folder, so globs like src/** work in every folder. */
 export function relPathOf(uri: vscode.Uri): string {
   return toSlashes(vscode.workspace.asRelativePath(uri, false));
-}
-
-/**
- * Path used for display and mirror documents: prefixed with the folder's
- * display prefix in multi-root workspaces so files never collide.
- */
-export function displayPathOf(uri: vscode.Uri): string {
-  const folder = vscode.workspace.getWorkspaceFolder(uri);
-  const prefix = folder && folderPrefixOf(folder);
-  return prefix === undefined ? relPathOf(uri) : `${prefix}/${relPathOf(uri)}`;
-}
-
-/**
- * A folder's display-path prefix in a multi-root workspace: its name, made
- * unique among the open folders (see `folderLabels`). Undefined with one folder.
- */
-function folderPrefixOf(folder: vscode.WorkspaceFolder): string | undefined {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  if (folders.length < 2) return undefined;
-  const labels = folderLabels(folders.map((f) => ({ name: f.name, path: f.uri.path })));
-  const i = folders.findIndex((f) => f.uri.toString() === folder.uri.toString());
-  return i === -1 ? folder.name : labels[i];
 }
 
 /** True when `uri` is strictly inside `root`. Case is ignored on Windows. */
