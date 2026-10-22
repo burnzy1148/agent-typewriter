@@ -587,12 +587,17 @@ export async function run(): Promise<void> {
   {
     // This bundle's own copy of the config module: it reads VS Code settings
     // like the extension does, but has no repository file values.
-    const { readSettings } = await import('../src/config');
+    const { readSettings, workspaceOverrides } = await import('../src/config');
     const GLOBAL = vscode.ConfigurationTarget.Global;
     const recordedSince = (rel: string, from: number) => timeline.all().slice(from).some((e) => e.relPath === rel);
 
+    // A profile's filters sit above the user setting and the file; turn it off so those show.
+    const savedProfile = cfg().inspect('activeProfile')?.workspaceValue;
+    await cfg().update('activeProfile', undefined, WS);
+
     // A non-numeric pace falls back to the default instead of hanging playback.
     await until('idle before SET', idle);
+    const savedPace = (['charsPerSecond', 'catchUpFactor'] as const).map((k) => [k, cfg().inspect(k)?.workspaceValue] as const);
     await cfg().update('charsPerSecond', 'fast', WS);
     await cfg().update('catchUpFactor', 'auto', WS);
     assert.equal(readSettings().charsPerSecond, 35);
@@ -602,13 +607,15 @@ export async function run(): Promise<void> {
     await until('setPace.ts recorded', () => recordedSince('src/setPace.ts', atPace), 20000);
     await until('setPace.ts playback at the default pace', idle, 20000);
     assert.equal(mirrorText('src/setPace.ts'), 'export const pace = 1;\n');
-    await cfg().update('charsPerSecond', 600, WS);
-    await cfg().update('catchUpFactor', 0, WS);
+    for (const [k, v] of savedPace) await cfg().update(k, v, WS);
 
     // A string extensions setting counts as unset; recording and Stop/Start keep working.
     const savedExtensions = cfg().inspect('extensions')?.workspaceValue;
     await cfg().update('extensions', 'ts', WS);
-    assert.ok(Array.isArray(readSettings().extensions), 'a string extensions setting came through');
+    assert.deepEqual(readSettings().extensions, [], 'a string extensions setting came through');
+    await cfg().update('extensions', ['md'], GLOBAL);
+    assert.deepEqual(readSettings().extensions, ['md'], 'a valid user value lost to a wrong-typed workspace value');
+    await cfg().update('extensions', undefined, GLOBAL);
     await sleep(500);
     const atTyped = timeline.all().length;
     write('src/setTyped.ts', 'export const typed = 1;\n');
@@ -623,6 +630,13 @@ export async function run(): Promise<void> {
     await cfg().update('extensions', savedExtensions, WS);
     await until('wrong-typed extensions playback', idle);
 
+    // A wrong-typed exclude keeps the contributed default list, and does not override the file.
+    const savedExclude = cfg().inspect('exclude')?.workspaceValue;
+    await cfg().update('exclude', '**/dist/**', WS);
+    assert.deepEqual(readSettings().exclude, cfg().inspect('exclude')?.defaultValue);
+    assert.deepEqual(workspaceOverrides(['exclude']), [], 'a wrong-typed workspace exclude reported as an override');
+    await cfg().update('exclude', savedExclude, WS);
+
     // languageSpeeds merges user and workspace entries, as VS Code does.
     await cfg().update('languageSpeeds', { markdown: 80 }, GLOBAL);
     await cfg().update('languageSpeeds', { typescript: 20 }, WS);
@@ -633,9 +647,6 @@ export async function run(): Promise<void> {
     // A directory in place of the repository file drops the file's values.
     const settingsFile = path.join(root, '.agent-typewriter.json');
     const savedFile = fs.existsSync(settingsFile) ? fs.readFileSync(settingsFile, 'utf8') : undefined;
-    const savedProfile = cfg().inspect('activeProfile')?.workspaceValue;
-    // A profile's filters sit above the file; turn it off so the file's exclude shows.
-    await cfg().update('activeProfile', undefined, WS);
     const excluded = vscode.Uri.file(path.join(root, 'src/skip/a.ts'));
     fs.writeFileSync(settingsFile, JSON.stringify({ exclude: ['src/skip/**'] }));
     await until('repository file exclude to apply', () => !api.recorder.matches(excluded), 10000);

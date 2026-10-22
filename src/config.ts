@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { FilterSettings } from './filter';
 import { resolveReorderWindow } from './reorder';
 import { mergeProfiles, parseProfiles, type FilterProfile, type Profiles } from './profiles';
-import { pickLayer, type RepoValues } from './repoSettings';
+import { pickLayer, REPO_SETTING_KINDS, type RepoValues } from './repoSettings';
 import { isFiniteNumber, numberSetting } from './numberSetting';
 
 export const SECTION = 'agentTypewriter';
@@ -45,10 +45,13 @@ export function setRepoValues(values: RepoValues): void {
   repoValues = values;
 }
 
-/** Of these repository file keys, the ones a workspace setting overrides. */
+/** Of these repository file keys, the ones a workspace setting overrides (a wrong-typed one does not). */
 export function workspaceOverrides(keys: string[]): string[] {
   const c = vscode.workspace.getConfiguration(SECTION);
-  return keys.filter((k) => c.inspect(k)?.workspaceValue !== undefined);
+  return keys.filter((k) => {
+    const v = c.inspect(k)?.workspaceValue;
+    return v !== undefined && (checkFor(k)?.(v) ?? true);
+  });
 }
 
 export function readSettings(): Settings {
@@ -121,8 +124,10 @@ function layered(cfg: vscode.WorkspaceConfiguration, profile?: FilterProfile) {
     get: <T>(key: string, fallback: T, valid?: (v: unknown) => v is T): T => {
       const below = () => {
         const v = cfg.get<unknown>(key, fallback);
-        // cfg.get prefers the workspace value; when that one is wrong-typed, try the user setting.
-        return valid && !valid(v) ? cfg.inspect<unknown>(key)?.globalValue : v;
+        if (!valid || valid(v)) return v;
+        // cfg.get prefers the workspace value; when that one is wrong-typed, try the user setting, then the contributed default.
+        const i = cfg.inspect<unknown>(key);
+        return [i?.globalValue, i?.defaultValue].find(valid);
       };
       return pickLayer(cfg.inspect<unknown>(key)?.workspaceValue, above[key] ?? repoValues[key], below, valid && { valid, fallback });
     },
@@ -141,6 +146,12 @@ function resolveProfiles(cfg: vscode.WorkspaceConfiguration): Profiles {
 
 function asRecord(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+/** The type check readSettings applies to a setting, if any. */
+function checkFor(key: string): ((v: unknown) => boolean) | undefined {
+  const kind = Object.hasOwn(REPO_SETTING_KINDS, key) ? REPO_SETTING_KINDS[key] : undefined;
+  return kind === 'number' ? isFiniteNumber : kind === 'stringArray' ? isStringArray : undefined;
 }
 
 function isStringArray(v: unknown): v is string[] {
