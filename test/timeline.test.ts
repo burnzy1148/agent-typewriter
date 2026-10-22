@@ -101,3 +101,44 @@ test('PathFilter.excludesDir: only globs that cover the whole directory prune it
   assert.ok(g.excludesDir('top'));
   assert.ok(!g.excludesDir('nested/top'), 'a slashed glob matches from the root only');
 });
+
+// Skip to next picks the playing change's seq + 1, or cursor + 1 when nothing plays (extension.ts).
+function skipTarget(t: Timeline): number {
+  return (t.all().find((e) => t.stateOf(e.seq) === 'playing')?.seq ?? t.cursor) + 1;
+}
+
+test('a seek back while a change is playing overtakes it', () => {
+  const t = new Timeline(100);
+  for (let i = 0; i < 8; i++) t.push(ev(`f${i}`, '', String(i)));
+  t.seek(5);
+  const token = t.begin(5);
+  t.seek(2);
+  assert.equal(t.stateOf(5), 'pending');
+  assert.ok(!t.all().some((e) => t.stateOf(e.seq) === 'playing'));
+  assert.equal(skipTarget(t), 3);
+  t.complete(5, token);
+  assert.equal(t.cursor, 2);
+  assert.equal(t.stateOf(2), 'pending');
+});
+
+test('two quick skips while a change is playing skip two changes', () => {
+  const t = new Timeline(100);
+  for (let i = 0; i < 8; i++) t.push(ev(`f${i}`, '', String(i)));
+  t.seek(5);
+  t.begin(5);
+  t.seek(skipTarget(t));
+  assert.equal(t.cursor, 6);
+  assert.equal(skipTarget(t), 7);
+});
+
+test('seekToEnd while a change is playing leaves nothing playing or queued', () => {
+  const t = new Timeline(100);
+  for (let i = 0; i < 8; i++) t.push(ev(`f${i}`, '', String(i)));
+  t.seek(5);
+  const token = t.begin(5);
+  t.seekToEnd();
+  assert.ok(!t.all().some((e) => t.stateOf(e.seq) === 'playing'));
+  assert.equal(t.pendingCount(), 0);
+  t.complete(5, token);
+  assert.equal(t.pendingCount(), 0);
+});
