@@ -30,7 +30,7 @@ import {
 import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { KeyedSerial } from './keyedSerial';
-import { ReorderBuffer, clampOrderKey } from './reorder';
+import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
@@ -529,6 +529,7 @@ export class Recorder implements vscode.Disposable {
         }
       }
       for (const key of this.provisional.keys()) if (!next.has(key)) this.provisional.delete(key);
+      for (const key of this.goneRefreshed.keys()) if (!next.has(key)) this.goneRefreshed.delete(key);
       for (const [key, scope] of next) {
         const old = this.scopes.get(key);
         this.carryProvisional(key, scope);
@@ -862,7 +863,8 @@ export class Recorder implements vscode.Disposable {
           this.scheduleWorktreeRefresh();
         } else {
           if (!missing) this.goneRefreshed.delete(key);
-          this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS));
+          // A delete during the stats may have armed a sooner check.
+          this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS), true);
         }
       });
     }, delayMs);
@@ -1522,20 +1524,19 @@ export class Recorder implements vscode.Disposable {
    */
   private holdDelete(scope: Scope, uri: vscode.Uri, relPath: string, before: Snapshot, burst: Burst): void {
     const folderKey = scope.folder.uri.toString();
-    const at = burst.deletedAt ?? burst.lastArrival;
-    const endHold = this.reorder.hold(at, DELETE_ORDER_HOLD_MAX_MS);
+    const order = this.reorder.hold(burst.deletedAt ?? burst.lastArrival, DELETE_ORDER_HOLD_MAX_MS);
     burst.held = true;
     this.note(`delete held ${relPath}`);
     this.heldDeletes.set(uri.toString(), {
       uri,
       relPath,
       before,
-      at,
+      order,
       folderKey,
       root: scope.root.toString(),
       session: burst.session,
       done: () => {
-        endHold();
+        order.end();
         burst.done();
       },
     });
@@ -1577,7 +1578,7 @@ export class Recorder implements vscode.Disposable {
           this.note(`${scope && current() ? 'checkout removed' : 'checkout changed'}, dropped ${held.relPath}`);
           return;
         }
-        this.record(held.uri, held.relPath, 'delete', held.before.text, '', held.before.eol, held.at);
+        this.record(held.uri, held.relPath, 'delete', held.before.text, '', held.before.eol, held.order.key());
       })
       .catch((err) => this.log.appendLine(`Failed to record ${held.relPath}: ${String(err)}`))
       .finally(held.done);
@@ -1740,8 +1741,8 @@ interface HeldDelete {
   uri: vscode.Uri;
   relPath: string;
   before: Snapshot;
-  /** When the delete happened: its place in write order. */
-  at: number;
+  /** Keeps later changes back until it is decided; its key is the delete's place in write order. */
+  order: OrderHold;
   folderKey: string;
   /** The recorded root it was deleted from; recording another drops it. */
   root: string;

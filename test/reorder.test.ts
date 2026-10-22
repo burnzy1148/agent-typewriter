@@ -240,7 +240,7 @@ for (const window of [100, 0]) {
   test(`reorder: a hold keeps later keys back past their cap until it ends, and the decided item lands first (window ${window})`, () => {
     const { clock, out, buf } = setup(window);
     clock.t = 1000;
-    const end = buf.hold(1000, 15_000);
+    const h = buf.hold(1000, 15_000);
     buf.add('early', 990, 'e');
     clock.advance(window);
     assert.deepEqual(out, ['early'], 'a key before the hold was kept back');
@@ -248,8 +248,8 @@ for (const window of [100, 0]) {
     buf.add('create b', 1500, 'b');
     clock.advance(5000);
     assert.deepEqual(out, ['early'], 'a later key went out during the hold');
-    buf.add('delete a', 1000, 'a');
-    end();
+    buf.add('delete a', h.key(), 'a');
+    h.end();
     assert.deepEqual(out, ['early', 'delete a', 'create b']);
     assert.equal(buf.size, 0);
   });
@@ -258,11 +258,11 @@ for (const window of [100, 0]) {
 test('reorder: an ended hold keeps nothing back', () => {
   const { clock, out, buf } = setup(0);
   clock.t = 1000;
-  const end = buf.hold(1000, 15_000);
-  end();
+  const h = buf.hold(1000, 15_000);
+  h.end();
   buf.add('b', 1000, 'b');
   assert.deepEqual(out, ['b']);
-  end();
+  h.end();
   assert.deepEqual(out, ['b'], 'ending a hold twice released something twice');
 });
 
@@ -280,17 +280,20 @@ test('reorder: a hold that never ends stops keeping items back after its own bou
   assert.deepEqual(out, ['b', 'c'], 'an expired hold still kept items back');
 });
 
-test('reorder: a backward clock step during a hold keeps it to its bound and its place', () => {
+test('reorder: a backward clock step during a hold moves its key back with it, so the decided item still lands first', () => {
   const { clock, out, buf } = setup(0);
   clock.t = 1000;
-  const end = buf.hold(1000, 15_000);
+  const h = buf.hold(1000, 15_000);
   clock.advance(1000);
+  // A step is measured from the buffer's last clock reading.
+  assert.equal(h.key(), 1000);
   clock.offset -= 3_600_000;
   // Written after the hold began, on the stepped-back clock.
   buf.add('b', clock.now(), 'b');
   assert.deepEqual(out, [], 'a write after the step went out ahead of the hold');
-  buf.add('a', 1000 - 3_600_000, 'a');
-  end();
+  assert.equal(h.key(), 1000 - 3_600_000);
+  buf.add('a', h.key(), 'a');
+  h.end();
   assert.deepEqual(out, ['a', 'b']);
   assert.ok(clock.requested.every((ms) => ms <= 15_000), `delays ${clock.requested.join(', ')}`);
 });

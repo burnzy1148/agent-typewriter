@@ -41,6 +41,14 @@ interface Hold {
   until: number;
 }
 
+/** A hold the caller ends once it has added the decided item, if any. */
+export interface OrderHold {
+  /** The hold's write time, moved back with any backward clock step since: the key to add the decided item with. */
+  key(): number;
+  /** Ends the hold; later calls do nothing. */
+  end(): void;
+}
+
 /** setTimeout fires at once for delays above this. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -96,14 +104,20 @@ export class ReorderBuffer<T> {
 
   /**
    * Keeps items keyed at or after `key` back, whatever their cap, until the
-   * returned function is called or `maxMs` has passed. Items keyed before it
-   * go out as usual. Add the decided item, if any, before ending the hold.
+   * hold is ended or `maxMs` has passed. Items keyed before it go out as
+   * usual. Add the decided item, if any, at the hold's key before ending it.
    */
-  hold(key: number, maxMs: number): () => void {
+  hold(key: number, maxMs: number): OrderHold {
     const entry: Hold = { key, until: this.now() + Math.max(0, maxMs) };
     this.holds.add(entry);
-    return () => {
-      if (this.holds.delete(entry)) this.pump();
+    return {
+      key: () => {
+        this.now(); // shift for a clock step since the last reading
+        return entry.key;
+      },
+      end: () => {
+        if (this.holds.delete(entry)) this.pump();
+      },
     };
   }
 
