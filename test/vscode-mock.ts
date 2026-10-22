@@ -59,6 +59,10 @@ export class EventEmitter<T> {
   fire(e: T): void {
     for (const l of [...this.listeners]) l(e);
   }
+  /** How many listeners are registered and not disposed of. */
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
   dispose(): void {
     this.listeners.clear();
   }
@@ -100,6 +104,9 @@ export const mock = {
   readFileGate: undefined as Promise<void> | undefined,
   onReadFile: undefined as ((fsPath: string) => void) | undefined,
   configEmitter: new EventEmitter<{ affectsConfiguration(section: string): boolean }>(),
+  /** Editor saves: fire with a document-like `{ uri, getText() }` (will-save gets `{ document }`). */
+  willSave: new EventEmitter<{ document: { uri: Uri; getText(): string } }>(),
+  didSave: new EventEmitter<{ uri: Uri; getText(): string }>(),
   /** Sets the folders, as a window opened on them. */
   open(...dirs: string[]): void {
     this.folders = dirs.map((d, index) => ({ uri: Uri.file(d), name: nodePath.basename(d), index }));
@@ -202,8 +209,8 @@ export const workspace = {
       dispose: () => (w.disposed = true),
     };
   },
-  onWillSaveTextDocument: noop.event,
-  onDidSaveTextDocument: noop.event,
+  onWillSaveTextDocument: mock.willSave.event,
+  onDidSaveTextDocument: mock.didSave.event,
   onDidChangeWorkspaceFolders: noop.event,
   onDidChangeConfiguration: mock.configEmitter.event,
 };
