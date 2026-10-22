@@ -2,7 +2,7 @@
   "name": "agent-typewriter",
   "displayName": "Agent Typewriter",
   "description": "Watches files change on disk (from Claude Code or any agent) and replays each change as if a person were typing it, flipping between files in the order they changed.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "burnzy1148",
   "license": "MIT",
   "icon": "images/icon.png",

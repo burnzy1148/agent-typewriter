@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.2.0 (2026-10-21)
+
+- Only the folder's own git checkout is recorded; other worktrees inside it are skipped. **Choose Checkout...** records another worktree instead, inside or outside the workspace.
+- Marketplace icon and gallery banner.
+
+## 0.1.0 (2026-10-21)
 
 First public release.
 
@@ -12,4 +17,8 @@ First public release.
 - CRLF files keep CRLF in the replay.
 - Clean, git-tracked files use git as their baseline instead of memory (`gitBaselines`); other baselines fit a memory budget (`baselineBudgetMB`) instead of a fixed file cap.
 - Filtering by extension allow-list, include globs, and exclude globs, with Explorer shortcuts.
-- Only the folder's own git checkout is recorded; other worktrees inside it are skipped. **Choose Checkout...** records another worktree instead, inside or outside the workspace.
+- Recorded changes and the playback position are kept across reloads and restarts (`persistHistory`).
+- **Save Session to File...** and **Load Session from File...** take a recorded run to another window or machine.
+- **Explorer > Playback** panel with play, pause, skip, seek, and speed controls.
+- Optionally skip paths git ignores (`respectGitignore`).
+- A committed `.agent-typewriter.json` gives a repository its own settings, including named filter profiles (`profiles`).
