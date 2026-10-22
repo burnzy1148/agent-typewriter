@@ -583,6 +583,141 @@ export async function run(): Promise<void> {
   // --- review group SET
 
   // --- review group ACT
+  // ACT a. Watch Only This and Add to Watch on the workspace root write a
+  // folder-relative glob, and a folder named like a route ("[id]") matches itself.
+  const includeValue = () => cfg().inspect('include')?.workspaceValue;
+  const atRoot = timeline.all().length;
+  await vscode.commands.executeCommand('agentTypewriter.watchOnlyThis', folder.uri);
+  assert.deepEqual(includeValue(), ['**/*'], 'Watch Only This on the root did not write a whole-folder glob');
+  await sleep(500);
+  write('src/actRoot.ts', 'export const actRoot = 1;\n');
+  await until('write after Watch Only This on the root', () => eventsFor('src/actRoot.ts', atRoot).length === 1, 20000);
+  await vscode.commands.executeCommand('agentTypewriter.addToWatch', folder.uri);
+  assert.deepEqual(includeValue(), ['**/*'], 'Add to Watch on the root did not write a whole-folder glob');
+  await sleep(500);
+  write('src/actRoot.ts', 'export const actRoot = 2;\n');
+  await until('write after Add to Watch on the root', () => eventsFor('src/actRoot.ts', atRoot).length === 2, 20000);
+  fs.mkdirSync(path.join(root, 'src/[id]'), { recursive: true });
+  await sleep(1000);
+  await vscode.commands.executeCommand('agentTypewriter.watchOnlyThis', uriOf('src/[id]'));
+  assert.deepEqual(includeValue(), ['src/[[]id[]]/**'], 'glob characters in the selection were not escaped');
+  await sleep(500);
+  const atRoute = timeline.all().length;
+  write('src/[id]/page.ts', 'export const page = 1;\n');
+  await until('write in a [id] folder after Watch Only This', () => eventsFor('src/[id]/page.ts', atRoute).length === 1, 20000);
+  await vscode.commands.executeCommand('agentTypewriter.resetFilters');
+  await until('Watch Only This playback', idle);
+  console.log('[it] ACT: Watch Only This on the root and on [id] ok');
+
+  // ACT b. Raising maxFileSizeKB while watching takes baselines for files that now fit.
+  await cfg().update('maxFileSizeKB', 1, WS);
+  await settle();
+  const bigText = Array.from({ length: 120 }, (_, i) => `export const big${i} = ${i};\n`).join('');
+  const atBig = timeline.all().length;
+  write('src/big.ts', bigText);
+  await sleep(1500);
+  api.recorder.drainHeld();
+  assert.deepEqual(eventsFor('src/big.ts', atBig), [], 'a file over maxFileSizeKB was recorded');
+  await cfg().update('maxFileSizeKB', 512, WS);
+  await until('big.ts baseline after raising maxFileSizeKB', () => api.recorder.hasBaseline(uriOf('src/big.ts')), 20000);
+  write('src/big.ts', bigText + 'export const grown = true;\n');
+  await until('big.ts recorded', () => eventsFor('src/big.ts', atBig).length > 0, 20000);
+  await sleep(500);
+  await until('big.ts playback', idle);
+  const bigEvents = eventsFor('src/big.ts', atBig);
+  assert.equal(bigEvents.length, 1, `expected one big.ts change, got ${bigEvents.length}`);
+  assert.equal(bigEvents[0].kind, 'modify');
+  assert.equal(bigEvents[0].before, bigText, 'the first change after raising maxFileSizeKB does not start from the file text');
+  assert.equal(mirrorText('src/big.ts'), disk('src/big.ts'));
+  await cfg().update('maxFileSizeKB', undefined, WS);
+  console.log('[it] ACT: raising maxFileSizeKB ok');
+
+  // ACT c. Clear Buffer and Load Session replace changes still held for reordering.
+  const quiet = async () => {
+    for (let n = -1; n !== timeline.all().length; ) {
+      n = timeline.all().length;
+      await sleep(reorderWindow + 1500);
+    }
+    await until('playback before a quiet check', idle);
+  };
+  const heldNow = (rel: string) => api.recorder.describeActivity().includes(`recorded create ${rel}`);
+  await quiet();
+  write('src/actHeld.ts', 'export const held = 1;\n');
+  await until('actHeld.ts held for reordering', () => heldNow('src/actHeld.ts'), 20000);
+  await vscode.commands.executeCommand('agentTypewriter.clear');
+  await sleep(reorderWindow + 1500);
+  assert.deepEqual(timeline.all().map((e) => e.relPath), [], 'a change held at Clear Buffer came back after it');
+
+  write('src/actSaved.ts', 'export const saved = 1;\n');
+  await until('actSaved.ts recorded', () => eventsFor('src/actSaved.ts', 0).length === 1, 20000);
+  const actSession = path.join(path.dirname(process.env.IT_EXPECT!), 'act-session.json');
+  await vscode.commands.executeCommand('agentTypewriter.saveSession', vscode.Uri.file(actSession));
+  const savedPaths = timeline.all().map((e) => e.relPath);
+  write('src/actHeld2.ts', 'export const held2 = 1;\n');
+  await until('actHeld2.ts held for reordering', () => heldNow('src/actHeld2.ts'), 20000);
+  await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(actSession));
+  await sleep(reorderWindow + 1500);
+  assert.deepEqual(timeline.all().map((e) => e.relPath), savedPaths, 'a change held at Load Session was appended to the loaded one');
+  if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
+  await until('loaded session playback', idle);
+  console.log('[it] ACT: Clear Buffer and Load Session drain held changes ok');
+
+  // ACT d. A .git file is git metadata: never recorded, unlike a file next to it.
+  const libGitDir = `${root}-act-libgit`;
+  // One level deep, like otherRepo above: git writes actlib/.git as a gitfile.
+  fs.mkdirSync(path.join(root, 'actlib'));
+  await sleep(1000);
+  const atGitfile = timeline.all().length;
+  gitIn(path.join(root, 'actlib'), 'init', '-q', '--separate-git-dir', libGitDir);
+  await sleep(2000);
+  write('actlib/index.ts', 'export const lib = 1;\n');
+  await until('file next to a gitfile recorded', () => eventsFor('actlib/index.ts', atGitfile).length === 1, 20000);
+  await sleep(1500);
+  api.recorder.drainHeld();
+  assert.deepEqual(eventsFor('actlib/.git', atGitfile), [], 'a .git file was recorded');
+  await until('gitfile playback', idle);
+
+  // A focus refresh while recording counts worktrees added and removed elsewhere,
+  // and a chosen worktree's own .git file gets no baseline and is not recorded.
+  const worktreeCount = async () => (await api.refreshCheckouts()).get(folder.uri.toString())?.worktrees;
+  const countBefore = await worktreeCount();
+  assert.ok(countBefore, 'the folder has no checkouts');
+  const sideDir = `${root}-actside`;
+  gitIn(root, 'worktree', 'add', '-q', '-b', 'actside', sideDir);
+  assert.equal(await worktreeCount(), countBefore + 1, 'a refresh while recording missed a worktree added elsewhere');
+  await choose(sideDir);
+  await until('actside chosen', () => own() === false, 20000);
+  const sideUris = (rel: string) => [sideDir, fs.realpathSync.native(sideDir)].map((d) => vscode.Uri.file(path.join(d, rel)));
+  await until('actside baseline', () => sideUris('src/committed1.ts').some((u) => api.recorder.hasBaseline(u)), 20000);
+  assert.ok(!sideUris('.git').some((u) => api.recorder.hasBaseline(u)), "the chosen worktree's .git file got a baseline");
+  const atSide = timeline.all().length;
+  fs.writeFileSync(path.join(sideDir, '.git'), fs.readFileSync(path.join(sideDir, '.git')));
+  await sleep(1500);
+  api.recorder.drainHeld();
+  assert.deepEqual(since(atSide).map((e) => `${e.kind} ${e.relPath}`), [], "rewriting the chosen worktree's .git file was recorded");
+  await choose('');
+  await until('own checkout after actside', () => own() === true, 20000);
+  gitIn(root, 'worktree', 'remove', '--force', sideDir);
+  assert.equal(await worktreeCount(), countBefore, 'a refresh while recording missed a worktree removed elsewhere');
+  console.log('[it] ACT: gitfiles and worktree count while recording ok');
+
+  // ACT e. The repository file's history settings beat the user's at the next
+  // activation: restore.ts checks every change comes back and stays saved.
+  const repoBefore = fs.existsSync(repoFile) ? JSON.parse(fs.readFileSync(repoFile, 'utf8')) : {};
+  fs.writeFileSync(repoFile, JSON.stringify({ ...repoBefore, historyLimit: 1000, persistHistory: true }));
+  await sleep(2000);
+  await cfg().update('historyLimit', 10, vscode.ConfigurationTarget.Global);
+  await cfg().update('persistHistory', false, vscode.ConfigurationTarget.Global);
+  const atHistory = timeline.all().length;
+  for (let i = 0; i < 12; i++) {
+    write(`src/actHistory${i}.ts`, `export const history${i} = ${i};\n`);
+    await sleep(150);
+  }
+  await until('history changes recorded', () => since(atHistory).filter((e) => e.relPath.startsWith('src/actHistory')).length === 12, 20000);
+  await until('history playback', idle);
+  assert.ok(timeline.all().length > 12, 'the user historyLimit cut the buffer though the repository file sets one');
+  assert.ok(api.store?.isRunning, 'the user persistHistory stopped saving though the repository file turns it on');
+  console.log(`[it] ACT: repository file history settings ok (${timeline.all().length} changes)`);
 
   // --- review group REC1
 

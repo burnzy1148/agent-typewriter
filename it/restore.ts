@@ -104,6 +104,15 @@ export async function run(): Promise<void> {
   // --- review group PLAY
 
   // --- review group ACT
+  // suite.ts set user-level historyLimit 10 and persistHistory false below the
+  // repository file's 1000 and true, so section 1 restored every change, and
+  // the saved timeline still holds them all.
+  const actStore = api.store!;
+  assert.ok(actStore.isRunning, 'the timeline is not saved though the repository file turns persistHistory on');
+  assert.ok(timeline.all().length > 10, `only ${timeline.all().length} changes; the user historyLimit applied`);
+  await actStore.flush();
+  assert.equal(actStore.load()?.events.length, timeline.all().length, 'the saved timeline lost changes');
+  console.log(`[it] ACT: repository file history settings survive the reload (${timeline.all().length} changes)`);
 
   // --- review group REC1
 }
