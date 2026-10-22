@@ -185,8 +185,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       { location: vscode.ProgressLocation.Window, title: 'Agent Typewriter: snapshotting files' },
       () => recorder.start(),
     );
-    await setWatching(true);
-    vscode.window.setStatusBarMessage(`Agent Typewriter: watching ${recorder.watchedCount} files (${recorder.describeFilter()})`, 4000);
+    // Stop may have run while the start was still snapshotting.
+    await setWatching(recorder.isRunning);
+    if (recorder.isRunning) {
+      vscode.window.setStatusBarMessage(`Agent Typewriter: watching ${recorder.watchedCount} files (${recorder.describeFilter()})`, 4000);
+    }
   });
 
   register('agentTypewriter.stop', async () => {
