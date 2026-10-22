@@ -150,8 +150,6 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('agentTypewriter.stop');
   console.log('[it] chosen checkout survives reload ok');
 
-  // Review fix groups add their sections directly below their own anchor (see suite.ts).
-  // --- review group PLAY
   // --- PLAY. After a reload the mirror filesystem starts empty. Skip to Latest
   // fills every file's mirror, not only the newest one, with its line ending.
   {
@@ -204,7 +202,6 @@ export async function run(): Promise<void> {
     console.log('[it] Skip to Latest fills unplayed mirrors ok');
   }
 
-  // --- review group ACT
   // suite.ts set user-level historyLimit 10 and persistHistory false below the
   // repository file's 1000 and true. Section 1 restored all of the expected
   // changes, more than the user limit, and the saved timeline still holds what
@@ -215,6 +212,4 @@ export async function run(): Promise<void> {
   await actStore.flush();
   assert.equal(actStore.load()?.events.length, timeline.all().length, 'the saved timeline lost changes');
   console.log(`[it] ACT: repository file history settings survive the reload (${expected.events.length} changes restored)`);
-
-  // --- review group REC1
 }

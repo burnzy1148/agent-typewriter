@@ -80,7 +80,13 @@ const DELETE_SETTLE_MS = 3000;
 /** Longest a delete is held, however long deletes keep coming (a build cleaning its output, say). */
 const DELETE_HOLD_MAX_MS = 15_000;
 
-/** Longest wait between checks of whether a chosen worktree git calls prunable is gone yet. */
+/**
+ * Longest a held delete keeps later changes from reaching the timeline: its
+ * hold, plus time for the decision's own read.
+ */
+const DELETE_ORDER_HOLD_MAX_MS = DELETE_HOLD_MAX_MS + DELETE_SETTLE_MS;
+
+/** Longest wait between checks of whether a chosen worktree is gone. */
 const GONE_CHECK_MAX_MS = 5000;
 
 /**
@@ -539,7 +545,8 @@ export class Recorder implements vscode.Disposable {
       this.scopes.clear();
       for (const [key, scope] of next) this.scopes.set(key, scope);
       // A chosen worktree git calls prunable is being removed: fall back once its root is gone.
-      for (const scope of next.values()) if (!scope.own && scope.prunable) this.checkCheckoutGone(scope);
+      // Any other is checked now and then too, in case its watcher says nothing as it goes.
+      for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS);
       this.scheduleWorktreeRetry();
       this.scopeEmitter.fire();
     });
@@ -819,11 +826,13 @@ export class Recorder implements vscode.Disposable {
   }
 
   /**
-   * Something was deleted in a chosen worktree. Watchers don't reliably report
-   * a removed root or its `.git` file, so check whether the checkout itself is
-   * gone, once the burst of deletes settles. One git still lists without its
-   * `.git` (prunable) is being removed: it is checked again, less often each
-   * time, until its root is gone too.
+   * Something was deleted in a chosen worktree, or it is time to look again.
+   * Watchers don't reliably report a removed root or its `.git` file, and on
+   * Windows the watcher of a removed root may report nothing at all, so check
+   * whether the checkout itself is gone, once the burst of deletes settles.
+   * While it stays chosen it is checked again, less often each time, down to
+   * every GONE_CHECK_MAX_MS. One git still lists without its `.git`
+   * (prunable) is being removed and falls back once its root is gone too.
    */
   private checkCheckoutGone(scope: Scope, delayMs = 300): void {
     const key = scope.folder.uri.toString();
@@ -838,7 +847,7 @@ export class Recorder implements vscode.Disposable {
           if (!this.running || this.scopes.get(key)?.checkout.toString() !== current.checkout.toString()) return;
           const prunable = this.scopes.get(key)!.prunable;
           if (!root || (!git && !prunable)) this.scheduleWorktreeRefresh();
-          else if (!git) this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS));
+          else this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS));
         });
       }, delayMs),
     );
@@ -1491,24 +1500,28 @@ export class Recorder implements vscode.Disposable {
 
   /**
    * Holds a file's delete in a chosen worktree until deletes there have been
-   * quiet for DELETE_SETTLE_MS. Its burst stays pending in the reorder buffer
-   * meanwhile, which keeps later changes behind it only up to the buffer's
-   * cap (twice reorderWindowMs): a change to another file made during the
-   * hold can reach the timeline before the delete.
+   * quiet for DELETE_SETTLE_MS. The reorder buffer keeps changes written
+   * after it back meanwhile, so it keeps its place in write order: a rename
+   * done as delete-then-create replays in that order.
    */
   private holdDelete(scope: Scope, uri: vscode.Uri, relPath: string, before: Snapshot, burst: Burst): void {
     const folderKey = scope.folder.uri.toString();
+    const at = burst.deletedAt ?? burst.lastArrival;
+    const endHold = this.reorder.hold(at, DELETE_ORDER_HOLD_MAX_MS);
     burst.held = true;
     this.note(`delete held ${relPath}`);
     this.heldDeletes.set(uri.toString(), {
       uri,
       relPath,
       before,
-      at: burst.deletedAt ?? burst.lastArrival,
+      at,
       folderKey,
       root: scope.root.toString(),
       session: burst.session,
-      done: burst.done,
+      done: () => {
+        endHold();
+        burst.done();
+      },
     });
     this.settleDeletes(folderKey);
   }

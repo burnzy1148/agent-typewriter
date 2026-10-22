@@ -236,6 +236,74 @@ test('reorder: drain releases everything held, in order', () => {
   assert.deepEqual(out, ['a', 'b'], 'drained items released twice');
 });
 
+for (const window of [100, 0]) {
+  test(`reorder: a hold keeps later keys back past their cap until it ends, and the decided item lands first (window ${window})`, () => {
+    const { clock, out, buf } = setup(window);
+    clock.t = 1000;
+    const end = buf.hold(1000, 15_000);
+    buf.add('early', 990, 'e');
+    clock.advance(window);
+    assert.deepEqual(out, ['early'], 'a key before the hold was kept back');
+    clock.t = 1500;
+    buf.add('create b', 1500, 'b');
+    clock.advance(5000);
+    assert.deepEqual(out, ['early'], 'a later key went out during the hold');
+    buf.add('delete a', 1000, 'a');
+    end();
+    assert.deepEqual(out, ['early', 'delete a', 'create b']);
+    assert.equal(buf.size, 0);
+  });
+}
+
+test('reorder: an ended hold keeps nothing back', () => {
+  const { clock, out, buf } = setup(0);
+  clock.t = 1000;
+  const end = buf.hold(1000, 15_000);
+  end();
+  buf.add('b', 1000, 'b');
+  assert.deepEqual(out, ['b']);
+  end();
+  assert.deepEqual(out, ['b'], 'ending a hold twice released something twice');
+});
+
+test('reorder: a hold that never ends stops keeping items back after its own bound', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1000;
+  buf.hold(1000, 15_000);
+  buf.add('b', 1100, 'b');
+  clock.advance(14_999);
+  assert.deepEqual(out, []);
+  clock.advance(1);
+  assert.deepEqual(out, ['b']);
+  buf.add('c', clock.now(), 'c');
+  clock.advance(100);
+  assert.deepEqual(out, ['b', 'c'], 'an expired hold still kept items back');
+});
+
+test('reorder: a backward clock step during a hold keeps it to its bound and its place', () => {
+  const { clock, out, buf } = setup(0);
+  clock.t = 1000;
+  const end = buf.hold(1000, 15_000);
+  clock.advance(1000);
+  clock.offset -= 3_600_000;
+  // Written after the hold began, on the stepped-back clock.
+  buf.add('b', clock.now(), 'b');
+  assert.deepEqual(out, [], 'a write after the step went out ahead of the hold');
+  buf.add('a', 1000 - 3_600_000, 'a');
+  end();
+  assert.deepEqual(out, ['a', 'b']);
+  assert.ok(clock.requested.every((ms) => ms <= 15_000), `delays ${clock.requested.join(', ')}`);
+});
+
+test('reorder: drain releases items a hold keeps back', () => {
+  const { clock, out, buf } = setup(0);
+  clock.t = 1000;
+  buf.hold(1000, 15_000);
+  buf.add('b', 1100, 'b');
+  buf.drain();
+  assert.deepEqual(out, ['b']);
+});
+
 test('clampOrderKey: in-range mtime is kept', () => {
   assert.equal(clampOrderKey(950, 1000, 1100, 250), 950);
 });
