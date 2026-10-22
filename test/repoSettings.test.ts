@@ -18,9 +18,9 @@ test('valid values pass through', () => {
     JSON.stringify({
       include: ['src/**'],
       extensions: [],
-      charsPerSecond: 50,
+      charsPerMinute: 500,
       autoStart: true,
-      languageSpeeds: { markdown: 60 },
+      languageSpeeds: { markdown: 600 },
       reorderWindowMs: 'auto',
       viewColumn: 'active',
     }),
@@ -29,9 +29,9 @@ test('valid values pass through', () => {
   assert.deepEqual(r.values, {
     include: ['src/**'],
     extensions: [],
-    charsPerSecond: 50,
+    charsPerMinute: 500,
     autoStart: true,
-    languageSpeeds: { markdown: 60 },
+    languageSpeeds: { markdown: 600 },
     reorderWindowMs: 'auto',
     viewColumn: 'active',
   });
@@ -52,12 +52,18 @@ test('unknown keys are dropped and reported', () => {
   assert.match(r.problems[1], /speed/);
 });
 
+test('deprecated charsPerSecond is still a known key', () => {
+  const r = parsed('{"charsPerSecond": 10}');
+  assert.deepEqual(r.values, { charsPerSecond: 10 });
+  assert.deepEqual(r.problems, []);
+});
+
 test('wrong types are dropped and reported, the rest kept', () => {
   const r = parsed(
     JSON.stringify({
       extensions: 'ts',
       include: ['ok', 3],
-      charsPerSecond: 50,
+      charsPerMinute: 500,
       jitter: '0.5',
       autoStart: 'yes',
       viewColumn: 'left',
@@ -65,7 +71,7 @@ test('wrong types are dropped and reported, the rest kept', () => {
       reorderWindowMs: true,
     }),
   );
-  assert.deepEqual(r.values, { charsPerSecond: 50 });
+  assert.deepEqual(r.values, { charsPerMinute: 500 });
   assert.deepEqual(
     r.problems.map((p) => p.match(/^"(\w+)"/)?.[1]),
     ['extensions', 'include', 'jitter', 'autoStart', 'viewColumn', 'languageSpeeds', 'reorderWindowMs'],
@@ -76,7 +82,7 @@ test('wrong types are dropped and reported, the rest kept', () => {
 
 test('non-finite numbers are not numbers', () => {
   // JSON cannot express NaN, but 1e999 parses to Infinity.
-  assert.deepEqual(parsed('{"charsPerSecond": 1e999}').values, {});
+  assert.deepEqual(parsed('{"charsPerMinute": 1e999}').values, {});
 });
 
 test('a non-object root or invalid JSON fails', () => {
@@ -96,6 +102,25 @@ test('pickLayer: workspace, then file, then below', () => {
   assert.equal(pickLayer(undefined, 'file', below), 'file');
   assert.equal(pickLayer(undefined, undefined, below), 'user-or-default');
   assert.deepEqual(pickLayer<string[]>([], ['file'], () => ['x']), [], 'an empty workspace array still wins');
+});
+
+test('pickLayer: without a file value, VS Code resolution decides', () => {
+  // VS Code merges objects across user and workspace; the workspace value alone would drop user entries.
+  assert.deepEqual(pickLayer({ ts: 20 }, undefined, () => ({ md: 80, ts: 20 })), { md: 80, ts: 20 });
+  assert.deepEqual(pickLayer({ ts: 20 }, { py: 5 }, () => ({ md: 80, ts: 20 })), { ts: 20 }, 'the workspace value still beats the file');
+});
+
+test('pickLayer: a check treats wrong-typed values as unset', () => {
+  const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === 'string');
+  const check = { valid: isStrings, fallback: ['default'] };
+  for (const bad of ['ts', null, ['ts', 1]]) {
+    assert.deepEqual(pickLayer(bad, ['file'], () => bad, check), ['file'], `workspace ${JSON.stringify(bad)} beat the file`);
+    assert.deepEqual(pickLayer(undefined, undefined, () => bad, check), ['default'], `below ${JSON.stringify(bad)} was used`);
+    assert.deepEqual(pickLayer(undefined, bad, () => ['user'], check), ['user'], `file ${JSON.stringify(bad)} was used`);
+  }
+  assert.deepEqual(pickLayer([], ['file'], () => ['x'], check), [], 'an empty workspace array still wins');
+  assert.deepEqual(pickLayer(['ws'], ['file'], () => ['x'], check), ['ws']);
+  assert.deepEqual(pickLayer(undefined, undefined, () => ['user'], check), ['user']);
 });
 
 test('changedKeys compares by value', () => {

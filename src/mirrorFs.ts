@@ -8,9 +8,11 @@ export const MIRROR_SCHEME = 'agent-typewriter';
  * The real files are never touched. Each watched file gets a mirror document
  * at agent-typewriter:/<relative path>, so tabs show the real file name and
  * VS Code picks the right language mode and syntax highlighting from the
- * extension. Being a writable filesystem (unlike a read-only content
- * provider) is what lets the player apply edits through the editor API and
- * save quietly so closing a tab never prompts.
+ * extension. Files are read-only to the editor: the user can't type into a
+ * mirror, it never becomes dirty, so closing a tab never prompts, and VS Code
+ * leaves its text alone (no save participants, no stripping of unusual line
+ * terminators). The player still edits the open documents through
+ * workspace.applyEdit, and keeps the text stored here with store().
  */
 export class MirrorFileSystem implements vscode.FileSystemProvider {
   private files = new Map<string, { data: Uint8Array; mtime: number; ctime: number }>();
@@ -37,7 +39,9 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
 
   stat(uri: vscode.Uri): vscode.FileStat {
     const f = this.files.get(uri.path);
-    if (f) return { type: vscode.FileType.File, ctime: f.ctime, mtime: f.mtime, size: f.data.byteLength };
+    if (f) {
+      return { type: vscode.FileType.File, ctime: f.ctime, mtime: f.mtime, size: f.data.byteLength, permissions: vscode.FilePermission.Readonly };
+    }
     if (this.isDirectory(uri.path)) return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
     throw vscode.FileSystemError.FileNotFound(uri);
   }
@@ -70,6 +74,21 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     const existing = this.files.get(uri.path);
     this.files.set(uri.path, { data: content, mtime: now, ctime: existing?.ctime ?? now });
     this.emitter.fire([{ type: existing ? vscode.FileChangeType.Changed : vscode.FileChangeType.Created, uri }]);
+  }
+
+  /**
+   * Replaces a file's bytes without telling VS Code, so an open document that
+   * is being typed into is not reloaded. A document that is opened or reverted
+   * later reads these bytes.
+   */
+  store(uri: vscode.Uri, content: Uint8Array): void {
+    const existing = this.files.get(uri.path);
+    if (!existing) {
+      this.writeFile(uri, content);
+      return;
+    }
+    // A strictly newer mtime, so a later reload never mistakes new bytes for the old ones.
+    this.files.set(uri.path, { data: content, mtime: Math.max(Date.now(), existing.mtime + 1), ctime: existing.ctime });
   }
 
   delete(uri: vscode.Uri): void {

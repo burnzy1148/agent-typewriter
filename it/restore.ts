@@ -79,7 +79,8 @@ export async function run(): Promise<void> {
   assert.equal(timeline.pendingCount(), recorded.length, 'a bad file changed the buffer');
 
   await vscode.commands.executeCommand('agentTypewriter.togglePause');
-  await until('loaded session to play', idle, 60000);
+  // Replays every change suite.ts recorded, so allow time per change; Windows runners are the slowest.
+  await until('loaded session to play', idle, Math.max(60000, recorded.length * 1500));
   const last = new Map(recorded.map((e) => [e.relPath, e]));
   for (const [rel, e] of last) {
     assert.equal(mirrorText(rel)?.replace(/\r\n/g, '\n'), e.after, `mirror for ${rel} does not end at its last recorded text`);
@@ -99,4 +100,72 @@ export async function run(): Promise<void> {
   await until('nested playback after reload', idle);
   await vscode.commands.executeCommand('agentTypewriter.stop');
   console.log('[it] chosen checkout survives reload ok');
+
+  // Review fix groups add their sections directly below their own anchor (see suite.ts).
+  // --- review group PLAY
+  // --- PLAY. After a reload the mirror filesystem starts empty. Skip to Latest
+  // fills every file's mirror, not only the newest one, with its line ending.
+  {
+    assert.ok(
+      (ext.packageJSON.activationEvents as string[]).includes('onFileSystem:agent-typewriter'),
+      'restored mirror tabs do not activate the extension',
+    );
+    const at = (rel: string, seq: number, kind: string, before: string, after: string, eol: string) => ({
+      seq,
+      uri: vscode.Uri.file(path.join(root, rel)).toString(),
+      relPath: rel,
+      time: Date.now(),
+      kind,
+      before,
+      after,
+      eol,
+      linesAdded: 1,
+      linesRemoved: 0,
+    });
+    const r1 = 'export const reload1 = 1;\n';
+    const r1b = 'export const reload1 = 11;\n';
+    const r2 = 'export const reload2 = 2;\n';
+    const sessionFile = path.join(path.dirname(process.env.IT_EXPECT!), 'never-played.json');
+    fs.writeFileSync(
+      sessionFile,
+      JSON.stringify({
+        format: 'agent-typewriter-session',
+        version: 1,
+        savedAt: Date.now(),
+        cursor: 4,
+        events: [
+          at('play/reload1.ts', 1, 'create', '', r1, '\r\n'),
+          at('play/reload2.ts', 2, 'create', '', r2, '\n'),
+          at('play/reload1.ts', 3, 'modify', r1, r1b, '\r\n'),
+        ],
+      }),
+    );
+    await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(sessionFile));
+    // A tab left from before a reload: its mirror file does not exist yet, so it shows an error.
+    const restored = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/play/reload2.ts' });
+    await Promise.race([Promise.resolve(vscode.commands.executeCommand('vscode.open', restored, { preview: false })).catch(() => undefined), sleep(3000)]);
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    const read = async (rel: string) =>
+      new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel })));
+    assert.equal(await read('play/reload2.ts'), r2, 'Skip to Latest did not fill a mirror that was never played');
+    assert.equal(await read('play/reload1.ts'), r1b.replace(/\n/g, '\r\n'), 'Skip to Latest lost the newest mirror or its CRLF');
+    assert.equal(timeline.pendingCount(), 0);
+    await until('the restored tab to load its mirror', () => vscode.workspace.textDocuments.some((d) => d.uri.toString() === restored.toString() && d.getText() === r2), 10000);
+    if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    console.log('[it] Skip to Latest fills unplayed mirrors ok');
+  }
+
+  // --- review group ACT
+  // suite.ts set user-level historyLimit 10 and persistHistory false below the
+  // repository file's 1000 and true. Section 1 restored all of the expected
+  // changes, more than the user limit, and the saved timeline still holds what
+  // the buffer does.
+  const actStore = api.store!;
+  assert.ok(expected.events.length > 10, `only ${expected.events.length} changes were left for the reload; the user historyLimit was not exercised`);
+  assert.ok(actStore.isRunning, 'the timeline is not saved though the repository file turns persistHistory on');
+  await actStore.flush();
+  assert.equal(actStore.load()?.events.length, timeline.all().length, 'the saved timeline lost changes');
+  console.log(`[it] ACT: repository file history settings survive the reload (${expected.events.length} changes restored)`);
+
+  // --- review group REC1
 }

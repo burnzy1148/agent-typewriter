@@ -101,3 +101,53 @@ test('PathFilter.excludesDir: only globs that cover the whole directory prune it
   assert.ok(g.excludesDir('top'));
   assert.ok(!g.excludesDir('nested/top'), 'a slashed glob matches from the root only');
 });
+
+test('PathFilter: malformed, braced, comma and directory-name excludes neither throw nor prune what they do not cover', () => {
+  const f = new PathFilter({ include: [], exclude: ['**/node_modules/**', 'dist/**', '**/*.{log', '**/*.{log,tmp}', '**/[z-a].ts', '**/notes,old.md', '**/notes', '*.log', 'a\\b/**'], extensions: [] });
+  assert.ok(f.excludesDir('node_modules') && f.excludesDir('dist'));
+  for (const dir of ['docs/notes', 'notes', 'src']) assert.ok(!f.excludesDir(dir), `${dir} pruned`);
+  assert.ok(!new PathFilter({ include: [], exclude: ['!foo/**'], extensions: [] }).excludesDir('foo'));
+  for (const rel of ['src/app.ts', 'docs/notes/todo.md', 'docs/notes,old.md/x.ts', 'z.ts']) assert.ok(f.matches(rel), `${rel} rejected`);
+  for (const rel of ['app.log', 'src/x.tmp', 'node_modules/p/i.js', 'docs/notes']) assert.ok(!f.matches(rel), `${rel} accepted`);
+});
+
+// Skip to next picks the playing change's seq + 1, or cursor + 1 when nothing plays (extension.ts).
+function skipTarget(t: Timeline): number {
+  return (t.all().find((e) => t.stateOf(e.seq) === 'playing')?.seq ?? t.cursor) + 1;
+}
+
+test('a seek back while a change is playing overtakes it', () => {
+  const t = new Timeline(100);
+  for (let i = 0; i < 8; i++) t.push(ev(`f${i}`, '', String(i)));
+  t.seek(5);
+  const token = t.begin(5);
+  t.seek(2);
+  assert.equal(t.stateOf(5), 'pending');
+  assert.ok(!t.all().some((e) => t.stateOf(e.seq) === 'playing'));
+  assert.equal(skipTarget(t), 3);
+  t.complete(5, token);
+  assert.equal(t.cursor, 2);
+  assert.equal(t.stateOf(2), 'pending');
+});
+
+test('two quick skips while a change is playing skip two changes', () => {
+  const t = new Timeline(100);
+  for (let i = 0; i < 8; i++) t.push(ev(`f${i}`, '', String(i)));
+  t.seek(5);
+  t.begin(5);
+  t.seek(skipTarget(t));
+  assert.equal(t.cursor, 6);
+  assert.equal(skipTarget(t), 7);
+});
+
+test('seekToEnd while a change is playing leaves nothing playing or queued', () => {
+  const t = new Timeline(100);
+  for (let i = 0; i < 8; i++) t.push(ev(`f${i}`, '', String(i)));
+  t.seek(5);
+  const token = t.begin(5);
+  t.seekToEnd();
+  assert.ok(!t.all().some((e) => t.stateOf(e.seq) === 'playing'));
+  assert.equal(t.pendingCount(), 0);
+  t.complete(5, token);
+  assert.equal(t.pendingCount(), 0);
+});

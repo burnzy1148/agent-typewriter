@@ -14,6 +14,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   respectGitignore: 'boolean',
   profiles: 'profiles',
   activeProfile: 'string',
+  charsPerMinute: 'number',
+  /** Deprecated; read as charsPerMinute / 60 where charsPerMinute is not set. */
   charsPerSecond: 'number',
   languageSpeeds: 'object',
   jitter: 'number',
@@ -65,14 +67,23 @@ export function parseRepoSettings(text: string): ParseResult {
   return { ok: true, values, problems };
 }
 
+/** Makes pickLayer treat a value that fails `valid` as unset, with `fallback` as the last resort. */
+export interface LayerCheck<T> {
+  valid: (v: unknown) => v is T;
+  fallback: T;
+}
+
 /**
- * Resolves one setting: workspace value, then the repository file, then
- * whatever VS Code resolves below workspace (user setting or default).
+ * Resolves one setting. When the repository file (or the active profile) sets
+ * it, the workspace value wins over that and that wins over the user setting.
+ * Otherwise `below`, VS Code's own resolution (workspace over user over
+ * default, objects merged), decides, so the file changes nothing it does not mention.
  */
-export function pickLayer<T>(workspaceValue: T | undefined, repoValue: unknown, below: () => T): T {
-  if (workspaceValue !== undefined) return workspaceValue;
-  if (repoValue !== undefined) return repoValue as T;
-  return below();
+export function pickLayer<T>(workspaceValue: unknown, middle: unknown, below: () => unknown, check?: LayerCheck<T>): T {
+  const usable = (v: unknown) => v !== undefined && (!check || check.valid(v));
+  if (usable(middle)) return (usable(workspaceValue) ? workspaceValue : middle) as T;
+  const v = below();
+  return (check && !check.valid(v) ? check.fallback : v) as T;
 }
 
 /** Keys whose value differs between two parsed files. */

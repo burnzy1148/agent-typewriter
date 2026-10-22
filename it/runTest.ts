@@ -17,7 +17,7 @@ async function main() {
     JSON.stringify(
       {
         'agentTypewriter.extensions': ['ts'],
-        'agentTypewriter.charsPerSecond': 600,
+        'agentTypewriter.charsPerMinute': 36000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.fileSwitchDelayMs': 30,
         'agentTypewriter.debounceMs': 100,
@@ -48,6 +48,25 @@ async function main() {
   git('worktree', 'add', '-q', '-b', 'nested', '.worktrees/nested');
   git('worktree', 'add', '-q', '-b', 'sibling', `${workspace}-sibling`);
 
+  // Review fix groups add their fixtures directly below their own anchor (see suite.ts).
+  // --- review group PLAY: fixtures
+
+  // --- review group SET: fixtures
+
+  // --- review group ACT: fixtures
+
+  // --- review group REC1: fixtures
+
+  // REC2: committed files for the baseline sections, in a second commit.
+  fs.mkdirSync(path.join(workspace, 'src/rec2'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'src/rec2/hidden.ts'), 'export const hidden = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/agents.ts'), '// Agents\nexport const one = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/plain.ts'), 'export const plain = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/toggle.ts'), 'export const toggle = 1;\n');
+  fs.writeFileSync(path.join(workspace, 'src/rec2/big.ts'), `export const big = '${'b'.repeat(2000)}';\n`);
+  git('add', 'src/rec2');
+  git('commit', '-q', '-m', 'rec2 fixtures');
+
   // VS Code puts an IPC socket in the user-data dir. The default one under
   // .vscode-test/ is too long for macOS's 104-char socket limit in deep
   // checkouts such as worktrees, so keep it short.
@@ -65,6 +84,119 @@ async function main() {
   const extensionTestsEnv = { IT_EXPECT: path.join(userData, 'expected-timeline.json') };
   await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
   await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
+
+  // Review fix groups add any extra VS Code launches directly below their own anchor.
+  // --- review group PLAY: launches
+
+  // --- review group ACT: launches
+  // The repository file's autoStart applies at activation: true there starts
+  // watching, false there beats a user-level true. Each launch runs this probe.
+  const actRepoFile = path.join(workspace, '.agent-typewriter.json');
+  const actRepo = fs.existsSync(actRepoFile) ? JSON.parse(fs.readFileSync(actRepoFile, 'utf8')) : {};
+  const actUserFile = path.join(userData, 'User', 'settings.json');
+  const actProbe = path.join(userData, 'act-autostart.js');
+  fs.writeFileSync(
+    actProbe,
+    `const vscode = require('vscode');
+exports.run = async () => {
+  const api = await vscode.extensions.getExtension('burnzy1148.agent-typewriter').activate();
+  const expected = process.env.IT_ACT_AUTOSTART === 'true';
+  const deadline = Date.now() + (expected ? 30000 : 3000);
+  while ((expected ? !api.recorder.isRunning : true) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  if (api.recorder.isRunning !== expected) throw new Error('autoStart ' + expected + ' in .agent-typewriter.json was not applied at activation');
+  await vscode.commands.executeCommand('agentTypewriter.stop');
+  console.log('[it] ACT: autoStart ' + expected + ' from the repository file ok');
+};
+`,
+  );
+  for (const [fileValue, userValue] of [
+    [true, undefined],
+    [false, true],
+  ] as const) {
+    fs.writeFileSync(actRepoFile, JSON.stringify({ ...actRepo, autoStart: fileValue }));
+    const user = fs.existsSync(actUserFile) ? JSON.parse(fs.readFileSync(actUserFile, 'utf8')) : {};
+    user['agentTypewriter.autoStart'] = userValue;
+    fs.mkdirSync(path.dirname(actUserFile), { recursive: true });
+    fs.writeFileSync(actUserFile, JSON.stringify(user, null, 2));
+    await runTests({ extensionDevelopmentPath, extensionTestsPath: actProbe, launchArgs, extensionTestsEnv: { IT_ACT_AUTOSTART: String(fileValue) } });
+  }
+  // Leave later launches the settings the reload check ran with.
+  fs.writeFileSync(actRepoFile, JSON.stringify(actRepo));
+  const actUser = JSON.parse(fs.readFileSync(actUserFile, 'utf8'));
+  delete actUser['agentTypewriter.autoStart'];
+  fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
+
+  // --- review group REC1: launches
+  // A saved multi-root workspace [a, b] where b has a sibling worktree, for
+  // adding and removing folders while recording (folders.ts). Adding a folder
+  // to a single-folder window restarts the extension host, so it needs its own
+  // launch.
+  const multi = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-multi-'));
+  const gitAt = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', '-c', 'core.autocrlf=false', ...args], { cwd, stdio: 'ignore' });
+  for (const name of ['a', 'b', 'c']) {
+    const repo = path.join(multi, name);
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src/x.ts'), `export const x = '${name}';\n`);
+    gitAt(repo, 'init', '-q');
+    gitAt(repo, 'add', '-A');
+    gitAt(repo, 'commit', '-q', '-m', 'initial');
+  }
+  gitAt(path.join(multi, 'b'), 'worktree', 'add', '-q', '-b', 'feature', path.join(multi, 'b-feature'));
+  const multiFile = path.join(multi, 'multi.code-workspace');
+  fs.writeFileSync(
+    multiFile,
+    JSON.stringify({
+      folders: [{ path: 'a' }, { path: 'b' }],
+      settings: {
+        'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.debounceMs': 100,
+        'agentTypewriter.reorderWindowMs': 0,
+        'agentTypewriter.charsPerMinute': 240000,
+        'agentTypewriter.jitter': 0,
+        'agentTypewriter.persistHistory': false,
+      },
+    }),
+  );
+  const multiUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'folders.js'),
+    launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...launchArgs.slice(2)],
+    extensionTestsEnv: { IT_MULTI: multi },
+  });
+
+  // REC2: a saved workspace whose folders nest, [repo, repo/pkg], outer
+  // first, for git baselines of the inner folder's files (nestedFolders.ts).
+  const nest = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-nest-'));
+  const nestRepo = path.join(nest, 'repo');
+  fs.mkdirSync(path.join(nestRepo, 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(nestRepo, 'package.json'), '{ "name": "ROOT" }\n');
+  fs.writeFileSync(path.join(nestRepo, 'pkg', 'package.json'), '{ "name": "PKG" }\n');
+  gitAt(nestRepo, 'init', '-q');
+  gitAt(nestRepo, 'add', '-A');
+  gitAt(nestRepo, 'commit', '-q', '-m', 'initial');
+  const nestFile = path.join(nest, 'nest.code-workspace');
+  fs.writeFileSync(
+    nestFile,
+    JSON.stringify({
+      folders: [{ path: 'repo' }, { path: 'repo/pkg' }],
+      settings: {
+        'agentTypewriter.extensions': ['json'],
+        'agentTypewriter.debounceMs': 100,
+        'agentTypewriter.reorderWindowMs': 0,
+        'agentTypewriter.gitBaselines': true,
+        'agentTypewriter.persistHistory': false,
+      },
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'nestedFolders.js'),
+    launchArgs: [nestFile, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    extensionTestsEnv: { IT_NEST: nestRepo },
+  });
+
 }
 
 main().catch((err) => {

@@ -42,7 +42,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onFileSystem:agent-typewriter"
   ],
   "contributes": {
     "commands": [
@@ -445,11 +446,17 @@
           "default": "",
           "description": "Name of the active filter profile. Its filters override the repository settings file and user settings; workspace settings still override it. Empty means no profile."
         },
+        "agentTypewriter.charsPerMinute": {
+          "type": "number",
+          "default": 350,
+          "minimum": 1,
+          "description": "Base typing speed in characters per minute."
+        },
         "agentTypewriter.charsPerSecond": {
           "type": "number",
-          "default": 35,
           "minimum": 1,
-          "description": "Base typing speed in characters per second."
+          "description": "Deprecated: use charsPerMinute. Base typing speed in characters per second; applies times 60 where charsPerMinute is not set.",
+          "markdownDeprecationMessage": "Use `#agentTypewriter.charsPerMinute#` instead. A value here still applies, times 60, where `charsPerMinute` is not set."
         },
         "agentTypewriter.languageSpeeds": {
           "type": "object",
@@ -458,7 +465,7 @@
             "exclusiveMinimum": 0
           },
           "default": {},
-          "markdownDescription": "Base typing speed per language, in characters per second, keyed by VS Code language ID (for example `{ \"markdown\": 60, \"json\": 120 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerSecond#`."
+          "markdownDescription": "Base typing speed per language, in characters per minute, keyed by VS Code language ID (for example `{ \"markdown\": 600, \"json\": 1200 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerMinute#`."
         },
         "agentTypewriter.jitter": {
           "type": "number",
@@ -555,10 +562,10 @@
     "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --outfile=dist/extension.js --sourcemap",
     "watch": "npm run build -- --watch",
     "typecheck": "tsc --noEmit -p .",
-    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --outdir=.test-out && node --test .test-out/*.test.js",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --alias:vscode=./test/vscode-mock.ts --outdir=.test-out && node --test .test-out/*.test.js",
     "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
+    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",
