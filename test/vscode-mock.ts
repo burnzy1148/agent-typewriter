@@ -1,7 +1,8 @@
 /**
  * A minimal 'vscode' module for unit tests that run the real Recorder against
  * real files (see test/recorder.test.ts). The test script aliases 'vscode' to
- * this file. Only what the recorder uses is here; `mock` lets a test drive it.
+ * this file. Only what the recorder and the mirror filesystem use is here;
+ * `mock` lets a test drive it.
  */
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -11,6 +12,35 @@ export enum FileType {
   File = 1,
   Directory = 2,
   SymbolicLink = 64,
+}
+
+export enum FileChangeType {
+  Changed = 1,
+  Created = 2,
+  Deleted = 3,
+}
+
+export enum FilePermission {
+  Readonly = 1,
+}
+
+export class FileSystemError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+  }
+  static FileNotFound(uri?: Uri): FileSystemError {
+    return new FileSystemError(`${uri} not found`, 'FileNotFound');
+  }
+}
+
+export class Disposable {
+  constructor(private readonly onDispose: () => unknown) {}
+  dispose(): void {
+    this.onDispose();
+  }
 }
 
 export class Uri {
@@ -23,6 +53,10 @@ export class Uri {
     let p = fsPath.replace(/\\/g, '/');
     if (/^[a-zA-Z]:/.test(p)) p = '/' + p;
     return new Uri('file', p);
+  }
+
+  static from(parts: { scheme: string; path: string }): Uri {
+    return new Uri(parts.scheme, parts.path);
   }
 
   static parse(value: string): Uri {

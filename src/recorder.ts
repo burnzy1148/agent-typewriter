@@ -777,7 +777,11 @@ export class Recorder implements vscode.Disposable {
       return;
     }
     if (scope.nested.has(dir)) return;
-    if (!this.isWorktreeGitFile(isGit ? uri.fsPath : path.join(uri.fsPath, '.git'), scope)) return;
+    if (this.isWorktreeGitFile(isGit ? uri.fsPath : path.join(uri.fsPath, '.git'), scope)) this.hideNewWorktree(scope, dir);
+  }
+
+  /** Hides a new worktree's root-relative `dir/` right away, until a worktree listing started after now settles it. */
+  private hideNewWorktree(scope: Scope, dir: string): void {
     scope.nested.add(dir);
     const key = scope.folder.uri.toString();
     const entries = this.provisional.get(key) ?? [];
@@ -789,6 +793,25 @@ export class Recorder implements vscode.Disposable {
   /** True for a `.git` file that makes its directory a linked worktree of the scope's repository. */
   private isWorktreeGitFile(file: string, scope: Scope): boolean {
     return scope.commonKey !== undefined && isWorktreeOf(file, scope.commonKey);
+  }
+
+  /**
+   * True when a file the recorder has no snapshot of sits in a linked worktree
+   * of the scope's repository added under it since its worktrees were listed. The watcher can
+   * report such a checkout's files before its `.git` file, or miss that event
+   * for a new directory, so this looks for the `.git` file itself. The worktree
+   * is then skipped like a listed one, and git confirms on refresh.
+   */
+  private inNewWorktree(scope: Scope, uri: vscode.Uri): boolean {
+    const rel = this.relOf(scope, uri);
+    for (let end = rel.lastIndexOf('/'); end > 0; end = rel.lastIndexOf('/', end - 1)) {
+      const dir = rel.slice(0, end + 1);
+      if (scope.nested.has(dir) || !this.isWorktreeGitFile(vscode.Uri.joinPath(scope.root, dir, '.git').fsPath, scope)) continue;
+      this.hideNewWorktree(scope, dir);
+      this.note(`in a worktree added while recording, dropped ${this.traceName(uri)}`);
+      return true;
+    }
+    return false;
   }
 
   private scheduleWorktreeRefresh(): void {
@@ -1188,6 +1211,10 @@ export class Recorder implements vscode.Disposable {
       return;
     }
     const scope = this.scopeOf(uri);
+    if (scope && !this.snapshots.has(key) && this.inNewWorktree(scope, uri)) {
+      if (burst.session === this.session) this.ownSaves.delete(key);
+      return;
+    }
     const relPath = this.displayOf(scope, uri);
     const s = this.settings();
     let previous = this.snapshots.get(key);
