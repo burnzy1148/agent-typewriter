@@ -23,6 +23,10 @@ export class Player implements vscode.Disposable {
   private manualSpeed = 1;
   private replayColumn: vscode.ViewColumn | undefined;
   private lastRelPath: string | undefined;
+  private playbackPath: string | undefined;
+  private readonly mirrorChanged = new vscode.EventEmitter<void>();
+  /** Fires when the playback mirror moves to another file. */
+  readonly onDidChangePlaybackMirror = this.mirrorChanged.event;
   /** Line ending of the change being played; reapplied if its tab is reopened. */
   private currentEol: Eol = '\n';
   private waiters: Array<() => void> = [];
@@ -50,6 +54,11 @@ export class Player implements vscode.Disposable {
 
   get speed(): number {
     return this.manualSpeed;
+  }
+
+  /** The file whose mirror is being typed into, or was played into last. */
+  get playbackRelPath(): string | undefined {
+    return this.playbackPath;
   }
 
   setSpeed(multiplier: number): void {
@@ -90,6 +99,7 @@ export class Player implements vscode.Disposable {
       await this.save(doc);
     }
     if (newest) {
+      this.setPlaybackPath(newest.relPath);
       const editor = await this.showMirror(newest.relPath, newest.after);
       await setEol(editor, newest.eol);
       if (normalizeEol(editor.document.getText()) !== newest.after) await replaceAll(editor, newest.after);
@@ -102,7 +112,14 @@ export class Player implements vscode.Disposable {
     this.epoch++;
     this.subscription.dispose();
     this.flash.dispose();
+    this.mirrorChanged.dispose();
     this.poke();
+  }
+
+  private setPlaybackPath(relPath: string): void {
+    if (this.playbackPath === relPath) return;
+    this.playbackPath = relPath;
+    this.mirrorChanged.fire();
   }
 
   // ---------------------------------------------------------------- loop
@@ -128,6 +145,8 @@ export class Player implements vscode.Disposable {
   private async play(e: ChangeEvent, epoch: number): Promise<void> {
     const s = this.settings();
     const switching = this.lastRelPath !== e.relPath;
+    // Before showing the tab: VS Code asks for its CodeLens row as it opens.
+    this.setPlaybackPath(e.relPath);
     let editor = await this.showMirror(e.relPath, e.before);
     this.currentEol = e.eol;
     await setEol(editor, e.eol);

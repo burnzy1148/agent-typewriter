@@ -51,6 +51,11 @@ disk write ──► watcher ──► debounce ──► diff vs snapshot ─�
 - The speed picker sets a multiplier (0.5x to 5x) on top of the base speed.
 - The line under the slider shows what is typing or next, and how many changes are queued.
 
+**The replay editor** has controls too, on the tab of the file being typed (or played last):
+
+- Its title bar has the same buttons: replay from the start, play/pause, finish current, skip to next, and skip to latest. Right-click the title bar to hide any of them.
+- A row above the first line has play/pause, finish, next, latest, the speed (click to change it), and what is typing or next with the position in the buffer (click to open the Playback panel). The row is not part of the text. Set `mirrorStatusRow` to `false` to hide it, for example for screen recordings.
+
 **Explorer > Agent Typewriter** lists recorded changes, newest first, with their state (pending, typing, played) and line counts.
 
 - Click an entry to see its diff.
@@ -157,6 +162,7 @@ To watch an agent's worktree instead, run **Choose Checkout...** or click the br
 | `persistHistory` | true | Keep recorded changes across reloads and restarts, in VS Code's storage for the workspace. Turning it off deletes the saved history |
 | `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor (matched by content, so an outside write right after your save is still replayed) |
 | `viewColumn` | beside | Replay in a column beside you, or in the active column |
+| `mirrorStatusRow` | true | Show the playback controls and status row above the first line of the replay editor. Also hidden when `editor.codeLens` is off |
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 

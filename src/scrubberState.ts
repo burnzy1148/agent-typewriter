@@ -12,7 +12,13 @@ export interface ScrubberState {
   paused: boolean;
   speed: number;
   watching: boolean;
+  /** What is playing or next, e.g. "Typing #12 src/a.ts · 3 queued". */
+  label: string;
+  /** Position within the buffer, e.g. "4 / 12". */
+  position: string;
 }
+
+export type PlaybackFacts = Omit<ScrubberState, 'type' | 'label' | 'position'>;
 
 export type ScrubberMessage =
   | { type: 'ready' | 'togglePause' | 'finishCurrent' | 'skipToNext' | 'catchUp' | 'replayAll' }
@@ -26,14 +32,27 @@ export function scrubberState(
   const events = timeline.all();
   const first = events[0]?.seq ?? timeline.cursor;
   const index = Math.min(Math.max(timeline.cursor - first, 0), events.length);
-  return {
-    type: 'state',
+  const facts: PlaybackFacts = {
     changes: events.map((e) => ({ seq: e.seq, relPath: e.relPath, kind: e.kind })),
     index,
     playingSeq: events.find((e) => timeline.stateOf(e.seq) === 'playing')?.seq,
     queued: timeline.pendingCount(),
     ...player,
   };
+  return { type: 'state', ...facts, ...describePlayback(facts) };
+}
+
+/** The status text shown by the Playback panel and the mirror's status row. */
+export function describePlayback(s: PlaybackFacts): { label: string; position: string } {
+  const n = s.changes.length;
+  const position = `${Math.min(s.index + 1, n)} / ${n}`;
+  const describe = (c: { seq: number; relPath: string }) => `#${c.seq} ${c.relPath}`;
+  if (n === 0) return { label: s.watching ? 'Waiting for changes' : 'Not watching', position };
+  const queued = s.queued ? ` \u00b7 ${s.queued} queued` : '';
+  const playing = s.changes.find((c) => c.seq === s.playingSeq);
+  if (playing) return { label: (s.paused ? 'Paused in ' : 'Typing ') + describe(playing) + queued, position };
+  if (s.index >= n) return { label: 'Caught up', position };
+  return { label: (s.paused ? 'Paused before ' : 'Next: ') + describe(s.changes[s.index]) + queued, position };
 }
 
 const SIMPLE = new Set(['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll']);

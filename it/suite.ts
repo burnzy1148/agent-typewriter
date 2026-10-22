@@ -330,6 +330,51 @@ export async function run(): Promise<void> {
   await scrubber.receive({ type: 'speed', value: 1 });
   console.log('[it] playback panel ok');
 
+  // --- 12b. Mirror controls: the status row is on the playback mirror only,
+  // pause and resume never flip playback back, and the setting hides the row.
+  const aMirror = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/src/a.ts' });
+  const row = async (uri: vscode.Uri) =>
+    ((await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', uri)) ?? []).map(
+      (l) => l.command?.title ?? '',
+    );
+  // Section 11 left the baseline budget at 0, which leaves src/a.ts without a baseline.
+  await cfg().update('baselineBudgetMB', 256, WS);
+  await settle();
+  const atRow = timeline.all().length;
+  write('src/a.ts', disk('src/a.ts') + '// row 1\n');
+  await until('row change to play', () => timeline.all().length > atRow && idle() && player.playbackRelPath === 'src/a.ts', 20000);
+  assert.equal(mirrorText('src/a.ts'), disk('src/a.ts'), 'mirror text changed by the row');
+  await vscode.commands.executeCommand('agentTypewriter.pause');
+  assert.equal(player.isPaused, true, 'pause did not pause');
+  await vscode.commands.executeCommand('agentTypewriter.pause');
+  assert.equal(player.isPaused, true, 'pause while paused resumed');
+  write('src/a.ts', disk('src/a.ts') + '// row 2\n');
+  await until('queued row change', () => timeline.pendingCount() === 1, 10000);
+  const queuedSeq = timeline.all()[timeline.all().length - 1].seq;
+  const titles = await row(aMirror);
+  assert.ok(titles.includes('$(play) Play'), `row has no play: ${titles.join(' | ')}`);
+  assert.ok(titles.includes('1x'), `row has no speed: ${titles.join(' | ')}`);
+  assert.ok(
+    titles.some((t) => t.startsWith(`Paused before #${queuedSeq} src/a.ts · 1 queued · `)),
+    `row readout wrong: ${titles.join(' | ')}`,
+  );
+  // The provider command needs the document loaded.
+  const realA = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')));
+  assert.deepEqual(await row(realA.uri), [], 'row on the real file');
+  const otherMirror = vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path !== aMirror.path);
+  if (otherMirror) assert.deepEqual(await row(otherMirror.uri), [], 'row on another mirror');
+  await vscode.commands.executeCommand('agentTypewriter.resume');
+  assert.equal(player.isPaused, false, 'resume did not resume');
+  await vscode.commands.executeCommand('agentTypewriter.resume');
+  assert.equal(player.isPaused, false, 'resume while playing paused');
+  await until('row change 2 to play', idle, 20000);
+  assert.ok((await row(aMirror)).includes('$(debug-pause) Pause'), 'row did not switch to pause');
+  await cfg().update('mirrorStatusRow', false, WS);
+  await settle();
+  assert.deepEqual(await row(aMirror), [], 'row shown with mirrorStatusRow off');
+  await cfg().update('mirrorStatusRow', undefined, WS);
+  console.log('[it] mirror controls ok');
+
   // --- 13. Repository settings file: applies live, sits below workspace
   // settings, survives a broken save, and goes away with the file.
   const repoFile = path.join(root, '.agent-typewriter.json');

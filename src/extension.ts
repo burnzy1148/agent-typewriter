@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter } from './filter';
+import { MirrorControls } from './mirrorControls';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
@@ -22,6 +23,7 @@ export interface AgentTypewriterApi {
   player: Player;
   recorder: Recorder;
   scrubber: ScrubberView;
+  mirrorControls: MirrorControls;
   /** Undefined when no folder is open (no workspace storage). */
   store: TimelineStore | undefined;
 }
@@ -44,9 +46,10 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
-  const scrubber = new ScrubberView(() =>
-    scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning }),
-  );
+  const playbackState = () =>
+    scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning });
+  const scrubber = new ScrubberView(playbackState);
+  const mirrorControls = new MirrorControls(player, playbackState, () => readSettings().mirrorStatusRow);
   const store = context.storageUri
     ? new TimelineStore(context.storageUri.fsPath, timeline, (line) => log.appendLine(line))
     : undefined;
@@ -61,7 +64,9 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     status,
     checkoutStatus,
     scrubber,
+    mirrorControls,
     vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
+    vscode.languages.registerCodeLensProvider({ scheme: MIRROR_SCHEME }, mirrorControls),
     { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
@@ -126,6 +131,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     }
     status.show();
     scrubber.refresh();
+    mirrorControls.refresh();
     tree.description = watching ? (elsewhere.length > 0 ? `${elsewhere.join(', ')} · ` : '') + recorder.describeFilter() : 'stopped';
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
@@ -179,6 +185,15 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   register('agentTypewriter.togglePause', () => {
     player.togglePause();
+  });
+
+  // The two states of the mirror's play/pause button; a stale click never flips playback back.
+  register('agentTypewriter.pause', () => {
+    if (!player.isPaused) player.togglePause();
+  });
+
+  register('agentTypewriter.resume', () => {
+    if (player.isPaused) player.togglePause();
   });
 
   register('agentTypewriter.finishCurrent', () => player.finishCurrent());
@@ -608,7 +623,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder, store, scrubber };
+  return { timeline, player, recorder, store, scrubber, mirrorControls };
 }
 
 /** Local time as yyyy-mm-dd-hhmm, for default session file names. */

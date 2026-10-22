@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Timeline, type NewChangeEvent } from '../src/timeline';
-import { parseScrubberMessage, scrubberState } from '../src/scrubberState';
+import { describePlayback, parseScrubberMessage, scrubberState, type PlaybackFacts } from '../src/scrubberState';
 
 function ev(relPath: string): NewChangeEvent {
   return { uri: 'file:///w/' + relPath, relPath, time: 0, kind: 'modify', before: '', after: 'x', eol: '\n', linesAdded: 1, linesRemoved: 0 };
@@ -71,6 +71,50 @@ test('index is 0 after clear', () => {
   const s = scrubberState(t, player);
   assert.equal(s.index, 0);
   assert.equal(s.changes.length, 0);
+});
+
+function facts(over: Partial<PlaybackFacts>): PlaybackFacts {
+  return {
+    changes: [
+      { seq: 11, relPath: 'a.ts', kind: 'modify' },
+      { seq: 12, relPath: 'src/b.ts', kind: 'modify' },
+    ],
+    index: 0,
+    playingSeq: undefined,
+    queued: 0,
+    paused: false,
+    speed: 1,
+    watching: true,
+    ...over,
+  };
+}
+
+test('label for an empty buffer', () => {
+  assert.deepEqual(describePlayback(facts({ changes: [] })), { label: 'Waiting for changes', position: '0 / 0' });
+  assert.equal(describePlayback(facts({ changes: [], watching: false })).label, 'Not watching');
+});
+
+test('label while typing or paused mid-change', () => {
+  assert.deepEqual(describePlayback(facts({ index: 1, playingSeq: 12, queued: 3 })), {
+    label: 'Typing #12 src/b.ts \u00b7 3 queued',
+    position: '2 / 2',
+  });
+  assert.equal(describePlayback(facts({ playingSeq: 11, paused: true })).label, 'Paused in #11 a.ts');
+});
+
+test('label between changes', () => {
+  assert.equal(describePlayback(facts({ index: 1, queued: 1 })).label, 'Next: #12 src/b.ts \u00b7 1 queued');
+  assert.equal(describePlayback(facts({ index: 0, queued: 2, paused: true })).label, 'Paused before #11 a.ts \u00b7 2 queued');
+  assert.deepEqual(describePlayback(facts({ index: 2 })), { label: 'Caught up', position: '2 / 2' });
+});
+
+test('state carries the label and position', () => {
+  const t = new Timeline(10);
+  const a = t.push(ev('a.ts'));
+  t.begin(a.seq);
+  const s = scrubberState(t, player);
+  assert.equal(s.label, `Typing #${a.seq} a.ts`);
+  assert.equal(s.position, '1 / 1');
 });
 
 test('valid messages parse', () => {
