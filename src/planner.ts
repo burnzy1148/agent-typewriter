@@ -18,6 +18,14 @@ const REFINE_MAX_CHARS = 8000;
 const REFINE_MIN_SIMILARITY = 0.4;
 /** Unchanged runs this short (and without a newline) get folded into the surrounding edit. */
 const FOLD_MAX_COMMON = 3;
+/**
+ * Most added plus removed lines a line diff may search for. Diff time grows
+ * with the square of this (about 100 ms at this bound), so past it the
+ * changed region is retyped whole.
+ */
+const LINE_DIFF_MAX_EDITS = 1500;
+/** Most added plus removed tokens a block's word diff may search for before it is retyped instead. */
+const WORD_DIFF_MAX_EDITS = 1000;
 
 export function normalizeEol(text: string): string {
   return text.indexOf('\r') === -1 ? text : text.replace(/\r\n?/g, '\n');
@@ -59,9 +67,14 @@ export function planHunks(before: string, after: string): Hunk[] {
   if (before.length === 0) return [{ offset: 0, deleteText: '', insertText: after }];
   if (after.length === 0) return [{ offset: 0, deleteText: before, insertText: '' }];
 
+  const parts = diffLines(before, after, { maxEditLength: LINE_DIFF_MAX_EDITS });
+  if (!parts) {
+    const r = changedRegion(before, after);
+    return [{ offset: r.start, deleteText: r.removed, insertText: r.added }];
+  }
+
   const hunks: Hunk[] = [];
   let pos = 0;
-  const parts = diffLines(before, after);
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -78,8 +91,9 @@ export function planHunks(before: string, after: string): Hunk[] {
     }
     i--;
 
-    if (removed && added && shouldRefine(removed, added)) {
-      hunks.push(...refineBlock(removed, added, pos));
+    const words = removed && added ? refinableWords(removed, added) : undefined;
+    if (words) {
+      hunks.push(...refineBlock(words, pos));
     } else {
       hunks.push({ offset: pos, deleteText: removed, insertText: added });
     }
@@ -88,21 +102,21 @@ export function planHunks(before: string, after: string): Hunk[] {
   return hunks;
 }
 
-function shouldRefine(removed: string, added: string): boolean {
-  if (removed.length > REFINE_MAX_CHARS || added.length > REFINE_MAX_CHARS) return false;
-  const parts = diffWordsWithSpace(removed, added);
+/** The block's word diff when it is worth retyping word by word, else undefined. */
+function refinableWords(removed: string, added: string): Change[] | undefined {
+  if (removed.length > REFINE_MAX_CHARS || added.length > REFINE_MAX_CHARS) return undefined;
+  const parts = diffWordsWithSpace(removed, added, { maxEditLength: WORD_DIFF_MAX_EDITS });
+  if (!parts) return undefined;
   let common = 0;
   for (const p of parts) if (!p.added && !p.removed) common += p.value.length;
-  return common / Math.max(removed.length, added.length) >= REFINE_MIN_SIMILARITY;
+  return common / Math.max(removed.length, added.length) >= REFINE_MIN_SIMILARITY ? parts : undefined;
 }
 
 type Segment =
   | { kind: 'common'; text: string }
   | { kind: 'change'; removed: string; added: string };
 
-function refineBlock(removed: string, added: string, start: number): Hunk[] {
-  const parts: Change[] = diffWordsWithSpace(removed, added);
-
+function refineBlock(parts: Change[], start: number): Hunk[] {
   // 1. Collapse runs of added/removed parts into single change segments.
   const segments: Segment[] = [];
   for (const p of parts) {
@@ -167,10 +181,55 @@ export function applyHunks(before: string, hunks: Hunk[]): string {
   return doc;
 }
 
+/**
+ * The span between the lines both texts start and end with. It begins at the
+ * same offset in both, and `removed` -> `added` there turns before into after.
+ */
+function changedRegion(before: string, after: string): { start: number; removed: string; added: string } {
+  const max = Math.min(before.length, after.length);
+  let head = 0;
+  while (head < max && before.charCodeAt(head) === after.charCodeAt(head)) head++;
+  // lastIndexOf clamps a negative start to 0, so a head of 0 must stay put.
+  if (head > 0) head = before.lastIndexOf('\n', head - 1) + 1;
+  let tail = 0;
+  while (
+    tail < max - head &&
+    before.charCodeAt(before.length - 1 - tail) === after.charCodeAt(after.length - 1 - tail)
+  ) {
+    tail++;
+  }
+  // Start the shared tail at a line start in both texts, else after its first newline.
+  const tailStart = before.length - tail;
+  if (!atLineStart(before, tailStart) || !atLineStart(after, after.length - tail)) {
+    const nl = before.indexOf('\n', tailStart);
+    tail = nl === -1 ? 0 : before.length - nl - 1;
+  }
+  return {
+    start: head,
+    removed: before.slice(head, before.length - tail),
+    added: after.slice(head, after.length - tail),
+  };
+}
+
+function atLineStart(text: string, offset: number): boolean {
+  return offset === 0 || text.charCodeAt(offset - 1) === 10;
+}
+
+function lineCount(text: string): number {
+  let n = 0;
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) n++;
+  return text.length > 0 && !text.endsWith('\n') ? n + 1 : n;
+}
+
 export function countChanges(before: string, after: string): { added: number; removed: number } {
+  const parts = diffLines(before, after, { maxEditLength: LINE_DIFF_MAX_EDITS });
+  if (!parts) {
+    const r = changedRegion(before, after);
+    return { added: lineCount(r.added), removed: lineCount(r.removed) };
+  }
   let added = 0;
   let removed = 0;
-  for (const p of diffLines(before, after)) {
+  for (const p of parts) {
     if (p.added) added += p.count ?? 0;
     else if (p.removed) removed += p.count ?? 0;
   }
