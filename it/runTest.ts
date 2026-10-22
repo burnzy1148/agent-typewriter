@@ -17,7 +17,7 @@ async function main() {
     JSON.stringify(
       {
         'agentTypewriter.extensions': ['ts'],
-        'agentTypewriter.charsPerSecond': 600,
+        'agentTypewriter.charsPerMinute': 36000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.fileSwitchDelayMs': 30,
         'agentTypewriter.debounceMs': 100,
@@ -154,7 +154,7 @@ exports.run = async () => {
         'agentTypewriter.extensions': ['ts'],
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
-        'agentTypewriter.charsPerSecond': 4000,
+        'agentTypewriter.charsPerMinute': 240000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.persistHistory': false,
       },

@@ -527,7 +527,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       multiplier: m,
     }));
     const pick = await vscode.window.showQuickPick(
-      [...options, { label: 'Base speed...', description: `${readSettings().charsPerSecond} chars/sec setting`, multiplier: 0 }],
+      [...options, { label: 'Base speed...', description: `${readSettings().charsPerMinute} chars/min setting`, multiplier: 0 }],
       { title: 'Agent Typewriter: playback speed (catch-up acceleration still applies on top)' },
     );
     if (!pick) return;
@@ -536,11 +536,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       return;
     }
     const input = await vscode.window.showInputBox({
-      title: 'Base typing speed (characters per second)',
-      value: String(readSettings().charsPerSecond),
+      title: 'Base typing speed (characters per minute)',
+      value: String(readSettings().charsPerMinute),
       validateInput: (v) => (Number(v) > 0 ? undefined : 'Enter a positive number'),
     });
-    if (input) await updateSetting('charsPerSecond', Number(input));
+    if (input) await updateSetting('charsPerMinute', Number(input));
   });
 
   // ------------------------------------------------------------ settings
@@ -556,10 +556,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     loggedUnknown = unknown;
   };
 
+  /** Whether the deprecation note is showing for the current settings, so it is written once each time it applies. */
+  let loggedDeprecatedSpeed = false;
+  const noteDeprecatedSpeed = () => {
+    const deprecated = readSettings().speedFromDeprecatedSetting;
+    if (deprecated && !loggedDeprecatedSpeed) {
+      log.appendLine('charsPerSecond is deprecated; the base speed comes from it times 60. Set charsPerMinute instead.');
+    }
+    loggedDeprecatedSpeed = deprecated;
+  };
+
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
   const applySettingsChange = async (affects: (key: string) => boolean) => {
     if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
     if (affects('profiles') || affects('activeProfile')) noteUnknownProfile();
+    if (affects('charsPerMinute') || affects('charsPerSecond')) noteDeprecatedSpeed();
     if (['include', 'exclude', 'extensions', 'respectGitignore', 'profiles', 'activeProfile'].some(affects)) {
       await recorder.refreshFilter();
     }
@@ -628,6 +639,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   void setWatching(false);
   await historyRestored;
   noteUnknownProfile();
+  noteDeprecatedSpeed();
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
