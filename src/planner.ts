@@ -20,9 +20,10 @@ const REFINE_MIN_SIMILARITY = 0.4;
 const FOLD_MAX_COMMON = 3;
 /**
  * Most added plus removed lines a line diff may search for. Diff time grows
- * with the square of this, so past it the changed region is retyped whole.
+ * with the square of this (about 100 ms at this bound), so past it the
+ * changed region is retyped whole.
  */
-const LINE_DIFF_MAX_EDITS = 1000;
+const LINE_DIFF_MAX_EDITS = 1500;
 /** Most added plus removed tokens a block's word diff may search for before it is retyped instead. */
 const WORD_DIFF_MAX_EDITS = 1000;
 
@@ -188,7 +189,8 @@ function changedRegion(before: string, after: string): { start: number; removed:
   const max = Math.min(before.length, after.length);
   let head = 0;
   while (head < max && before.charCodeAt(head) === after.charCodeAt(head)) head++;
-  head = before.lastIndexOf('\n', head - 1) + 1;
+  // lastIndexOf clamps a negative start to 0, so a head of 0 must stay put.
+  if (head > 0) head = before.lastIndexOf('\n', head - 1) + 1;
   let tail = 0;
   while (
     tail < max - head &&

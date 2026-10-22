@@ -100,9 +100,10 @@ export class ReorderBuffer<T> {
   }
 
   /**
-   * The wall clock, with everything held shifted back by any backward step
-   * since the last reading, so a step neither holds items for its length nor
-   * sorts later writes before them.
+   * The wall clock, with everything held or pending shifted back by any
+   * backward step since the last reading, so a step does not hold items for
+   * its length and held items stay ahead of writes made after it. A key for a
+   * burst that began before the step but is added after it is not shifted.
    */
   private now(): number {
     const now = this.clock.now();

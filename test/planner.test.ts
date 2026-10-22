@@ -129,20 +129,31 @@ test('large rewrite fallback: no shared lines, or a change at the very end', () 
     [uniqueLines('old', 100_000), uniqueLines('new', 100_000) + 'no newline'],
     ['top\n' + uniqueLines('old', 100_000), 'top\n' + uniqueLines('new', 50_000)],
     [uniqueLines('old', 100_000) + 'end\n', 'x' + uniqueLines('new', 100_000) + 'end\n'],
+    ['\n' + uniqueLines('old', 100_000), 'x' + uniqueLines('new', 100_000)],
   ]) {
     const { counts } = assertFastRoundTrip(before, after);
     assert.ok(counts.added >= 0 && counts.removed >= 0);
   }
 });
 
-test('word refinement gives up on a block too dissimilar to diff cheaply, and still round trips', () => {
-  const words = (seed: number, n: number) => Array.from({ length: n }, (_, i) => `w${(i * seed) % 9973}`).join(' ');
-  // Just under the refinement size limit; an unbounded word diff takes about 300 ms here.
-  const before = 'keep\n' + words(7, 1300) + '\nkeep\n';
-  const after = 'keep\n' + words(13, 1300) + '\nkeep\n';
-  const { value: hunks, ms } = timed(() => roundTrip(before, after));
-  assert.ok(ms < 200, `took ${Math.round(ms)} ms`);
+test('word refinement gives up on a block with too many word edits, and still round trips', () => {
+  // Every other word changes: similar enough to refine, but 1200 word edits.
+  const words = (changed: string) => Array.from({ length: 1200 }, (_, i) => `${i % 2 ? 'w' : changed}${i}`).join(' ');
+  const before = 'keep\n' + words('a') + '\nkeep\n';
+  const after = 'keep\n' + words('b') + '\nkeep\n';
+  assert.ok(before.length < 8000);
+  const hunks = roundTrip(before, after);
   assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].deleteText, words('a') + '\n');
+});
+
+test('a rename across a third of a 2000-line file is still retyped word by word', () => {
+  const lines = (name: string) => Array.from({ length: 2000 }, (_, i) => (i % 3 === 0 ? `use(${name}, ${i});\n` : `other(${i});\n`)).join('');
+  const before = lines('total');
+  const after = lines('sum');
+  const { hunks } = assertFastRoundTrip(before, after);
+  assert.equal(hunks.length, 667);
+  assert.ok(hunks.every((h) => h.deleteText === 'total' && h.insertText === 'sum'));
 });
 
 // Deterministic fuzz: random code-like edits must always round trip exactly.

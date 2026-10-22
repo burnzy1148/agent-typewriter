@@ -216,6 +216,14 @@ test('reorder: a backward step of more than 24.8 days asks for no oversized time
   assert.ok(clock.requested.every((ms) => ms <= 2 ** 31 - 1), `delays ${clock.requested.join(', ')}`);
 });
 
+test('reorder: a window longer than 24.8 days asks for no oversized timer', () => {
+  const { clock, out, buf } = setup(3_000_000_000);
+  clock.t = 1000;
+  buf.add('A', 1000, 'A');
+  assert.deepEqual(out, []);
+  assert.deepEqual(clock.requested, [2 ** 31 - 1]);
+});
+
 test('reorder: drain releases everything held, in order', () => {
   const { clock, out, buf } = setup(10_000);
   clock.t = 100;
