@@ -606,6 +606,8 @@ export async function run(): Promise<void> {
       await until('playback to settle', idle);
     };
     await setting('extensions', ['ts']);
+    // A read-only file is how these sections make an editor save fail; root can write it anyway.
+    const canFailSaves = process.getuid?.() !== 0;
 
     // R1. A delete is ordered by its own watcher event, not by the earlier
     // write it was merged with. Runs with the wide reorder window from step 8.
@@ -658,48 +660,53 @@ export async function run(): Promise<void> {
     await setting('debounceMs', 200);
     // A read waiting on a save that never finishes, and a second burst of the
     // same file whose timer fires meanwhile.
-    await created('src/chain2.ts', 'export const w = 0;\n');
-    const chainPath = path.join(root, 'src/chain2.ts');
-    const chainDoc = await vscode.workspace.openTextDocument(chainPath);
-    const chainEd = await vscode.window.showTextDocument(chainDoc);
-    await chainEd.edit((b) => b.insert(new vscode.Position(0, 0), '// unsaved by me\n'));
-    fs.chmodSync(chainPath, 0o444);
-    const chainSaved = await chainDoc.save();
-    fs.chmodSync(chainPath, 0o644);
-    assert.equal(chainSaved, false, 'expected the save of a read-only file to fail');
-    const atChain2 = timeline.all().length;
-    write('src/chain2.ts', 'export const w = 1;\n');
-    await sleep(300);
-    write('src/chain2.ts', 'export const w = 2;\n');
-    await until('last chain2 write recorded', () => eventsFor('src/chain2.ts', atChain2).at(-1)?.after === 'export const w = 2;\n');
-    await settled();
-    await vscode.window.showTextDocument(chainDoc);
-    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
-    assertChain('src/chain2.ts', atChain2, 'export const w = 0;\n', 'export const w = 2;\n');
+    let atChain2 = timeline.all().length;
+    if (canFailSaves) {
+      await created('src/chain2.ts', 'export const w = 0;\n');
+      const chainPath = path.join(root, 'src/chain2.ts');
+      const chainDoc = await vscode.workspace.openTextDocument(chainPath);
+      const chainEd = await vscode.window.showTextDocument(chainDoc);
+      await chainEd.edit((b) => b.insert(new vscode.Position(0, 0), '// unsaved by me\n'));
+      fs.chmodSync(chainPath, 0o444);
+      const chainSaved = await chainDoc.save();
+      fs.chmodSync(chainPath, 0o644);
+      assert.equal(chainSaved, false, 'expected the save of a read-only file to fail');
+      atChain2 = timeline.all().length;
+      write('src/chain2.ts', 'export const w = 1;\n');
+      await sleep(300);
+      write('src/chain2.ts', 'export const w = 2;\n');
+      await until('last chain2 write recorded', () => eventsFor('src/chain2.ts', atChain2).at(-1)?.after === 'export const w = 2;\n');
+      await settled();
+      await vscode.window.showTextDocument(chainDoc);
+      await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+      assertChain('src/chain2.ts', atChain2, 'export const w = 0;\n', 'export const w = 2;\n');
+    }
     await setting('debounceMs', 100);
     console.log(`[it] same-file changes chain ok (${eventsFor('src/chain.ts', atChain).length} and ${eventsFor('src/chain2.ts', atChain2).length} changes)`);
 
     // R3. A save that fails (here the file is read-only) is not the next
     // outside write's before text.
-    await created('src/failedSave.ts', 'export const s = 0;\n');
-    const failPath = path.join(root, 'src/failedSave.ts');
-    const failDoc = await vscode.workspace.openTextDocument(failPath);
-    const failEd = await vscode.window.showTextDocument(failDoc);
-    await failEd.edit((b) => b.insert(new vscode.Position(0, 0), '// unsaved by me\n'));
-    fs.chmodSync(failPath, 0o444);
-    const savedOk = await failDoc.save();
-    fs.chmodSync(failPath, 0o644);
-    assert.equal(savedOk, false, 'expected the save of a read-only file to fail');
-    await vscode.window.showTextDocument(failDoc);
-    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
-    const atAfterFail = timeline.all().length;
-    write('src/failedSave.ts', 'export const s = 1;\n');
-    await until('write after a failed save recorded', () => eventsFor('src/failedSave.ts', atAfterFail).length === 1);
-    await settled();
-    const afterFail = eventsFor('src/failedSave.ts', atAfterFail);
-    assert.equal(afterFail.length, 1);
-    assert.equal(afterFail[0].before, 'export const s = 0;\n', 'a failed save became the before text');
-    console.log('[it] failed save ok');
+    if (canFailSaves) {
+      await created('src/failedSave.ts', 'export const s = 0;\n');
+      const failPath = path.join(root, 'src/failedSave.ts');
+      const failDoc = await vscode.workspace.openTextDocument(failPath);
+      const failEd = await vscode.window.showTextDocument(failDoc);
+      await failEd.edit((b) => b.insert(new vscode.Position(0, 0), '// unsaved by me\n'));
+      fs.chmodSync(failPath, 0o444);
+      const savedOk = await failDoc.save();
+      fs.chmodSync(failPath, 0o644);
+      assert.equal(savedOk, false, 'expected the save of a read-only file to fail');
+      await vscode.window.showTextDocument(failDoc);
+      await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+      const atAfterFail = timeline.all().length;
+      write('src/failedSave.ts', 'export const s = 1;\n');
+      await until('write after a failed save recorded', () => eventsFor('src/failedSave.ts', atAfterFail).length === 1);
+      await settled();
+      const afterFail = eventsFor('src/failedSave.ts', atAfterFail);
+      assert.equal(afterFail.length, 1);
+      assert.equal(afterFail[0].before, 'export const s = 0;\n', 'a failed save became the before text');
+      console.log('[it] failed save ok');
+    }
 
     // R4. A save of a file that is not recorded leaves nothing behind: once the
     // file is recorded, its change starts from its baseline, not the saved text.
@@ -827,12 +834,14 @@ export async function run(): Promise<void> {
     assert.equal(mirrorText('src/thing.ts'), '', 'the replaced file mirror was not emptied');
     assert.equal(api.recorder.hasBaseline(uriOf('src/thing.ts')), false, 'the replaced file kept its baseline');
     const atBack2 = timeline.all().length;
+    // The watcher may report this as one change of src/thing.ts.
     fs.rmSync(path.join(root, 'src/thing.ts'), { recursive: true });
-    await sleep(500);
     write('src/thing.ts', 'brand new\n');
     await until('file at the old path again', () => eventsFor('src/thing.ts', atBack2).length > 0);
+    await until('directory file deleted', () => eventsFor('src/thing.ts/inner.ts', atBack2).some((e) => e.kind === 'delete'));
     await settled();
     assert.deepEqual(eventsFor('src/thing.ts', atBack2).map((e) => [e.kind, e.before]), [['create', '']]);
+    assert.equal(api.recorder.hasBaseline(uriOf('src/thing.ts/inner.ts')), false, 'a file of the replaced directory kept its baseline');
     console.log('[it] file replaced by a directory ok');
 
     // R8. A case-only rename deletes the old spelling, also on case-insensitive filesystems.
@@ -847,6 +856,36 @@ export async function run(): Promise<void> {
     assert.equal(api.recorder.watchedCount, watchedCase, 'a case-only rename grew the watched count');
     assert.equal(mirrorText('src/CaseName.ts'), '', 'the old spelling mirror was not emptied');
     console.log('[it] case-only rename ok');
+
+    // R10. A case-only rename of a directory deletes each file under the old spelling.
+    fs.mkdirSync(path.join(root, 'src/CaseDir'));
+    await sleep(1000);
+    await created('src/CaseDir/a.ts', 'export const inCaseDir = 1;\n');
+    const watchedCaseDir = api.recorder.watchedCount;
+    const atCaseDir = timeline.all().length;
+    fs.renameSync(path.join(root, 'src/CaseDir'), path.join(root, 'src/casedir'));
+    await until('directory case rename recorded', () => ['delete src/CaseDir/a.ts', 'create src/casedir/a.ts'].every((x) => relEvents(atCaseDir).includes(x)));
+    await settled();
+    assert.deepEqual([...relEvents(atCaseDir)].sort(), ['create src/casedir/a.ts', 'delete src/CaseDir/a.ts']);
+    assert.equal(api.recorder.hasBaseline(uriOf('src/CaseDir/a.ts')), false, 'the old directory spelling kept its baseline');
+    assert.equal(api.recorder.watchedCount, watchedCaseDir, 'a case-only directory rename grew the watched count');
+    console.log('[it] case-only directory rename ok');
+
+    // R11. A directory created inside an excluded tree is not walked.
+    const restoreExclude = cfg().inspect('exclude')?.workspaceValue;
+    await setting('exclude', [...cfg().get<string[]>('exclude', []), 'src/skipme/**']);
+    await until('exclude to apply', () => !api.recorder.matches(uriOf('src/skipme/x.ts')), 10000);
+    fs.mkdirSync(path.join(root, 'src/skipme'));
+    await sleep(1000);
+    const preparedSkip = `${root}-skip`;
+    fs.mkdirSync(path.join(preparedSkip, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(preparedSkip, 'deep', 'x.ts'), 'export const skipped = 1;\n');
+    fs.renameSync(preparedSkip, path.join(root, 'src/skipme/inner'));
+    await sleep(1500);
+    assert.match(api.recorder.describeActivity(), /watcher create src\/skipme\/inner/, 'the watcher did not report the moved-in directory');
+    assert.doesNotMatch(api.recorder.describeActivity(), /in directory create src\/skipme/, 'a directory inside an excluded tree was walked');
+    await setting('exclude', restoreExclude);
+    console.log('[it] excluded trees not walked ok');
 
     // R9. A read in flight when recording stops writes nothing, so the next
     // session starts from the disk text at restart.

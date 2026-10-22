@@ -27,6 +27,9 @@ import type { Settings } from './config';
 /** How long a change read mid-save waits for the save to finish. */
 const SAVE_SETTLE_MAX_MS = 1000;
 
+/** How long it waits instead for a save that started over SAVE_SETTLE_MAX_MS before the change. */
+const OLD_SAVE_GRACE_MS = 250;
+
 /** How many recent watcher events and read outcomes the recorder keeps for diagnostics. */
 const ACTIVITY_LIMIT = 200;
 
@@ -52,6 +55,9 @@ export class Recorder implements vscode.Disposable {
   private readonly timers = new Map<string, Burst>();
   /** Reads of one file run one at a time, so each starts from the snapshot the one before it stored. */
   private readonly flushes = new KeyedSerial();
+  /** Paths deleted this tick whose baselined files are looked up together. */
+  private readonly deletedDirs = new Set<string>();
+  private deleteSweep: NodeJS.Immediate | undefined;
   /** Holds recorded changes briefly so they reach the timeline in write order. */
   private readonly reorder: ReorderBuffer<NewChangeEvent>;
   /** Text the latest editor save wrote, per file, until the next change of that file is read. */
@@ -260,6 +266,9 @@ export class Recorder implements vscode.Disposable {
     this.timers.clear();
     // Flushes still running see the new session and write nothing.
     this.flushes.clear();
+    if (this.deleteSweep) clearImmediate(this.deleteSweep);
+    this.deleteSweep = undefined;
+    this.deletedDirs.clear();
     clearTimeout(this.ignoreRefresh);
     clearTimeout(this.worktreeRefresh);
     for (const t of this.goneChecks.values()) clearTimeout(t);
@@ -559,6 +568,14 @@ export class Recorder implements vscode.Disposable {
     return scope.nested.has(asDir) || !!ignored?.has(asDir) || this.filter.excludesDir(rel);
   }
 
+  /** Like `skipsDir`, for the directory or any directory above it, such as anything under node_modules/. */
+  private skipsTree(scope: Scope, rel: string): boolean {
+    for (let end = rel.indexOf('/'); end !== -1; end = rel.indexOf('/', end + 1)) {
+      if (this.skipsDir(scope, rel.slice(0, end))) return true;
+    }
+    return this.skipsDir(scope, rel);
+  }
+
   /**
    * A directory was created or moved in. Watchers report only the directory,
    * not the files in it, so each file found is scheduled as created. A file
@@ -572,23 +589,48 @@ export class Recorder implements vscode.Disposable {
     const scope = this.scopeOf(dir);
     if (!scope) return;
     const rel = this.relOf(scope, dir);
-    if (this.skipsDir(scope, rel)) return;
+    if (this.skipsTree(scope, rel)) return;
     const files = await this.walk(scope, stale, dir, rel);
     if (stale()) return;
     for (const file of files) this.schedule(file, 'create', true);
   }
 
-  /** A directory was deleted. Watchers report only the directory, so each file recorded under it is scheduled as deleted. */
+  /**
+   * A directory may have been deleted. Watchers report only the directory, so
+   * each file recorded under it is scheduled as deleted. Paths deleted in one
+   * tick are looked up together, in one pass over the baselines.
+   */
   private scheduleDeletesUnder(dir: vscode.Uri): void {
-    // A recorded file has nothing under it.
-    if (this.snapshots.has(dir.toString()) || this.gitBaselines.has(dir.toString())) return;
-    const fold = (k: string) => (process.platform === 'win32' ? k.toLowerCase() : k);
-    const prefix = fold(dir.toString().replace(/\/+$/, '') + '/');
-    const under: string[] = [];
+    const key = dir.toString();
+    // A recorded file has nothing under it, and an excluded or ignored tree has no baselines.
+    if (this.snapshots.has(key) || this.gitBaselines.has(key)) return;
+    const scope = this.scopeOf(dir);
+    if (!scope || this.skipsTree(scope, this.relOf(scope, dir))) return;
+    this.deletedDirs.add(foldKey(key.replace(/\/+$/, '')));
+    this.deleteSweep ??= setImmediate(() => {
+      this.deleteSweep = undefined;
+      const dirs = new Set(this.deletedDirs);
+      this.deletedDirs.clear();
+      if (!this.running) return;
+      for (const child of this.keysUnder(dirs)) this.schedule(vscode.Uri.parse(child), 'delete', true);
+    });
+  }
+
+  /** Baselined keys inside any of these directories (folded keys without a trailing slash). */
+  private keysUnder(dirs: Set<string>): string[] {
+    const found: string[] = [];
     for (const store of [this.snapshots, this.gitBaselines]) {
-      for (const key of store.keys()) if (fold(key).startsWith(prefix)) under.push(key);
+      for (const key of store.keys()) {
+        const k = foldKey(key);
+        for (let i = k.lastIndexOf('/'); i > 0; i = k.lastIndexOf('/', i - 1)) {
+          if (dirs.has(k.slice(0, i))) {
+            found.push(key);
+            break;
+          }
+        }
+      }
     }
-    for (const key of under) this.schedule(vscode.Uri.parse(key), 'delete', true);
+    return found;
   }
 
   private async captureBaseline(): Promise<void> {
@@ -788,22 +830,24 @@ export class Recorder implements vscode.Disposable {
 
     // A change read mid-save waits for the save to finish, so the comparison
     // below sees the final saved text. A save that started well before this
-    // burst and never finished failed, and is forgotten.
+    // burst most likely failed: it gets only a moment, enough for the did-save
+    // of a save whose participants ran long, and is then forgotten.
     let pendingSave = s.ignoreOwnSaves ? this.ownSaves.get(key) : undefined;
-    if (pendingSave && !pendingSave.done && pendingSave.startedAt < burst.firstArrival - SAVE_SETTLE_MAX_MS) {
-      this.forgetOwnSave(key, pendingSave);
-      pendingSave = undefined;
-    }
     if (pendingSave && !pendingSave.done) {
-      await Promise.race([pendingSave.settled, new Promise((r) => setTimeout(r, SAVE_SETTLE_MAX_MS))]);
+      const old = pendingSave.startedAt < burst.firstArrival - SAVE_SETTLE_MAX_MS;
+      await Promise.race([pendingSave.settled, new Promise((r) => setTimeout(r, old ? OLD_SAVE_GRACE_MS : SAVE_SETTLE_MAX_MS))]);
       if (dropped()) return;
+      if (old && !pendingSave.done) {
+        this.forgetOwnSave(key, pendingSave);
+        pendingSave = undefined;
+      }
     }
 
     let exists = await stat(uri);
     if (dropped()) return;
     // A delete event for a path that still stats may be a case-only rename on
     // a case-insensitive filesystem: this spelling is gone.
-    if (exists && burst.sawDelete && !(await existsExactly(uri))) exists = undefined;
+    if (exists && burst.sawDelete && !(await existsExactly(uri, scope?.root))) exists = undefined;
     if (dropped()) return;
     // A file replaced by a directory is deleted as a file.
     const isDir = exists !== undefined && (exists.type & vscode.FileType.Directory) !== 0;
@@ -840,6 +884,14 @@ export class Recorder implements vscode.Disposable {
       return;
     }
     if (dropped()) return;
+    // A directory replaced by a file, which may get only a change event: the
+    // files recorded in it are gone, and this one is new.
+    let created = burst.created;
+    if (previous === undefined && !created) {
+      const under = this.keysUnder(new Set([foldKey(key)]));
+      for (const child of under) this.schedule(vscode.Uri.parse(child), 'delete', true);
+      created = under.length > 0;
+    }
     const writtenAt = clampOrderKey(exists.mtime, burst.firstArrival, burst.lastArrival, s.reorderWindowMs);
 
     let readError: unknown;
@@ -867,7 +919,7 @@ export class Recorder implements vscode.Disposable {
     if (decision.kind === 'after-own') {
       // Something wrote after the user's save: replay only that, from the saved text.
       this.snapshots.set(key, snap);
-      const kind = previous === undefined && burst.created ? 'create' : 'modify';
+      const kind = previous === undefined && created ? 'create' : 'modify';
       this.record(uri, relPath, kind, decision.before, snap.text, snap.eol, writtenAt);
       return;
     }
@@ -878,7 +930,7 @@ export class Recorder implements vscode.Disposable {
     if (previous === undefined) {
       // No baseline: a brand-new file is typed from empty; an unknown existing
       // file just gets its baseline now.
-      if (burst.created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt);
+      if (created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt);
       else {
         this.note(`baseline captured ${relPath}`);
         this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
@@ -901,18 +953,16 @@ export class Recorder implements vscode.Disposable {
    */
   private ownSaveKeys(uri: vscode.Uri, text: string): { keep: string[]; drop: string[] } {
     const own = uri.toString();
-    const keys = [own];
-    const target = this.linkTargetOf(uri);
-    if (target && target.toString() !== own) {
-      let linkFile = false;
-      try {
-        linkFile = fs.lstatSync(uri.fsPath).isSymbolicLink();
-      } catch {
-        // Gone already; keep the document's own path too.
-      }
-      if (linkFile) keys.pop();
-      keys.push(target.toString());
+    let linkFile = false;
+    try {
+      linkFile = fs.lstatSync(uri.fsPath).isSymbolicLink();
+    } catch {
+      // Gone already; keep the document's own path.
     }
+    const target = this.linkTargetOf(uri)?.toString();
+    // A link file's save writes only its target, which may be outside every recorded folder.
+    const keys = linkFile ? [] : [own];
+    if (target && !keys.includes(target)) keys.push(target);
     const fits = Buffer.byteLength(text, 'utf8') <= this.settings().maxFileSizeKB * 1024;
     const keep = keys.filter((k) => fits && this.passes(vscode.Uri.parse(k)));
     return { keep, drop: keys.filter((k) => !keep.includes(k)) };
@@ -1101,15 +1151,30 @@ async function stat(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {
   }
 }
 
-/** True when the parent directory lists this name with the same case, not just one a case-insensitive filesystem also finds. */
-async function existsExactly(uri: vscode.Uri): Promise<boolean> {
-  const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
-  try {
-    const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.joinPath(uri, '..'));
-    return entries.some(([n]) => n === name || n.normalize() === name.normalize());
-  } catch {
-    return true;
+/**
+ * True when each directory from `root` down lists the next name of the path
+ * with the same case, not just one a case-insensitive filesystem also finds,
+ * so a case-only rename of the file or of a directory above it shows.
+ */
+async function existsExactly(uri: vscode.Uri, root: vscode.Uri | undefined): Promise<boolean> {
+  let dir = root && isUnder(root, uri) ? root : vscode.Uri.joinPath(uri, '..');
+  const names = uri.path.slice(dir.path.replace(/\/+$/, '').length + 1).split('/');
+  for (const name of names) {
+    let entries: [string, vscode.FileType][];
+    try {
+      entries = await vscode.workspace.fs.readDirectory(dir);
+    } catch {
+      return true;
+    }
+    if (!entries.some(([n]) => n === name || n.normalize() === name.normalize())) return false;
+    dir = vscode.Uri.joinPath(dir, name);
   }
+  return true;
+}
+
+/** A URI string as compared for containment: case is ignored on Windows, as in `isUnder`. */
+function foldKey(key: string): string {
+  return process.platform === 'win32' ? key.toLowerCase() : key;
 }
 
 /** Path used for filtering: relative to its workspace folder, so globs like src/** work in every folder. */
