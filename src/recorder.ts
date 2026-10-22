@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { PathFilter } from './filter';
 import { countChanges, detectEol, normalizeEol, type Eol } from './planner';
 import { listCleanTracked, readBlob, selectWithinBudget, type BudgetCandidate } from './gitBaseline';
@@ -18,6 +19,7 @@ import {
 } from './worktrees';
 import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
+import { KeyedSerial } from './keyedSerial';
 import { ReorderBuffer, clampOrderKey } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
@@ -45,7 +47,11 @@ export class Recorder implements vscode.Disposable {
   private gitUnavailable = false;
   /** Bumped by each baseline capture and by stop; an older capture stops writing once it is stale. */
   private baselineGen = 0;
+  /** Bumped by each stop; a burst or flush from an earlier recording session writes nothing. */
+  private session = 0;
   private readonly timers = new Map<string, Burst>();
+  /** Reads of one file run one at a time, so each starts from the snapshot the one before it stored. */
+  private readonly flushes = new KeyedSerial();
   /** Holds recorded changes briefly so they reach the timeline in write order. */
   private readonly reorder: ReorderBuffer<NewChangeEvent>;
   /** Text the latest editor save wrote, per file, until the next change of that file is read. */
@@ -187,9 +193,17 @@ export class Recorder implements vscode.Disposable {
     vscode.workspace.onWillSaveTextDocument(
       (e) => {
         if (e.document.uri.scheme !== 'file') return;
+        const text = e.document.getText();
+        const keys = this.ownSaveKeys(e.document.uri, text);
+        for (const key of keys.drop) this.forgetOwnSave(key);
         let resolve!: () => void;
         const settled = new Promise<void>((r) => (resolve = r));
-        this.ownSaves.set(e.document.uri.toString(), { text: e.document.getText(), settled, resolve, done: false });
+        const entry: OwnSave = { text, settled, resolve, done: false, startedAt: Date.now() };
+        for (const key of keys.keep) {
+          // A save started again before the last one finished: wake anything waiting on the old one.
+          this.ownSaves.get(key)?.resolve();
+          this.ownSaves.set(key, entry);
+        }
       },
       null,
       this.subscriptions,
@@ -197,15 +211,29 @@ export class Recorder implements vscode.Disposable {
     vscode.workspace.onDidSaveTextDocument(
       (doc) => {
         if (doc.uri.scheme !== 'file') return;
-        const key = doc.uri.toString();
-        const entry = this.ownSaves.get(key);
-        if (entry && !entry.done) {
-          entry.text = doc.getText();
-          entry.done = true;
-          entry.resolve();
-        } else {
-          this.ownSaves.set(key, { text: doc.getText(), settled: Promise.resolve(), resolve: () => {}, done: true });
-        }
+        const text = doc.getText();
+        const keys = this.ownSaveKeys(doc.uri, text);
+        for (const key of keys.drop) this.forgetOwnSave(key);
+        // The will-save entry is completed in place, so a flush waiting on it wakes up.
+        const entry = keys.keep.map((k) => this.ownSaves.get(k)).find((e) => e && !e.done) ?? {
+          text,
+          settled: Promise.resolve(),
+          resolve: () => {},
+          done: true,
+          startedAt: Date.now(),
+        };
+        entry.text = text;
+        entry.done = true;
+        entry.resolve();
+        for (const key of keys.keep) this.ownSaves.set(key, entry);
+      },
+      null,
+      this.subscriptions,
+    );
+    // Folders added or removed while recording get, or lose, their scope, watcher and baselines.
+    vscode.workspace.onDidChangeWorkspaceFolders(
+      () => {
+        this.refreshFilter('Workspace folders changed').catch((err) => this.log.appendLine(`Failed to apply workspace folder changes: ${String(err)}`));
       },
       null,
       this.subscriptions,
@@ -221,6 +249,7 @@ export class Recorder implements vscode.Disposable {
   stop(): void {
     this.running = false;
     this.baselineGen++;
+    this.session++;
     for (const d of this.subscriptions.splice(0)) d.dispose();
     for (const scope of this.scopes.values()) for (const d of scope.watcher) d.dispose();
     this.scopes.clear();
@@ -229,6 +258,8 @@ export class Recorder implements vscode.Disposable {
       burst.done();
     }
     this.timers.clear();
+    // Flushes still running see the new session and write nothing.
+    this.flushes.clear();
     clearTimeout(this.ignoreRefresh);
     clearTimeout(this.worktreeRefresh);
     for (const t of this.goneChecks.values()) clearTimeout(t);
@@ -253,7 +284,7 @@ export class Recorder implements vscode.Disposable {
       this.filter = this.buildFilter();
       await this.refreshScopes();
       await this.refreshIgnored();
-      for (const store of [this.snapshots, this.gitBaselines]) {
+      for (const store of [this.snapshots, this.gitBaselines, this.ownSaves]) {
         for (const key of [...store.keys()]) {
           if (!this.passes(vscode.Uri.parse(key))) store.delete(key);
         }
@@ -276,7 +307,7 @@ export class Recorder implements vscode.Disposable {
     if (!this.running) return;
     this.gitUnavailable = false;
     for (const store of [this.snapshots, this.gitBaselines]) {
-      for (const key of [...store.keys()]) if (!this.timers.has(key)) store.delete(key);
+      for (const key of [...store.keys()]) if (!this.timers.has(key) && !this.flushes.has(key)) store.delete(key);
     }
     await this.captureBaseline();
     this.log.appendLine(`Baselines rebuilt: watching ${this.watchedCount} files.`);
@@ -428,7 +459,11 @@ export class Recorder implements vscode.Disposable {
 
   /** The scope that records this path, if any. A chosen worktree inside a folder takes precedence over the folder. */
   private scopeOf(uri: vscode.Uri): Scope | undefined {
-    for (const s of this.scopes.values()) if (!s.own && isUnder(s.root, uri)) return s;
+    const open = vscode.workspace.workspaceFolders ?? [];
+    for (const s of this.scopes.values()) {
+      // A removed folder's chosen worktree stops counting at once, before the refresh drops its scope.
+      if (!s.own && isUnder(s.root, uri) && open.some((f) => f.uri.toString() === s.folder.uri.toString())) return s;
+    }
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     const s = folder && this.scopes.get(folder.uri.toString());
     return s?.own ? s : undefined;
@@ -480,11 +515,16 @@ export class Recorder implements vscode.Disposable {
     }, 300);
   }
 
-  /** Files under a chosen checkout's root, skipping directories the filters, gitignore, or nested worktrees rule out. */
-  private async walk(scope: Scope, stale: () => boolean): Promise<vscode.Uri[]> {
+  /**
+   * Files under a directory of the scope (its root unless given, with `startRel`
+   * its root-relative path), skipping directories the filters, gitignore, or
+   * nested worktrees rule out, and below the start any directory holding a
+   * linked worktree's `.git` file, which git may not have listed yet.
+   */
+  private async walk(scope: Scope, stale: () => boolean, start = scope.root, startRel = ''): Promise<vscode.Uri[]> {
     const files: vscode.Uri[] = [];
     const ignored = this.ignored.get(scope.folder.uri.toString());
-    const dirs: Array<[vscode.Uri, string]> = [[scope.root, '']];
+    const dirs: Array<[vscode.Uri, string]> = [[start, startRel]];
     while (dirs.length > 0 && !stale()) {
       await Promise.all(
         dirs.splice(0, 64).map(async ([dir, rel]) => {
@@ -494,13 +534,14 @@ export class Recorder implements vscode.Disposable {
           } catch {
             return;
           }
+          const gitFile = entries.some(([name, type]) => name === '.git' && type & vscode.FileType.File);
+          if (rel && gitFile && isLinkedWorktreeGitFile(vscode.Uri.joinPath(dir, '.git').fsPath)) return;
           for (const [name, type] of entries) {
             const childRel = rel ? `${rel}/${name}` : name;
             if (type & vscode.FileType.Directory) {
               // Linked directories can loop; findFiles' default skips them the same way.
               if (type & vscode.FileType.SymbolicLink) continue;
-              const asDir = childRel + '/';
-              if (scope.nested.has(asDir) || ignored?.has(asDir) || this.filter.excludesDir(childRel)) continue;
+              if (this.skipsDir(scope, childRel, ignored)) continue;
               dirs.push([vscode.Uri.joinPath(dir, name), childRel]);
             } else if (type & vscode.FileType.File) {
               files.push(vscode.Uri.joinPath(dir, name));
@@ -510,6 +551,44 @@ export class Recorder implements vscode.Disposable {
       );
     }
     return files;
+  }
+
+  /** True when nothing under this root-relative directory is recorded: a nested worktree, gitignored, or excluded. */
+  private skipsDir(scope: Scope, rel: string, ignored = this.ignored.get(scope.folder.uri.toString())): boolean {
+    const asDir = rel + '/';
+    return scope.nested.has(asDir) || !!ignored?.has(asDir) || this.filter.excludesDir(rel);
+  }
+
+  /**
+   * A directory was created or moved in. Watchers report only the directory,
+   * not the files in it, so each file found is scheduled as created. A file
+   * that also gets its own event shares its debounce burst, so it is recorded once.
+   */
+  private async expandCreatedDirectory(dir: vscode.Uri): Promise<void> {
+    const session = this.session;
+    const stale = () => !this.running || session !== this.session;
+    const st = await stat(dir);
+    if (!st || !(st.type & vscode.FileType.Directory) || st.type & vscode.FileType.SymbolicLink || stale()) return;
+    const scope = this.scopeOf(dir);
+    if (!scope) return;
+    const rel = this.relOf(scope, dir);
+    if (this.skipsDir(scope, rel)) return;
+    const files = await this.walk(scope, stale, dir, rel);
+    if (stale()) return;
+    for (const file of files) this.schedule(file, 'create', true);
+  }
+
+  /** A directory was deleted. Watchers report only the directory, so each file recorded under it is scheduled as deleted. */
+  private scheduleDeletesUnder(dir: vscode.Uri): void {
+    // A recorded file has nothing under it.
+    if (this.snapshots.has(dir.toString()) || this.gitBaselines.has(dir.toString())) return;
+    const fold = (k: string) => (process.platform === 'win32' ? k.toLowerCase() : k);
+    const prefix = fold(dir.toString().replace(/\/+$/, '') + '/');
+    const under: string[] = [];
+    for (const store of [this.snapshots, this.gitBaselines]) {
+      for (const key of store.keys()) if (fold(key).startsWith(prefix)) under.push(key);
+    }
+    for (const key of under) this.schedule(vscode.Uri.parse(key), 'delete', true);
   }
 
   private async captureBaseline(): Promise<void> {
@@ -644,13 +723,23 @@ export class Recorder implements vscode.Disposable {
     return snap;
   }
 
-  private schedule(uri: vscode.Uri, event: 'create' | 'change' | 'delete'): void {
+  /**
+   * A watcher event, or (`inDir`) a file found under a directory a watcher
+   * event named. Merges it into the file's debounce burst.
+   */
+  private schedule(uri: vscode.Uri, event: 'create' | 'change' | 'delete', inDir = false): void {
     if (!this.running || uri.scheme !== 'file') return;
-    if (this.ignored.size > 0 && uri.path.endsWith('/.gitignore')) this.scheduleIgnoreRefresh();
+    if (!inDir) {
+      if (this.ignored.size > 0 && uri.path.endsWith('/.gitignore')) this.scheduleIgnoreRefresh();
+      // Directory paths can fail the filter, so look inside them before it applies.
+      if (event === 'delete') this.scheduleDeletesUnder(uri);
+      else if (event === 'create') {
+        this.expandCreatedDirectory(uri).catch((err) => this.log.appendLine(`Failed to read new directory ${relPathOf(uri)}: ${String(err)}`));
+      }
+    }
     const passes = this.passes(uri);
-    this.note(`watcher ${event} ${this.traceName(uri)}${passes ? '' : ' (filtered out)'}`);
+    this.note(`${inDir ? 'in directory' : 'watcher'} ${event} ${this.traceName(uri)}${passes ? '' : ' (filtered out)'}`);
     if (!passes) return;
-    const created = event === 'create';
     const key = uri.toString();
     const now = Date.now();
     const existing = this.timers.get(key);
@@ -658,80 +747,118 @@ export class Recorder implements vscode.Disposable {
     const burst: Burst = {
       timer: setTimeout(() => {
         this.timers.delete(key);
-        this.flush(uri, burst)
+        this.flushes
+          .run(key, () => this.flush(uri, burst))
           .catch((err) => {
             this.note(`read failed ${this.traceName(uri)}: ${String(err)}`);
             this.log.appendLine(`Failed to record ${relPathOf(uri)}: ${String(err)}`);
           })
           .finally(burst.done);
       }, this.settings().debounceMs),
-      created: created || (existing?.created ?? false),
+      created: event === 'create' || (existing?.created ?? false),
+      sawDelete: event === 'delete' || (existing?.sawDelete ?? false),
+      deletedAt: event === 'delete' ? (existing?.deletedAt ?? now) : undefined,
       firstArrival: existing?.firstArrival ?? now,
       lastArrival: now,
+      session: this.session,
       done: existing?.done ?? this.reorder.pending(now),
     };
     this.timers.set(key, burst);
   }
 
   private async flush(uri: vscode.Uri, burst: Burst): Promise<void> {
-    // The checkout or its worktrees may have changed since the burst started.
-    if (!this.running || !this.passes(uri)) {
-      this.note(`${this.running ? 'no longer matches the filter' : 'recorder stopped'}, dropped ${this.traceName(uri)}`);
+    const key = uri.toString();
+    // Recording may stop, restart, or stop matching this file while the read
+    // waits; from then on it writes nothing, like a burst stop() cancels.
+    const dropped = (): boolean => {
+      const current = this.running && burst.session === this.session;
+      if (current && this.passes(uri)) return false;
+      this.note(`${current ? 'no longer matches the filter' : 'recorder stopped'}, dropped ${this.traceName(uri)}`);
+      return true;
+    };
+    if (dropped()) {
+      if (burst.session === this.session) this.ownSaves.delete(key);
       return;
     }
-    const key = uri.toString();
     const scope = this.scopeOf(uri);
     const relPath = this.displayOf(scope, uri);
     const s = this.settings();
     const previous = this.snapshots.get(key) ?? (await this.takeGitBaseline(key, s));
+    if (dropped()) return;
 
     // A change read mid-save waits for the save to finish, so the comparison
-    // below sees the final saved text.
-    const pendingSave = s.ignoreOwnSaves ? this.ownSaves.get(key) : undefined;
+    // below sees the final saved text. A save that started well before this
+    // burst and never finished failed, and is forgotten.
+    let pendingSave = s.ignoreOwnSaves ? this.ownSaves.get(key) : undefined;
+    if (pendingSave && !pendingSave.done && pendingSave.startedAt < burst.firstArrival - SAVE_SETTLE_MAX_MS) {
+      this.forgetOwnSave(key, pendingSave);
+      pendingSave = undefined;
+    }
     if (pendingSave && !pendingSave.done) {
       await Promise.race([pendingSave.settled, new Promise((r) => setTimeout(r, SAVE_SETTLE_MAX_MS))]);
+      if (dropped()) return;
     }
 
-    const exists = await stat(uri);
-    if (!exists) {
+    let exists = await stat(uri);
+    if (dropped()) return;
+    // A delete event for a path that still stats may be a case-only rename on
+    // a case-insensitive filesystem: this spelling is gone.
+    if (exists && burst.sawDelete && !(await existsExactly(uri))) exists = undefined;
+    if (dropped()) return;
+    // A file replaced by a directory is deleted as a file.
+    const isDir = exists !== undefined && (exists.type & vscode.FileType.Directory) !== 0;
+    if (!exists || isDir) {
       this.ownSaves.delete(key);
       // A chosen worktree being removed deletes all its files; that is the
       // checkout going away, not a change to replay.
       if (scope && !scope.own && !(await stat(vscode.Uri.joinPath(scope.checkout, '.git')))) {
+        if (dropped()) return;
         this.note(`checkout removed, dropped ${relPath}`);
         this.snapshots.delete(key);
         return;
       }
       if (previous !== undefined) {
         this.snapshots.delete(key);
-        this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.firstArrival);
+        // Keyed by its own delete event: earlier writes in the burst were before it.
+        this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.deletedAt ?? burst.lastArrival);
+        // A change event is all a file swapped for a directory may get; the files in it are new.
+        if (isDir && !burst.created) await this.expandCreatedDirectory(uri);
       } else {
-        this.note(`gone, no baseline ${relPath}`);
+        this.note(isDir ? `not a file ${relPath}` : `gone, no baseline ${relPath}`);
       }
       return;
     }
     if (exists.type !== vscode.FileType.File) {
       this.note(`not a file ${relPath}`);
+      this.ownSaves.delete(key);
       return;
     }
     if (previous === undefined && (await this.newlyIgnored(uri))) {
+      if (dropped()) return;
       this.note(`newly ignored ${relPath}`);
+      this.ownSaves.delete(key);
       return;
     }
+    if (dropped()) return;
     const writtenAt = clampOrderKey(exists.mtime, burst.firstArrival, burst.lastArrival, s.reorderWindowMs);
 
     let readError: unknown;
     const snap = await this.readText(uri, s, exists.size, (err) => (readError = err));
+    if (dropped()) return;
     if (snap === undefined) {
       this.note(readError === undefined ? `binary or too large ${relPath}` : `unreadable ${relPath}: ${String(readError)}`);
       this.snapshots.delete(key);
+      this.ownSaves.delete(key);
       return;
     }
 
-    // Each editor save is matched once, against the next change read for its file.
-    const saved = this.ownSaves.get(key);
-    this.ownSaves.delete(key);
-    const decision = s.ignoreOwnSaves ? decideOwnSave(saved?.text, snap.text) : ({ kind: 'external' } as const);
+    // Each editor save is matched once, against the next change read for its
+    // file. A save that started after this read was waited on is left for the
+    // change its own write brings, unless it already finished.
+    let saved = s.ignoreOwnSaves ? this.ownSaves.get(key) : undefined;
+    if (saved && !saved.done && saved !== pendingSave) saved = undefined;
+    else this.ownSaves.delete(key);
+    const decision = saved ? decideOwnSave(saved.text, snap.text, saved.done) : ({ kind: 'external' } as const);
     if (decision.kind === 'own') {
       this.note(`own save ${relPath}`);
       this.snapshots.set(key, snap);
@@ -763,6 +890,62 @@ export class Recorder implements vscode.Disposable {
       return;
     }
     this.record(uri, relPath, 'modify', previous.text, snap.text, snap.eol, writtenAt);
+  }
+
+  /**
+   * Where an editor save of this document shows up: its own path and, when a
+   * symlink inside a recorded folder leads to another file there, that file's
+   * path. A document that is itself a symlink file only writes its target.
+   * `keep` are the keys to remember the save under: recorded paths, for text
+   * within maxFileSizeKB. `drop` are the rest.
+   */
+  private ownSaveKeys(uri: vscode.Uri, text: string): { keep: string[]; drop: string[] } {
+    const own = uri.toString();
+    const keys = [own];
+    const target = this.linkTargetOf(uri);
+    if (target && target.toString() !== own) {
+      let linkFile = false;
+      try {
+        linkFile = fs.lstatSync(uri.fsPath).isSymbolicLink();
+      } catch {
+        // Gone already; keep the document's own path too.
+      }
+      if (linkFile) keys.pop();
+      keys.push(target.toString());
+    }
+    const fits = Buffer.byteLength(text, 'utf8') <= this.settings().maxFileSizeKB * 1024;
+    const keep = keys.filter((k) => fits && this.passes(vscode.Uri.parse(k)));
+    return { keep, drop: keys.filter((k) => !keep.includes(k)) };
+  }
+
+  /** The real file a document path leads to, spelled under the recorded folder it is in, or undefined outside every one. */
+  private linkTargetOf(uri: vscode.Uri): vscode.Uri | undefined {
+    let real: string;
+    try {
+      real = fs.realpathSync.native(uri.fsPath);
+    } catch {
+      return undefined;
+    }
+    const roots = this.scopes.size > 0 ? [...this.scopes.values()].map((s) => s.root) : (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri);
+    for (const root of roots) {
+      if (root.scheme !== 'file') continue;
+      let realRoot: string;
+      try {
+        realRoot = fs.realpathSync.native(root.fsPath);
+      } catch {
+        continue;
+      }
+      const rel = path.relative(realRoot, real);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return vscode.Uri.joinPath(root, ...rel.split(path.sep));
+    }
+    return undefined;
+  }
+
+  /** Drops a file's own-save entry (only `entry`, when given), waking anything waiting on it. */
+  private forgetOwnSave(key: string, entry = this.ownSaves.get(key)): void {
+    if (!entry || this.ownSaves.get(key) !== entry) return;
+    this.ownSaves.delete(key);
+    entry.resolve();
   }
 
   /** Hands a change to the reorder buffer; `writtenAt` orders it and becomes its recorded time. */
@@ -823,15 +1006,23 @@ interface OwnSave {
   settled: Promise<void>;
   resolve: () => void;
   done: boolean;
+  /** When will-save (or, without one, did-save) fired. */
+  startedAt: number;
 }
 
 /** Watcher events for one file merged by the debounce timer. */
 interface Burst {
   timer: NodeJS.Timeout;
   created: boolean;
+  /** A delete event arrived at some point in this burst. */
+  sawDelete: boolean;
+  /** When the first delete event since the latest create or change arrived. */
+  deletedAt: number | undefined;
   /** When the first and latest watcher events of this burst arrived. */
   firstArrival: number;
   lastArrival: number;
+  /** The recording session the burst belongs to. */
+  session: number;
   /** Tells the reorder buffer this burst has been read. */
   done: () => void;
 }
@@ -907,6 +1098,17 @@ async function stat(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {
     return await vscode.workspace.fs.stat(uri);
   } catch {
     return undefined;
+  }
+}
+
+/** True when the parent directory lists this name with the same case, not just one a case-insensitive filesystem also finds. */
+async function existsExactly(uri: vscode.Uri): Promise<boolean> {
+  const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.joinPath(uri, '..'));
+    return entries.some(([n]) => n === name || n.normalize() === name.normalize());
+  } catch {
+    return true;
   }
 }
 
