@@ -20,12 +20,12 @@
 
 - [x] 4.1 Add `agentTypewriter.chooseCheckout` (contributed in `package.json`, with a palette title "Agent Typewriter: Choose Checkout"): multi-root folder pick among folders in a repository, then a quick pick of own checkout first and other worktrees by branch or short sha with path as detail; accept an optional `(folderUri, worktreePath)` argument for tests; store the choice in `checkouts.json` in workspace storage (see design: Persisting the choice); outside a repository show "no other checkouts"; verify the integration sections run the command with arguments and `npm test` covers the choice file
 - [x] 4.2 Apply the stored choice in `start()` and call `recorder.setCheckout` when the choice changes while recording; verify by reloading the integration window in `it/restore.ts` and checking the chosen worktree is still recorded
-- [ ] 4.3 Add a `$(git-branch) <label>` status bar item that runs the command, shown when the folder's repository has more than one worktree, and add the label to the main status tooltip and the timeline view description when a non-own checkout is recorded; verify manually in the Extension Development Host with this repository's `.claude/worktrees/`
+- [x] 4.3 Add a `$(git-branch) <label>` status bar item that runs the command, shown when the folder's repository has more than one worktree, and add the label to the main status tooltip and the timeline view description when a non-own checkout is recorded; verify manually in the Extension Development Host with this repository's `.claude/worktrees/`
 - [x] 4.4 Document worktrees in the README (default exclusion, Choose Checkout, labels in paths, fallback, no-git behavior) and add a CHANGELOG entry noting the behavior change; verify the README section matches the command title and status bar text
 
 ## 5. Integration checks
 
-- [ ] 5.1 In `it/runTest.ts` create a nested worktree (`.worktrees/nested`) and a sibling worktree next to the workspace; add a section that chooses the sibling, writes `src/a.ts` there and in the main checkout, expects only the sibling's change as `<label>/src/a.ts` replayed into its own mirror, switches back with a change still queued and expects it to play, then removes the sibling worktree and expects the fallback; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
+- [x] 5.1 In `it/runTest.ts` create a nested worktree (`.worktrees/nested`) and a sibling worktree next to the workspace; add a section that chooses the sibling, writes `src/a.ts` there and in the main checkout, expects only the sibling's change as `<label>/src/a.ts` replayed into its own mirror, switches back with a change still queued and expects it to play, then removes the sibling worktree and expects the fallback; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
 
 ## Workflow follow-up
 
