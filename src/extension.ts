@@ -2,17 +2,18 @@ import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
-import { parseExtensionList, PathFilter } from './filter';
+import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
 import { MirrorFileSystem, MIRROR_SCHEME, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
 import { Player } from './player';
-import { describeProfile, isValidProfileName } from './profiles';
+import { activeProfileOf, describeProfile, isValidProfileName } from './profiles';
 import { Recorder, relPathOf, type CheckoutChoices, type CheckoutInfo, type FolderCheckouts } from './recorder';
 import { CheckoutChoiceFile, checkoutName, pathKey } from './worktrees';
 import { scrubberState } from './scrubberState';
 import { ScrubberView } from './scrubberView';
 import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
+import { statusPresentation } from './statusText';
 import { Timeline, toSession } from './timeline';
 import { ChangeItem, TimelineView } from './timelineView';
 
@@ -24,12 +25,14 @@ export interface AgentTypewriterApi {
   scrubber: ScrubberView;
   /** Undefined when no folder is open (no workspace storage). */
   store: TimelineStore | undefined;
+  /** Re-reads each folder's checkouts, as a window focus does, and returns them by folder URI. For tests. */
+  refreshCheckouts(): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>>;
 }
 
 /** Final save on deactivation, set while active. */
 let finalSave: (() => void) | undefined;
 
-export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
+export async function activate(context: vscode.ExtensionContext): Promise<AgentTypewriterApi> {
   const log = vscode.window.createOutputChannel('Agent Typewriter');
   const repoFile = new RepoSettingsFile(log);
   const timeline = new Timeline(readSettings().historyLimit);
@@ -73,60 +76,60 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
   // Calls overlap (scope events, focus, folder changes); only the newest one's answer is kept.
   let checkoutsGen = 0;
-  const refreshCheckouts = async () => {
+  const refreshCheckouts = async (): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>> => {
     const gen = ++checkoutsGen;
     const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const c = await recorder.checkoutsOf(folder);
       const live = recorder.checkoutOf(folder);
       if (live) {
-        if (live.worktrees > 0) next.set(folder.uri.toString(), live);
+        // What is recorded comes from the recorder; the count from a fresh
+        // listing, since worktrees added or removed elsewhere send no event.
+        const worktrees = c?.worktrees.length ?? live.worktrees;
+        if (worktrees > 0) next.set(folder.uri.toString(), { own: live.own, name: live.name, worktrees });
         continue;
       }
-      const c = await recorder.checkoutsOf(folder);
       if (!c) continue;
       const chosen = c.chosen !== undefined ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.chosen!)) : undefined;
       const shown = chosen ?? c.own;
       next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: shown ? checkoutName(shown) : '', worktrees: c.worktrees.length });
     }
-    if (gen !== checkoutsGen) return;
+    if (gen !== checkoutsGen) return next;
     checkouts.clear();
     for (const [k, v] of next) checkouts.set(k, v);
     refreshStatus();
+    return next;
   };
 
   let lastDropped = 0;
   const refreshStatus = () => {
-    const pending = timeline.pendingCount();
     const watching = recorder.isRunning;
-    const speed = player.speed === 1 ? '' : ` ${player.speed}x`;
-    const elsewhere = [...checkouts.values()].filter((c) => !c.own).map((c) => c.name);
-    const inCheckout = elsewhere.length > 0 ? ` in checkout ${elsewhere.join(', ')}` : '';
-    const choosable = [...checkouts.values()].filter((c) => c.worktrees > 1);
-    if (choosable.length > 0) {
-      const names = choosable.map((c) => c.name);
-      checkoutStatus.text = `$(git-branch) ${names.join(', ')}`;
-      checkoutStatus.tooltip = `Agent Typewriter ${watching ? 'records' : 'will record'} checkout ${names.join(', ')}. Click to choose another.`;
+    // While watching, the filter summary already names the profile.
+    const s = watching ? undefined : readSettings();
+    const shown = statusPresentation({
+      watching,
+      paused: player.isPaused,
+      pending: timeline.pendingCount(),
+      speed: player.speed,
+      watchedCount: recorder.watchedCount,
+      filter: recorder.describeFilter(),
+      profile: s && activeProfileOf(s) ? s.activeProfile : '',
+      checkouts: [...checkouts.values()],
+    });
+    if (shown.checkout) {
+      checkoutStatus.text = shown.checkout.text;
+      checkoutStatus.tooltip = shown.checkout.tooltip;
       checkoutStatus.command = 'agentTypewriter.chooseCheckout';
       checkoutStatus.show();
     } else {
       checkoutStatus.hide();
     }
-    if (!watching && pending === 0) {
-      status.text = '$(keyboard) Typewriter';
-      status.tooltip = 'Agent Typewriter is not watching. Click to start.';
-      status.command = 'agentTypewriter.start';
-    } else if (player.isPaused) {
-      status.text = `$(debug-pause) Typewriter paused${pending ? ` · ${pending} queued` : ''}`;
-      status.tooltip = 'Click to resume playback.';
-      status.command = 'agentTypewriter.togglePause';
-    } else {
-      status.text = `$(${watching ? 'record' : 'play'}) Typewriter${pending ? ` · ${pending} queued` : ''}${speed}`;
-      status.tooltip = `${watching ? `Watching ${recorder.watchedCount} files${inCheckout} (${recorder.describeFilter()})` : 'Not watching; draining the buffer'}. Click to pause.`;
-      status.command = 'agentTypewriter.togglePause';
-    }
+    status.text = shown.text;
+    status.tooltip = shown.tooltip;
+    status.command = shown.command;
     status.show();
     scrubber.refresh();
-    tree.description = watching ? (elsewhere.length > 0 ? `${elsewhere.join(', ')} · ` : '') + recorder.describeFilter() : 'stopped';
+    tree.description = shown.description;
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
       tree.message = `${lastDropped} queued change(s) were dropped because the buffer is full (historyLimit).`;
@@ -163,7 +166,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     );
 
   register('agentTypewriter.start', async () => {
-    await repoFile.ready;
+    // The repository file has loaded once history is restored.
+    await historyRestored;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Window, title: 'Agent Typewriter: snapshotting files' },
       () => recorder.start(),
@@ -242,6 +246,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
   });
 
   register('agentTypewriter.clear', async () => {
+    // Held changes were recorded before the clear; without this they land after it.
+    recorder.drainHeld();
     timeline.clear();
     await player.interrupt();
   });
@@ -282,6 +288,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     const session = sessionFromBytes(await vscode.workspace.fs.readFile(uri));
     const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
     if (session.events.length === 0) throw new Error(`${name} holds no changes.`);
+    recorder.drainHeld();
     if (interactive && timeline.all().length > 0) {
       const replace = 'Replace';
       const pick = await vscode.window.showWarningMessage(
@@ -312,6 +319,8 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     }
     // Loaded sessions start paused at their first change; the user resumes when ready.
     if (!player.isPaused) player.togglePause();
+    // Changes recorded while the prompts were open are replaced too.
+    recorder.drainHeld();
     timeline.restore(session.events, session.events[0].seq);
     await player.interrupt();
     log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
@@ -329,44 +338,49 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     await updateSetting('extensions', parseExtensionList(input));
   });
 
-  const globsFor = async (uris: vscode.Uri[]) => {
-    const globs: string[] = [];
+  /** The Explorer selection with its include glob; only files can still be filtered out by other rules. */
+  const selectionOf = async (uris: vscode.Uri[]) => {
+    const picked: Array<{ uri: vscode.Uri; glob: string; isFile: boolean }> = [];
     for (const uri of uris) {
-      const rel = relPathOf(uri);
-      const stat = await vscode.workspace.fs.stat(uri);
-      globs.push(stat.type & vscode.FileType.Directory ? `${rel}/**` : rel);
+      // asRelativePath gives a workspace folder root as an absolute path.
+      const isRoot = (vscode.workspace.workspaceFolders ?? []).some((f) => f.uri.toString() === uri.toString());
+      const isDir = isRoot || ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.Directory) !== 0;
+      picked.push({ uri, glob: selectionGlob(isRoot ? undefined : relPathOf(uri), isDir), isFile: !isDir });
     }
-    return globs;
+    return picked;
   };
 
-  const warnIfStillFiltered = (uris: vscode.Uri[]) => {
+  const warnIfStillFiltered = (picked: Array<{ uri: vscode.Uri; isFile: boolean }>) => {
     const s = readSettings();
-    const f = new PathFilter(s);
-    const blocked = uris.filter((u) => !f.matches(relPathOf(u)) && !u.path.endsWith('/'));
-    if (blocked.length > 0 && s.extensions.length > 0) {
+    const blocked = stillFiltered(new PathFilter(s), picked.map((p) => ({ rel: relPathOf(p.uri), isFile: p.isFile })));
+    if (blocked?.by === 'extension') {
       void vscode.window
         .showWarningMessage(
-          `Agent Typewriter: ${relPathOf(blocked[0])} is still filtered out by the extension list (${s.extensions.join(', ')}).`,
+          `Agent Typewriter: ${blocked.rel} is still filtered out by the extension list (${s.extensions.join(', ')}).`,
           'Clear Extension Filter',
         )
         .then((pick) => pick && updateSetting('extensions', []));
+    } else if (blocked?.by === 'exclude') {
+      void vscode.window.showWarningMessage(`Agent Typewriter: ${blocked.rel} is still filtered out by the exclude list (${s.exclude.join(', ')}).`);
     }
   };
 
   register('agentTypewriter.watchOnlyThis', async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
     const uris = selected?.length ? selected : clicked ? [clicked] : [];
     if (uris.length === 0) return;
-    await updateSetting('include', await globsFor(uris));
-    warnIfStillFiltered(uris);
+    const picked = await selectionOf(uris);
+    await updateSetting('include', picked.map((p) => p.glob));
+    warnIfStillFiltered(picked);
   });
 
   register('agentTypewriter.addToWatch', async (clicked?: vscode.Uri, selected?: vscode.Uri[]) => {
     const uris = selected?.length ? selected : clicked ? [clicked] : [];
     if (uris.length === 0) return;
+    const picked = await selectionOf(uris);
     const existing = readSettings().include.filter((g) => g !== '**/*' && g !== '**');
-    const merged = [...new Set([...existing, ...(await globsFor(uris))])];
+    const merged = [...new Set([...existing, ...picked.map((p) => p.glob)])];
     await updateSetting('include', merged);
-    warnIfStillFiltered(uris);
+    warnIfStillFiltered(picked);
   });
 
   register('agentTypewriter.resetFilters', async () => {
@@ -549,7 +563,7 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
     if (['include', 'exclude', 'extensions', 'respectGitignore', 'profiles', 'activeProfile'].some(affects)) {
       await recorder.refreshFilter();
     }
-    if (affects('gitBaselines') || affects('baselineBudgetMB')) await recorder.refreshBaselines();
+    if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
     refreshStatus();
   };
@@ -572,43 +586,52 @@ export function activate(context: vscode.ExtensionContext): AgentTypewriterApi {
 
   // ------------------------------------------------------------ history
 
+  // False until the saved timeline has been restored (or deleted), so a
+  // settings change cannot start the store and overwrite it first.
+  let historyLoaded = false;
   const applyPersistHistory = () => {
-    if (!store) return;
+    if (!store || !historyLoaded) return;
     if (readSettings().persistHistory) store.start();
     else if (store.isRunning) {
       store.stop();
       store.deleteSaved();
     }
   };
-  // Restore before anything can record. The player is waiting on the empty
-  // timeline, so pausing it first means restored queued changes are not typed
-  // until the user resumes.
-  if (store && readSettings().persistHistory) {
-    const saved = store.load();
-    if (saved && saved.events.length > 0) {
-      const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
-      if (pending > 0 && !player.isPaused) player.togglePause();
-      timeline.restore(saved.events, saved.cursor);
-      const queued = timeline.pendingCount();
-      log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
-      refreshStatus();
+  // Restore before anything can record, and once the repository file has
+  // loaded: its historyLimit and persistHistory decide what is kept. The file's
+  // change handler above has applied them by the time `ready` settles. The
+  // player is waiting on the empty timeline, so pausing it first means restored
+  // queued changes are not typed until the user resumes.
+  const historyRestored = repoFile.ready.then(() => {
+    if (store && readSettings().persistHistory) {
+      const saved = store.load();
+      if (saved && saved.events.length > 0) {
+        const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
+        if (pending > 0 && !player.isPaused) player.togglePause();
+        timeline.restore(saved.events, saved.cursor);
+        const queued = timeline.pendingCount();
+        log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
+        refreshStatus();
+      }
+    } else if (store) {
+      store.deleteSaved();
     }
-  } else if (store) {
-    store.deleteSaved();
-  }
-  applyPersistHistory();
+    historyLoaded = true;
+    applyPersistHistory();
+  });
   finalSave = () => {
     recorder.drainHeld();
     if (store?.isRunning) store.flushSync();
   };
   context.subscriptions.push({ dispose: () => (finalSave = undefined) });
 
-  void repoFile.ready.then(noteUnknownProfile);
   void setWatching(false);
+  await historyRestored;
+  noteUnknownProfile();
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder, store, scrubber };
+  return { timeline, player, recorder, store, scrubber, refreshCheckouts };
 }
 
 /** Local time as yyyy-mm-dd-hhmm, for default session file names. */
