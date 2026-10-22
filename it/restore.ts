@@ -99,4 +99,11 @@ export async function run(): Promise<void> {
   await until('nested playback after reload', idle);
   await vscode.commands.executeCommand('agentTypewriter.stop');
   console.log('[it] chosen checkout survives reload ok');
+
+  // Review fix groups add their sections directly below their own anchor (see suite.ts).
+  // --- review group PLAY
+
+  // --- review group ACT
+
+  // --- review group REC1
 }

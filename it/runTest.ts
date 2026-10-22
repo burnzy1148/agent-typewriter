@@ -48,6 +48,15 @@ async function main() {
   git('worktree', 'add', '-q', '-b', 'nested', '.worktrees/nested');
   git('worktree', 'add', '-q', '-b', 'sibling', `${workspace}-sibling`);
 
+  // Review fix groups add their fixtures directly below their own anchor (see suite.ts).
+  // --- review group PLAY: fixtures
+
+  // --- review group SET: fixtures
+
+  // --- review group ACT: fixtures
+
+  // --- review group REC1: fixtures
+
   // VS Code puts an IPC socket in the user-data dir. The default one under
   // .vscode-test/ is too long for macOS's 104-char socket limit in deep
   // checkouts such as worktrees, so keep it short.
@@ -65,6 +74,13 @@ async function main() {
   const extensionTestsEnv = { IT_EXPECT: path.join(userData, 'expected-timeline.json') };
   await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
   await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
+
+  // Review fix groups add any extra VS Code launches directly below their own anchor.
+  // --- review group PLAY: launches
+
+  // --- review group ACT: launches
+
+  // --- review group REC1: launches
 }
 
 main().catch((err) => {
