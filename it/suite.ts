@@ -579,6 +579,274 @@ export async function run(): Promise<void> {
   // branches worked on in parallel merge cleanly. Later recorder groups use
   // REC1's. Remove the anchors once the review groups have merged.
   // --- review group PLAY
+  // --- PLAY. Playback and mirror documents. Changes go straight onto the
+  // timeline with the recorder stopped, so only the player sets the timing.
+  {
+    await until('idle before playback checks', idle);
+    await vscode.commands.executeCommand('agentTypewriter.stop');
+    const undo: Array<() => Thenable<void>> = [];
+    const setting = async (section: string, key: string, value: unknown) => {
+      const old = vscode.workspace.getConfiguration(section).inspect(key)?.workspaceValue;
+      undo.push(() => vscode.workspace.getConfiguration(section).update(key, old, WS));
+      await vscode.workspace.getConfiguration(section).update(key, value, WS);
+    };
+    const push = (relPath: string, before: string, after: string, kind?: 'create' | 'modify' | 'delete', eol: '\n' | '\r\n' = '\n') =>
+      timeline.push({
+        uri: vscode.Uri.file(path.join(root, relPath)).toString(),
+        relPath,
+        time: Date.now(),
+        kind: kind ?? (before ? 'modify' : 'create'),
+        before,
+        after,
+        eol,
+        linesAdded: 0,
+        linesRemoved: 0,
+      });
+    const playedNow = (seq: number) => () => timeline.stateOf(seq) === 'played' && idle();
+    const play = async (relPath: string, before: string, after: string, kind?: 'create' | 'modify' | 'delete', eol?: '\n' | '\r\n') => {
+      const e = push(relPath, before, after, kind, eol);
+      await until(`${relPath} #${e.seq} playback`, playedNow(e.seq));
+      return e;
+    };
+    const playing = (seq: number) => () => timeline.stateOf(seq) === 'playing';
+    const isMirror = (d: vscode.TextDocument, rel: string) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel;
+    const mirrorEditor = (rel: string) => vscode.window.visibleTextEditors.find((ed) => isMirror(ed.document, rel));
+    /** Every text, and every content change, the mirror of `rel` goes through until disposed. */
+    const record = (rel: string) => {
+      const texts: string[] = [];
+      const changes: vscode.TextDocumentContentChangeEvent[] = [];
+      const sub = vscode.workspace.onDidChangeTextDocument((ev) => {
+        if (!isMirror(ev.document, rel) || ev.contentChanges.length === 0) return;
+        texts.push(ev.document.getText());
+        changes.push(...ev.contentChanges);
+      });
+      return { texts, changes, dispose: () => sub.dispose() };
+    };
+    /** Set once the mirror of `rel` shows a non-empty selection: a long deletion's selection pause. */
+    const selectionIn = (rel: string) => {
+      const seen = { selected: false, dispose: () => sub.dispose() };
+      const sub = vscode.window.onDidChangeTextEditorSelection((ev) => {
+        if (isMirror(ev.textEditor.document, rel) && !ev.selections[0].isEmpty) seen.selected = true;
+      });
+      return seen;
+    };
+
+    // Mirrors are read-only, so VS Code keeps U+2028 in them and every later hunk lands where planned.
+    await setting('editor', 'unusualLineTerminators', 'auto');
+    const sep1 = 'const sep = "a\u2028b";\nlet x = 1;\n';
+    const sep2 = sep1.replace('x = 1', 'x = 2');
+    await play('play/sep.ts', '', sep1);
+    await sleep(300);
+    assert.equal(mirrorText('play/sep.ts'), sep1, 'U+2028 was stripped from the mirror');
+    await play('play/sep.ts', sep1, sep2);
+    await sleep(300);
+    assert.equal(mirrorText('play/sep.ts'), sep2, 'a change after a U+2028 did not replay exactly');
+
+    // No save participants run on mirrors, and they never become dirty.
+    await setting('files', 'insertFinalNewline', true);
+    await setting('files', 'trimTrailingWhitespace', true);
+    await play('play/nofinal.ts', '', 'export const x = 1;');
+    await play('play/trail.ts', '', 'foo  \nbar\n');
+    for (const [rel, text] of [['play/nofinal.ts', 'export const x = 1;'], ['play/trail.ts', 'foo  \nbar\n']]) {
+      assert.equal(mirrorText(rel), text, `${rel}: a save participant changed the mirror`);
+      assert.equal(mirrorDoc(rel)?.isDirty, false, `${rel}: mirror left dirty`);
+    }
+    const nofinal = record('play/nofinal.ts');
+    await play('play/nofinal.ts', 'export const x = 1;', 'export const x = 2;');
+    nofinal.dispose();
+    // A line-ending switch shows up as a whole-document change to the same text; skip it.
+    const typing = nofinal.changes.filter((c) => !(c.text === 'export const x = 1;' && c.rangeLength === c.text.length));
+    assert.ok(typing.length > 0 && typing[0].rangeLength < 'export const x = 1;'.length, 'the next change began by replacing the whole mirror');
+    assert.equal(mirrorText('play/nofinal.ts'), 'export const x = 2;');
+
+    // Skip to Latest leaves a newest mirror it had to fix up clean: a new CRLF
+    // file, and a file with no line breaks while files.eol is CRLF.
+    await setting('files', 'eol', '\r\n');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    push('play/snapcrlf.ts', '', 'export const a = 1;\nexport const b = 2;\n', 'create', '\r\n');
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorDoc('play/snapcrlf.ts')?.eol, vscode.EndOfLine.CRLF, 'snapped CRLF mirror is not CRLF');
+    assert.equal(mirrorText('play/snapcrlf.ts'), 'export const a = 1;\r\nexport const b = 2;\r\n');
+    assert.equal(mirrorDoc('play/snapcrlf.ts')?.isDirty, false, 'Skip to Latest left a new CRLF mirror dirty');
+    push('play/snapone.ts', '', 'export const one = 1;');
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorDoc('play/snapone.ts')?.eol, vscode.EndOfLine.LF, 'snapped LF mirror took the CRLF default');
+    assert.equal(mirrorDoc('play/snapone.ts')?.isDirty, false, 'Skip to Latest left a one-line mirror dirty');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+
+    // A change recorded while Skip to Latest runs is never overwritten by the older snapshot.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 0);
+    let race = (await play('play/race.ts', '', 'export const race = 0;\n')).after;
+    for (const delay of [0, 20, 60]) {
+      const run = vscode.commands.executeCommand('agentTypewriter.catchUp');
+      await sleep(delay);
+      const newer = push('play/race.ts', race, race + `export const after${delay} = ${delay};\n`);
+      await run;
+      await until('playback after Skip to Latest', idle);
+      assert.equal(timeline.pendingCount(), 0);
+      assert.equal(timeline.stateOf(newer.seq), 'played');
+      assert.equal(mirrorText('play/race.ts'), newer.after, `Skip to Latest (+${delay} ms) left an older state in the mirror`);
+      race = newer.after;
+    }
+
+    // A seek made while Skip to Latest waits for the change being typed wins over the snap.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 1500);
+    await play('play/snapseek1.ts', '', 'export const one = 1;\n');
+    const sought = push('play/snapseek2.ts', '', 'export const two = 2;\n');
+    await until('the file-switch pause', playing(sought.seq));
+    const snapping = player.snapToLatest();
+    timeline.seek(sought.seq);
+    await snapping;
+    assert.equal(timeline.cursor, sought.seq, 'Skip to Latest overrode a seek made while it waited');
+    await until('replay after the seek', playedNow(sought.seq));
+    assert.equal(mirrorText('play/snapseek2.ts'), 'export const two = 2;\n');
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 0);
+
+    // Typing and backspacing keep surrogate pairs whole (one unit per tick at 60 cps).
+    await setting('agentTypewriter', 'charsPerSecond', 60);
+    const emoji1 = '# Release\nok 👍🏻 done\na 𝐀 b\nline2\n';
+    const emoji2 = '# Release\nShip it 🚀 now\nok 👍🏿 done\na b\nline2 x\n';
+    const emoji = record('play/emoji.ts');
+    await play('play/emoji.ts', '', emoji1);
+    await play('play/emoji.ts', emoji1, emoji2);
+    emoji.dispose();
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const split = emoji.texts.find((t) => lone.test(t));
+    assert.equal(split, undefined, `a mirror state split a surrogate pair: ${JSON.stringify(split)}`);
+    assert.ok(emoji.changes.every((c) => c.rangeLength < 10), 'typing went wrong and the mirror was replaced at the end');
+    assert.equal(mirrorText('play/emoji.ts'), emoji2);
+
+    // Pause holds long and multi-line deletions, and delete events.
+    await setting('agentTypewriter', 'charsPerSecond', 4000);
+    const funcs = 'KEEP\nfunction one() {\n  return 1;\n}\nKEEP2\nfunction two() {\n  return 2;\n}\nKEEP3\nfunction three() {\n  return 3;\n}\n';
+    const kept = 'KEEP\nKEEP2\nKEEP3\n';
+    await play('play/funcs.ts', '', funcs);
+    const holdsWhilePaused = async (label: string, seq: number) => {
+      await until(`${label} to start`, playing(seq));
+      await vscode.commands.executeCommand('agentTypewriter.togglePause');
+      await sleep(100);
+      const atPause = mirrorText('play/funcs.ts');
+      await sleep(2000);
+      assert.equal(mirrorText('play/funcs.ts'), atPause, `${label}: the mirror changed while paused`);
+      assert.equal(timeline.stateOf(seq), 'playing', `${label}: finished while paused`);
+      await vscode.commands.executeCommand('agentTypewriter.togglePause');
+      await until(`${label} playback`, playedNow(seq));
+    };
+    await holdsWhilePaused('multi-line deletions', push('play/funcs.ts', funcs, kept).seq);
+    assert.equal(mirrorText('play/funcs.ts'), kept);
+    await holdsWhilePaused('file deletion', push('play/funcs.ts', kept, '', 'delete').seq);
+    assert.equal(mirrorText('play/funcs.ts'), '');
+
+    // A seek while paused edits nothing more: not mid-typing, not after a deletion's selection pause.
+    await setting('agentTypewriter', 'charsPerSecond', 20);
+    const first = await play('play/pause.ts', '', 'first\n');
+    const typed = 'first\nabcdefghijklmnopqrstuvwxyz\n';
+    const long = push('play/pause.ts', first.after, typed);
+    await until('a partial insert', () => (mirrorText('play/pause.ts') ?? '').startsWith('first\nab'));
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(300);
+    const atPause = mirrorText('play/pause.ts');
+    await scrubber.receive({ type: 'seek', seq: first.seq });
+    assert.equal(mirrorText('play/pause.ts'), atPause, 'the mirror changed after a seek while paused');
+    assert.equal(player.isPaused, true, 'seek changed the pause state');
+    await sleep(300);
+    assert.equal(mirrorText('play/pause.ts'), atPause, 'the mirror changed after a seek while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('replay after the seek', playedNow(long.seq));
+    assert.equal(mirrorText('play/pause.ts'), typed);
+
+    await setting('agentTypewriter', 'charsPerSecond', 4000);
+    const lines = 'keep\nremove this line\nand this one\n';
+    const made = await play('play/seekdel.ts', '', lines);
+    const cutting = selectionIn('play/seekdel.ts');
+    const cut = push('play/seekdel.ts', lines, 'keep\n');
+    await until('deletion selected', () => cutting.selected);
+    cutting.dispose();
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await scrubber.receive({ type: 'seek', seq: made.seq });
+    assert.equal(mirrorText('play/seekdel.ts'), lines, 'a seek during the selection pause still deleted the selection');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('replay after the seek', playedNow(cut.seq));
+    assert.equal(mirrorText('play/seekdel.ts'), 'keep\n');
+
+    // Hiding the mirror tab during a pause does not abandon the change.
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 1500);
+    let hideA = (await play('play/hideA.ts', '', 'export const a = 1;\n')).after;
+    await play('play/hideB.ts', '', 'line1\nline2\nline3\n');
+    const nextA = async () => (hideA = (await play('play/hideA.ts', hideA, hideA + '// again\n')).after);
+    /** Shows the hideA mirror in the column that shows hideB, which hides hideB's tab. */
+    const hideB = async () => {
+      const ed = mirrorEditor('play/hideB.ts');
+      assert.ok(ed, 'hideB mirror is not visible');
+      await vscode.window.showTextDocument(mirrorDoc('play/hideA.ts')!, { viewColumn: ed.viewColumn, preview: false, preserveFocus: true });
+    };
+    const closeB = async () => {
+      const tab = vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .find((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === 'agent-typewriter' && t.input.uri.path === '/play/hideB.ts');
+      assert.ok(tab, 'hideB mirror tab not found');
+      await vscode.window.tabGroups.close(tab);
+    };
+    const hiddenDuringSwitch = async (label: string, before: string, after: string, kind?: 'delete', hide = hideB) => {
+      await nextA();
+      const e = push('play/hideB.ts', before, after, kind);
+      await until(`${label} to start`, playing(e.seq));
+      await sleep(300);
+      await hide();
+      await until(`${label} playback`, playedNow(e.seq));
+      assert.equal(mirrorText('play/hideB.ts'), after, `${label}: hiding the tab during the file-switch pause abandoned the change`);
+    };
+    await hiddenDuringSwitch('delete event', 'line1\nline2\nline3\n', '', 'delete');
+    await setting('agentTypewriter', 'maxAnimatedChars', 20);
+    const bigText = `export const big = "${'x'.repeat(40)}";\n`;
+    await hiddenDuringSwitch('instant change', '', bigText);
+    await hiddenDuringSwitch('closed tab', bigText, bigText + '// typed\n', undefined, closeB);
+    assert.ok(mirrorEditor('play/hideB.ts'), 'the closed mirror tab was not shown again');
+    await setting('agentTypewriter', 'fileSwitchDelayMs', 30);
+    const multi = 'line1\nline2\nline3\nline4\n';
+    await play('play/hideB.ts', bigText + '// typed\n', multi);
+    const selecting = selectionIn('play/hideB.ts');
+    const trimmed = push('play/hideB.ts', multi, 'line1\n');
+    await until('multi-line deletion selected', () => selecting.selected);
+    selecting.dispose();
+    await hideB();
+    await until('multi-line deletion playback', playedNow(trimmed.seq));
+    assert.equal(mirrorText('play/hideB.ts'), 'line1\n', 'hiding the tab during the selection pause abandoned the deletion');
+
+    // A mirror reverted mid-change (closed with its edits dropped, or File: Revert)
+    // is put back before the next hunk, so no hunk lands at a stale offset.
+    const r0 = 'const a = 1;\nconst b = 2;\nconst c = 3;\n';
+    const r1 = 'const a = 10;\nconst b = 20;\nconst c = 30;\n';
+    const r2 = 'const a = 100;\nconst b = 200;\nconst c = 300;\n';
+    await play('play/revert.ts', '', r0);
+    await setting('agentTypewriter', 'charsPerSecond', 8);
+    const revertMidChange = async (before: string, after: string, marker: string, command: string) => {
+      const seen = record('play/revert.ts');
+      const e = push('play/revert.ts', before, after);
+      await until(`${marker} typed`, () => (mirrorText('play/revert.ts') ?? '').startsWith(marker));
+      const ed = mirrorEditor('play/revert.ts')!;
+      await vscode.window.showTextDocument(ed.document, { viewColumn: ed.viewColumn, preserveFocus: false, preview: false });
+      const at = seen.texts.length;
+      await vscode.commands.executeCommand(command);
+      await until(`playback after ${command}`, playedNow(e.seq));
+      seen.dispose();
+      for (const t of seen.texts) {
+        for (const line of t.split('\n').filter((l) => /^const [bc]/.test(l))) {
+          assert.match(line, /^const [bc] = \d*;$/, `${command}: a hunk landed at a stale offset: ${JSON.stringify(t)}`);
+        }
+      }
+      for (const t of seen.texts.slice(at)) {
+        assert.ok(t === before || t.startsWith(marker), `${command}: typing went on from the reverted text: ${JSON.stringify(t)}`);
+      }
+      assert.equal(mirrorText('play/revert.ts'), after);
+    };
+    await revertMidChange(r0, r1, 'const a = 10;', 'workbench.action.revertAndCloseActiveEditor');
+    await revertMidChange(r1, r2, 'const a = 100;', 'workbench.action.files.revert');
+
+    for (const restore of undo.reverse()) await restore();
+    await vscode.commands.executeCommand('agentTypewriter.start');
+    console.log('[it] playback and mirrors ok');
+  }
 
   // --- review group SET
   // Settings layering: wrong-typed VS Code settings resolve as if unset,
