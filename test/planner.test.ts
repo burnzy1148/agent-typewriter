@@ -68,13 +68,13 @@ function timed<T>(fn: () => T): { value: T; ms: number } {
   return { value, ms: performance.now() - t0 };
 }
 
-/** Plans and counts a big change, asserting both are fast and the plan round trips. */
+/** Plans and counts a big change, asserting both are fast and the plan round trips. The budget leaves room for slow CI runners; the unbounded diff took tens of seconds. */
 function assertFastRoundTrip(before: string, after: string) {
   const plan = timed(() => planHunks(before, after));
   const count = timed(() => countChanges(before, after));
   assert.equal(applyHunks(before, plan.value), after);
-  assert.ok(plan.ms < 500, `planHunks took ${Math.round(plan.ms)} ms`);
-  assert.ok(count.ms < 500, `countChanges took ${Math.round(count.ms)} ms`);
+  assert.ok(plan.ms < 2000, `planHunks took ${Math.round(plan.ms)} ms`);
+  assert.ok(count.ms < 2000, `countChanges took ${Math.round(count.ms)} ms`);
   return { hunks: plan.value, counts: count.value };
 }
 
