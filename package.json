@@ -66,6 +66,18 @@
         "icon": "$(debug-pause)"
       },
       {
+        "command": "agentTypewriter.pause",
+        "title": "Pause Playback",
+        "category": "Agent Typewriter",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "agentTypewriter.resume",
+        "title": "Resume Playback",
+        "category": "Agent Typewriter",
+        "icon": "$(play)"
+      },
+      {
         "command": "agentTypewriter.finishCurrent",
         "title": "Finish Current Change Instantly",
         "category": "Agent Typewriter",
@@ -74,7 +86,8 @@
       {
         "command": "agentTypewriter.skipToNext",
         "title": "Skip to Next Change",
-        "category": "Agent Typewriter"
+        "category": "Agent Typewriter",
+        "icon": "$(arrow-right)"
       },
       {
         "command": "agentTypewriter.catchUp",
@@ -266,6 +279,38 @@
           "group": "inline@2"
         }
       ],
+      "editor/title": [
+        {
+          "command": "agentTypewriter.replayAll",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentTypewriter.pause",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && !agentTypewriter.paused",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentTypewriter.resume",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.paused",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentTypewriter.finishCurrent",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
+          "group": "navigation@3"
+        },
+        {
+          "command": "agentTypewriter.skipToNext",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
+          "group": "navigation@4"
+        },
+        {
+          "command": "agentTypewriter.catchUp",
+          "when": "resourceScheme == agent-typewriter && resourcePath in agentTypewriter.playbackMirror && agentTypewriter.hasChanges",
+          "group": "navigation@5"
+        }
+      ],
       "explorer/context": [
         {
           "command": "agentTypewriter.watchOnlyThis",
@@ -277,6 +322,14 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "agentTypewriter.pause",
+          "when": "false"
+        },
+        {
+          "command": "agentTypewriter.resume",
+          "when": "false"
+        },
         {
           "command": "agentTypewriter.replayFrom",
           "when": "false"
@@ -496,6 +549,11 @@
           ],
           "default": "beside",
           "description": "Where the replay editor opens: in a column beside your current editor, or in the active column."
+        },
+        "agentTypewriter.mirrorStatusRow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a row of playback controls and status above the first line of the replay editor. Turn off to keep it out of screen recordings. Hidden anyway when editor.codeLens is off."
         }
       }
     }

@@ -195,6 +195,11 @@
       ],
       "default": "beside",
       "description": "Where the replay editor opens: in a column beside your current editor, or in the active column."
+    },
+    "mirrorStatusRow": {
+      "type": "boolean",
+      "default": true,
+      "description": "Show a row of playback controls and status above the first line of the replay editor. Turn off to keep it out of screen recordings. Hidden anyway when editor.codeLens is off."
     }
   },
   "additionalProperties": false
