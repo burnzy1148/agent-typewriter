@@ -30,7 +30,7 @@ import {
 import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { KeyedSerial } from './keyedSerial';
-import { ReorderBuffer, clampOrderKey } from './reorder';
+import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
@@ -80,7 +80,13 @@ const DELETE_SETTLE_MS = 3000;
 /** Longest a delete is held, however long deletes keep coming (a build cleaning its output, say). */
 const DELETE_HOLD_MAX_MS = 15_000;
 
-/** Longest wait between checks of whether a chosen worktree git calls prunable is gone yet. */
+/**
+ * Longest a held delete keeps later changes from reaching the timeline: its
+ * hold, plus time for the decision's own read.
+ */
+const DELETE_ORDER_HOLD_MAX_MS = DELETE_HOLD_MAX_MS + DELETE_SETTLE_MS;
+
+/** Longest wait between checks of whether a chosen worktree is gone. */
 const GONE_CHECK_MAX_MS = 5000;
 
 /**
@@ -132,8 +138,10 @@ export class Recorder implements vscode.Disposable {
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
   private scopeWork: Promise<void> = Promise.resolve();
   private worktreeRefresh: NodeJS.Timeout | undefined;
-  /** Pending "is the chosen checkout gone?" checks, per folder URI. */
-  private readonly goneChecks = new Map<string, NodeJS.Timeout>();
+  /** Pending "is the chosen checkout gone?" checks, per folder URI, with when each is due. */
+  private readonly goneChecks = new Map<string, { timer: NodeJS.Timeout; at: number }>();
+  /** Per folder URI, the chosen checkout and what of it was missing when a check last asked for a refresh. */
+  private readonly goneRefreshed = new Map<string, string>();
   /** Per folder URI, directories hidden as new worktrees until a listing started after them settles them. */
   private readonly provisional = new Map<string, Array<ProvisionalDir & { root: string }>>();
   /** Numbers provisional directories and worktree listings, so a listing knows which directories it may have missed. */
@@ -432,8 +440,9 @@ export class Recorder implements vscode.Disposable {
     this.deletedDirs.clear();
     clearTimeout(this.ignoreRefresh);
     clearTimeout(this.worktreeRefresh);
-    for (const t of this.goneChecks.values()) clearTimeout(t);
+    for (const t of this.goneChecks.values()) clearTimeout(t.timer);
     this.goneChecks.clear();
+    this.goneRefreshed.clear();
     this.provisional.clear();
     clearTimeout(this.listRetry);
     this.listRetry = undefined;
@@ -520,6 +529,7 @@ export class Recorder implements vscode.Disposable {
         }
       }
       for (const key of this.provisional.keys()) if (!next.has(key)) this.provisional.delete(key);
+      for (const key of this.goneRefreshed.keys()) if (!next.has(key)) this.goneRefreshed.delete(key);
       for (const [key, scope] of next) {
         const old = this.scopes.get(key);
         this.carryProvisional(key, scope);
@@ -539,7 +549,8 @@ export class Recorder implements vscode.Disposable {
       this.scopes.clear();
       for (const [key, scope] of next) this.scopes.set(key, scope);
       // A chosen worktree git calls prunable is being removed: fall back once its root is gone.
-      for (const scope of next.values()) if (!scope.own && scope.prunable) this.checkCheckoutGone(scope);
+      // Any other is checked now and then too, in case its watcher says nothing as it goes.
+      for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS, true);
       this.scheduleWorktreeRetry();
       this.scopeEmitter.fire();
     });
@@ -806,6 +817,8 @@ export class Recorder implements vscode.Disposable {
         this.noteWorktreeEvent(uri, 'delete');
         const current = this.scopes.get(key);
         if (current && !current.own) {
+          // Something changed, so a refresh is worth asking for again.
+          this.goneRefreshed.delete(key);
           this.checkCheckoutGone(current);
           // Deletes are still coming: held ones wait for them to stop.
           if (this.deleteSettles.has(key)) this.settleDeletes(key);
@@ -819,29 +832,43 @@ export class Recorder implements vscode.Disposable {
   }
 
   /**
-   * Something was deleted in a chosen worktree. Watchers don't reliably report
-   * a removed root or its `.git` file, so check whether the checkout itself is
-   * gone, once the burst of deletes settles. One git still lists without its
-   * `.git` (prunable) is being removed: it is checked again, less often each
-   * time, until its root is gone too.
+   * Something was deleted in a chosen worktree, or it is time to look again.
+   * Watchers don't reliably report a removed root or its `.git` file, and on
+   * Windows the watcher of a removed root may report nothing at all, so check
+   * whether the checkout itself is gone, once the burst of deletes settles.
+   * While it stays chosen it is checked again, less often each time, down to
+   * every GONE_CHECK_MAX_MS. One git still lists without its `.git`
+   * (prunable) is being removed and falls back once its root is gone too.
+   * With `keepSooner`, a check already due sooner is left as it is.
    */
-  private checkCheckoutGone(scope: Scope, delayMs = 300): void {
+  private checkCheckoutGone(scope: Scope, delayMs = 300, keepSooner = false): void {
     const key = scope.folder.uri.toString();
-    clearTimeout(this.goneChecks.get(key));
-    this.goneChecks.set(
-      key,
-      setTimeout(() => {
-        this.goneChecks.delete(key);
-        const current = this.scopes.get(key);
-        if (!current || current.own) return;
-        void Promise.all([stat(vscode.Uri.joinPath(current.checkout, '.git')), stat(current.root)]).then(([git, root]) => {
-          if (!this.running || this.scopes.get(key)?.checkout.toString() !== current.checkout.toString()) return;
-          const prunable = this.scopes.get(key)!.prunable;
-          if (!root || (!git && !prunable)) this.scheduleWorktreeRefresh();
-          else if (!git) this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS));
-        });
-      }, delayMs),
-    );
+    const at = Date.now() + delayMs;
+    const pending = this.goneChecks.get(key);
+    if (keepSooner && pending && pending.at <= at) return;
+    clearTimeout(pending?.timer);
+    const timer = setTimeout(() => {
+      this.goneChecks.delete(key);
+      const current = this.scopes.get(key);
+      if (!current || current.own) return;
+      void Promise.all([stat(vscode.Uri.joinPath(current.checkout, '.git')), stat(current.root)]).then(([git, root]) => {
+        if (!this.running || this.scopes.get(key)?.checkout.toString() !== current.checkout.toString()) return;
+        const prunable = this.scopes.get(key)!.prunable;
+        const missing = !root ? 'root' : !git && !prunable ? '.git' : '';
+        const seen = `${current.checkout.toString()}\0${missing}`;
+        // A refresh that kept this checkout (git could not run, say) is not
+        // asked for again until what is missing changes or a delete arrives.
+        if (missing && this.goneRefreshed.get(key) !== seen) {
+          this.goneRefreshed.set(key, seen);
+          this.scheduleWorktreeRefresh();
+        } else {
+          if (!missing) this.goneRefreshed.delete(key);
+          // A delete during the stats may have armed a sooner check.
+          this.checkCheckoutGone(current, Math.min(delayMs * 2, GONE_CHECK_MAX_MS), true);
+        }
+      });
+    }, delayMs);
+    this.goneChecks.set(key, { timer, at });
   }
 
   /**
@@ -1491,24 +1518,27 @@ export class Recorder implements vscode.Disposable {
 
   /**
    * Holds a file's delete in a chosen worktree until deletes there have been
-   * quiet for DELETE_SETTLE_MS. Its burst stays pending in the reorder buffer
-   * meanwhile, which keeps later changes behind it only up to the buffer's
-   * cap (twice reorderWindowMs): a change to another file made during the
-   * hold can reach the timeline before the delete.
+   * quiet for DELETE_SETTLE_MS. The reorder buffer keeps changes written
+   * after it back meanwhile, so it keeps its place in write order: a rename
+   * done as delete-then-create replays in that order.
    */
   private holdDelete(scope: Scope, uri: vscode.Uri, relPath: string, before: Snapshot, burst: Burst): void {
     const folderKey = scope.folder.uri.toString();
+    const order = this.reorder.hold(burst.deletedAt ?? burst.lastArrival, DELETE_ORDER_HOLD_MAX_MS);
     burst.held = true;
     this.note(`delete held ${relPath}`);
     this.heldDeletes.set(uri.toString(), {
       uri,
       relPath,
       before,
-      at: burst.deletedAt ?? burst.lastArrival,
+      order,
       folderKey,
       root: scope.root.toString(),
       session: burst.session,
-      done: burst.done,
+      done: () => {
+        order.end();
+        burst.done();
+      },
     });
     this.settleDeletes(folderKey);
   }
@@ -1548,7 +1578,7 @@ export class Recorder implements vscode.Disposable {
           this.note(`${scope && current() ? 'checkout removed' : 'checkout changed'}, dropped ${held.relPath}`);
           return;
         }
-        this.record(held.uri, held.relPath, 'delete', held.before.text, '', held.before.eol, held.at);
+        this.record(held.uri, held.relPath, 'delete', held.before.text, '', held.before.eol, held.order.key());
       })
       .catch((err) => this.log.appendLine(`Failed to record ${held.relPath}: ${String(err)}`))
       .finally(held.done);
@@ -1711,8 +1741,8 @@ interface HeldDelete {
   uri: vscode.Uri;
   relPath: string;
   before: Snapshot;
-  /** When the delete happened: its place in write order. */
-  at: number;
+  /** Keeps later changes back until it is decided; its key is the delete's place in write order. */
+  order: OrderHold;
   folderKey: string;
   /** The recorded root it was deleted from; recording another drops it. */
   root: string;

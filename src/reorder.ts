@@ -34,6 +34,21 @@ interface Held<T> {
   cap: number;
 }
 
+/** A change whose place in write order is known but whose outcome is not decided yet. */
+interface Hold {
+  key: number;
+  /** Stops holding anything back by this time, even if never ended. */
+  until: number;
+}
+
+/** A hold the caller ends once it has added the decided item, if any. */
+export interface OrderHold {
+  /** The hold's write time, moved back with any backward clock step since: the key to add the decided item with. */
+  key(): number;
+  /** Ends the hold; later calls do nothing. */
+  end(): void;
+}
+
 /** setTimeout fires at once for delays above this. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -41,6 +56,7 @@ export class ReorderBuffer<T> {
   private held: Held<T>[] = [];
   /** First watcher arrival of each debounce burst that has not finished reading yet. */
   private readonly pendingBursts = new Set<{ firstArrival: number }>();
+  private readonly holds = new Set<Hold>();
   private nextSeq = 0;
   private timer: unknown;
   /** Last wall-clock reading, to notice the clock stepping back. */
@@ -86,7 +102,26 @@ export class ReorderBuffer<T> {
     };
   }
 
-  /** Releases everything held right now, in order. */
+  /**
+   * Keeps items keyed at or after `key` back, whatever their cap, until the
+   * hold is ended or `maxMs` has passed. Items keyed before it go out as
+   * usual. Add the decided item, if any, at the hold's key before ending it.
+   */
+  hold(key: number, maxMs: number): OrderHold {
+    const entry: Hold = { key, until: this.now() + Math.max(0, maxMs) };
+    this.holds.add(entry);
+    return {
+      key: () => {
+        this.now(); // shift for a clock step since the last reading
+        return entry.key;
+      },
+      end: () => {
+        if (this.holds.delete(entry)) this.pump();
+      },
+    };
+  }
+
+  /** Releases everything held right now, in order, holds or not. */
   drain(): void {
     this.clearTimer();
     const out = this.held.splice(0);
@@ -97,6 +132,7 @@ export class ReorderBuffer<T> {
     this.clearTimer();
     this.held = [];
     this.pendingBursts.clear();
+    this.holds.clear();
   }
 
   /**
@@ -116,6 +152,10 @@ export class ReorderBuffer<T> {
         h.cap -= step;
       }
       for (const p of this.pendingBursts) p.firstArrival -= step;
+      for (const x of this.holds) {
+        x.key -= step;
+        x.until -= step;
+      }
     }
     return now;
   }
@@ -125,21 +165,28 @@ export class ReorderBuffer<T> {
     return false;
   }
 
+  private heldBack(h: Held<T>, now: number): boolean {
+    for (const x of this.holds) if (x.key <= h.key && now < x.until) return true;
+    return false;
+  }
+
   /** Releases the longest ready prefix, then schedules the next check. */
   private pump(): void {
     this.clearTimer();
     const now = this.now();
+    for (const x of this.holds) if (now >= x.until) this.holds.delete(x);
     let n = 0;
     while (n < this.held.length) {
       const h = this.held[n];
-      if (now < h.due || (now < h.cap && this.blocked(h))) break;
+      if (now < h.due || (now < h.cap && this.blocked(h)) || this.heldBack(h, now)) break;
       n++;
     }
     if (n > 0) this.release(this.held.splice(0, n).map((h) => h.item));
 
     const next = this.held[0];
     if (!next) return;
-    const at = now < next.due ? next.due : next.cap;
+    let at = now < next.due ? next.due : now < next.cap ? next.cap : Infinity;
+    for (const x of this.holds) if (x.key <= next.key) at = Math.min(at, x.until);
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined;
       this.pump();
