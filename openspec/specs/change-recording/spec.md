@@ -180,7 +180,7 @@ When a recorded file is deleted and a recorded file is created with matching con
 - **THEN** the buffer gets one rename under the worktree's label, not a held delete and a create
 
 ### Requirement: Rename matching
-Content SHALL match when it is identical, or when both texts are non-empty and at least half of the larger file's lines are unchanged. An identical match SHALL be preferred over a near one, then a file with the same name, then the nearest in write time. Only a create from nothing SHALL pair with a delete to nothing, and only changes the filters record SHALL pair.
+Content SHALL match when it is identical, or when both texts are non-empty and at least half of the larger file's lines are unchanged. An identical match SHALL be preferred over a near one, then a file with the same name, then the nearest in write time. Only a create from nothing SHALL pair with a delete to nothing, and only changes the filters record SHALL pair. A half whose file already has a later change held SHALL NOT pair.
 
 #### Scenario: Unrelated files
 - **WHEN** an agent deletes `src/a.ts` and creates `src/c.ts` with different content in the same moment
@@ -194,6 +194,10 @@ Content SHALL match when it is identical, or when both texts are non-empty and a
 - **WHEN** the filters record `*.ts` and an agent renames `notes.txt` to `notes.ts`
 - **THEN** the buffer gets a create of `notes.ts`
 - **AND** renaming `notes.ts` back to `notes.txt` records a delete of `notes.ts`
+
+#### Scenario: New file edited before the delete arrives
+- **WHEN** the watcher reports the create of `src/b.ts` and an edit of it before the delete of `src/a.ts`, all within the reorder window
+- **THEN** the buffer gets a create and the edit of `src/b.ts` and a delete of `src/a.ts`, and `src/b.ts` ends at the edited text
 
 #### Scenario: Atomic replace
 - **WHEN** an editor saves an existing file by writing a temporary file and renaming it over the original

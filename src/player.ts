@@ -132,6 +132,8 @@ export class Player implements vscode.Disposable {
       // from here on stays queued and plays on top of the snapped text.
       this.timeline.seekToEnd();
       const states = this.timeline.latestStates();
+      const renamedAway = new Set(this.timeline.all().flatMap((e) => (e.fromRelPath !== undefined && !states.has(e.fromRelPath) ? [e.fromRelPath] : [])));
+      for (const relPath of renamedAway) if (!this.disposed) await this.retireMirror(relPath);
       const latest = [...states.values()];
       let newest: ChangeEvent | undefined;
       for (const e of latest) {
@@ -139,8 +141,6 @@ export class Player implements vscode.Disposable {
         if (!newest || e.seq > newest.seq) newest = e;
         await this.settle(e);
       }
-      const renamedAway = new Set(this.timeline.all().flatMap((e) => (e.fromRelPath !== undefined && !states.has(e.fromRelPath) ? [e.fromRelPath] : [])));
-      for (const relPath of renamedAway) if (!this.disposed) await this.retireMirror(relPath);
       if (newest && !this.disposed) {
         this.setPlaybackPath(newest.relPath);
         const editor = await this.showMirror(newest.relPath, newest.after, newest.eol);
@@ -184,6 +184,7 @@ export class Player implements vscode.Disposable {
         this.log.appendLine(`Playback of ${next.relPath} failed: ${err instanceof Error ? err.message : String(err)}`);
         // The change is marked played either way, so its mirror must not keep older text.
         if (this.live(epoch)) await this.settle(next).catch(() => undefined);
+        if (this.live(epoch) && next.fromRelPath !== undefined) await this.retireMirror(next.fromRelPath).catch(() => undefined);
       });
       await this.inFlight;
       this.timeline.complete(next.seq, token);
@@ -272,7 +273,7 @@ export class Player implements vscode.Disposable {
       .flatMap((g) => g.tabs)
       .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
     if (tabs.length > 0) await vscode.window.tabGroups.close(tabs, true);
-    if (this.mirror.has(uri)) this.mirror.delete(uri);
+    this.mirror.deleteFile(uri);
   }
 
   // ---------------------------------------------------------------- typing

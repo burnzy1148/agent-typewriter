@@ -33,7 +33,7 @@ A file added by a replayed commit SHALL be a create, a removed file a delete, a 
 - **THEN** the change plays into the mirror named `api/src/a.ts`, the same one a recorded change to that file uses
 
 ### Requirement: Git renames replay as renames
-Renames SHALL be detected at git's default similarity. A rename whose old or new path the filters leave out SHALL replay as a create of the new path or a delete of the old one, and a rename without a content change SHALL still be replayed.
+Renames SHALL be detected at git's default similarity. A rename whose old or new path the filters leave out SHALL replay as a create of the new path or a delete of the old one, and a rename without a content change SHALL still be replayed. When one side of a rename is skipped (binary, too large, unreadable or Git LFS), the other side SHALL replay as a delete of the old path or a create of the new one.
 
 #### Scenario: Renamed file
 - **WHEN** a replayed commit runs `git mv src/a.ts src/b.ts`

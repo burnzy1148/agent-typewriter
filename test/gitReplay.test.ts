@@ -270,6 +270,21 @@ test('buildReplay: git renames are renames; one side filtered makes a create or 
   assert.equal(b.before, b.after, 'a pure rename is kept');
 });
 
+test('buildReplay: a rename whose new side is too large keeps the delete of the old path', { skip: noGit }, async () => {
+  const repo = tempRepo('at-replay-ren-');
+  const base = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  write(repo, 'a.ts', base);
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'one');
+  git(repo, 'mv', 'a.ts', 'b.ts');
+  fs.appendFileSync(path.join(repo, 'b.ts'), Array.from({ length: 30 }, (_, i) => `more ${i}`).join('\n') + '\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'two');
+  const r = await buildReplay(repo, resolveRange('HEAD'), { maxBytes: base.length + 50 });
+  assert.deepEqual(r.events.map((e) => [e.kind, e.relPath, e.before === base, e.after]), [['delete', 'a.ts', true, '']]);
+  assert.equal(r.skipped.tooLarge, 1);
+});
+
 test('buildReplay: a Git LFS pointer is skipped, not typed', { skip: noGit }, async () => {
   const repo = tempRepo('at-replay-lfs-');
   write(repo, 'model.ts', `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 12345\n`);

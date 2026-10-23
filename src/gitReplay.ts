@@ -231,7 +231,20 @@ export async function buildReplay(folder: string, revs: string[], options: Repla
   stopIfCancelled();
   const events: NewChangeEvent[] = [];
   const commitOf: GitCommit[] = [];
-  for (const { commit, change, before, after } of changed) {
+  for (const read of changed) {
+    const { commit } = read;
+    let { change, before, after } = read;
+    // A rename with one side unreadable keeps the other: a delete of the old path, or a create of the new one.
+    if (change.kind === 'rename' && (typeof before === 'string') !== (typeof after === 'string')) {
+      skipped[(typeof before === 'string' ? before : after) as keyof ReplaySkips]++;
+      if (typeof before === 'string') {
+        change = { path: change.path, kind: 'create', afterSha: change.afterSha };
+        before = EMPTY;
+      } else {
+        change = { path: change.fromPath!, kind: 'delete', beforeSha: change.beforeSha };
+        after = EMPTY;
+      }
+    }
     const failed = typeof before === 'string' ? before : typeof after === 'string' ? after : undefined;
     if (failed !== undefined) {
       skipped[failed]++;

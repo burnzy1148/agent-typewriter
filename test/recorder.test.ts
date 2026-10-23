@@ -696,3 +696,37 @@ test('a rename released apart, with no reorder window, stays a delete and a crea
   await t.settle();
   assert.deepEqual(renames(t).sort(), ['create src/b.ts', 'delete src/a.ts']);
 });
+
+test('a rename whose new file is edited before the delete arrives is not paired, so the edit stays last', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'X\n');
+  const t = recorderOn(settings({ reorderWindowMs: 3000 }), dir);
+  await t.recorder.start();
+  fs.renameSync(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'));
+  mock.fire('create', path.join(dir, 'src/b.ts'));
+  await sleep(300);
+  t.change(path.join(dir, 'src/b.ts'), 'Y\n');
+  await sleep(300);
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t), ['create src/b.ts', 'modify src/b.ts', 'delete src/a.ts']);
+  assert.equal(t.timeline.latestStates().get('src/b.ts')?.after, 'Y\n');
+});
+
+test('a rename whose old path is written again before the create arrives is not paired', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'X\n');
+  const t = recorderOn(settings({ reorderWindowMs: 3000 }), dir);
+  await t.recorder.start();
+  fs.renameSync(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'));
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  await sleep(300);
+  t.change(path.join(dir, 'src/a.ts'), 'Z\n', 'create');
+  await sleep(300);
+  mock.fire('create', path.join(dir, 'src/b.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t).sort(), ['create src/a.ts', 'create src/b.ts', 'delete src/a.ts']);
+  // The old path's own changes keep their order.
+  assert.deepEqual(renames(t).filter((e) => e.endsWith('src/a.ts')), ['delete src/a.ts', 'create src/a.ts']);
+  assert.deepEqual([...t.timeline.latestStates().keys()].sort(), ['src/a.ts', 'src/b.ts']);
+});

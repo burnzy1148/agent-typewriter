@@ -608,6 +608,22 @@ test('a rename in a chosen worktree is one rename, without waiting out the held 
   assert.equal(t.events().length, 1);
 });
 
+for (const createFirst of [true, false]) {
+  test(`a rename in a chosen worktree reported together is one rename (${createFirst ? 'create' : 'delete'} first)`, { skip: noGit }, async () => {
+    const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n' });
+    const t = recorderOn(settings({ reorderWindowMs: 250 }), { choices }, repo);
+    await t.recorder.start();
+    fs.renameSync(path.join(side, 'src', 'a.ts'), path.join(side, 'src', 'b.ts'));
+    if (createFirst) t.fire('create', path.join(side, 'src', 'b.ts'));
+    t.fire('delete', path.join(side, 'src', 'a.ts'));
+    if (!createFirst) t.fire('create', path.join(side, 'src', 'b.ts'));
+    await t.settle(HOLD_MS);
+    const label = path.basename(side);
+    assert.deepEqual(t.events(), [`rename ${label}/src/b.ts`]);
+    assert.equal(t.timeline.all()[0].fromRelPath, `${label}/src/a.ts`);
+  });
+}
+
 test('removing the chosen worktree while a held delete keeps a later change back records the change, and no deletes', { skip: noGit }, async () => {
   const { repo, side, choices } = repoWithChosenSibling({ 'src/a.ts': 'a\n', 'src/c.ts': 'c\n' });
   const t = recorderOn(settings(), { choices }, repo);
