@@ -927,6 +927,87 @@ export async function run(): Promise<void> {
     await revertMidChange(r0, r1, 'const a = 10;', 'workbench.action.revertAndCloseActiveEditor');
     await revertMidChange(r1, r2, 'const a = 100;', 'workbench.action.files.revert');
 
+    // The next edit in the same file is scrolled to, not jumped to. Pause holds
+    // the scroll; finish current and skip to latest end it; smoothScroll off jumps.
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await setting('agentTypewriter', 'maxAnimatedChars', 6000);
+    await setting('agentTypewriter', 'scrollPauseMs', 0);
+    await setting('agentTypewriter', 'scrollLinesPerSecond', 60);
+    const tallLines = Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`);
+    /** The mirror's current text with `edits` applied, so each step's change holds only its own hunks. */
+    const tall = (edits: Record<number, string>) => (tallText ?? tallLines.join('\n') + '\n').split('\n').map((l, i) => edits[i] ?? l).join('\n');
+    /** Top lines the mirror of `rel` shows, in order, until disposed. */
+    const tops = (rel: string) => {
+      const seen: number[] = [];
+      const sub = vscode.window.onDidChangeTextEditorVisibleRanges((ev) => {
+        if (isMirror(ev.textEditor.document, rel) && ev.visibleRanges.length > 0) seen.push(ev.visibleRanges[0].start.line);
+      });
+      return { seen, dispose: () => sub.dispose() };
+    };
+    const inView = (rel: string, line: number) =>
+      mirrorEditor(rel)!.visibleRanges.some((r) => r.start.line <= line && line <= r.end.line);
+    const toTop = async (rel: string) => {
+      const ed = mirrorEditor(rel)!;
+      ed.revealRange(new vscode.Range(0, 0, 0, 0), vscode.TextEditorRevealType.AtTop);
+      await until(`${rel} scrolled to the top`, () => ed.visibleRanges[0]?.start.line === 0);
+    };
+    let tallText: string | undefined;
+    tallText = (await play('play/scroll.ts', '', tall({}))).after;
+    const scrollStep = async (label: string, edits: Record<number, string>, line: number) => {
+      await toTop('play/scroll.ts');
+      const seen = tops('play/scroll.ts');
+      const e = push('play/scroll.ts', tallText!, tall(edits));
+      return {
+        e,
+        seen,
+        done: async () => {
+          await until(`${label} playback`, playedNow(e.seq));
+          seen.dispose();
+          assert.equal(mirrorText('play/scroll.ts'), e.after, `${label}: the mirror does not hold the after text`);
+          assert.ok(inView('play/scroll.ts', line), `${label}: line ${line} is not in view`);
+          tallText = e.after;
+        },
+      };
+    };
+
+    const smooth = await scrollStep('smooth scroll', { 3: 'const line3 = 30;', 350: 'const line350 = 3500;' }, 350);
+    await smooth.done();
+    const distinct = [...new Set(smooth.seen.seen)];
+    assert.ok(distinct.length >= 5, `expected a scroll through several positions, saw tops ${distinct.join(',')}`);
+    assert.ok(distinct.every((t, i) => i === 0 || t >= distinct[i - 1]), `the scroll went back up: ${distinct.join(',')}`);
+
+    const paused = await scrollStep('paused scroll', { 360: 'const line360 = 3600;' }, 360);
+    await until('the scroll to start', () => paused.seen.seen.some((t) => t > 0));
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(300);
+    const heldAt = paused.seen.seen.length;
+    await sleep(600);
+    assert.equal(paused.seen.seen.length, heldAt, 'the view kept scrolling while paused');
+    assert.equal(timeline.stateOf(paused.e.seq), 'playing', 'the change finished while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await paused.done();
+
+    const finished = await scrollStep('finish mid-scroll', { 370: 'const line370 = 3700;' }, 370);
+    await until('the scroll to start', () => finished.seen.seen.some((t) => t > 0));
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await finished.done();
+
+    const snapped = await scrollStep('skip to latest mid-scroll', { 380: 'const line380 = 3800;' }, 0);
+    await until('the scroll to start', () => snapped.seen.seen.some((t) => t > 0));
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorText('play/scroll.ts'), snapped.e.after, 'skip to latest mid-scroll did not snap the mirror');
+    const afterSnap = snapped.seen.seen.length;
+    await sleep(300);
+    assert.equal(snapped.seen.seen.length, afterSnap, 'the view kept scrolling after skip to latest');
+    snapped.seen.dispose();
+    tallText = snapped.e.after;
+
+    await setting('agentTypewriter', 'smoothScroll', false);
+    const jumped = await scrollStep('jump with smoothScroll off', { 390: 'const line390 = 3900;' }, 390);
+    await jumped.done();
+    assert.ok(new Set(jumped.seen.seen).size <= 2, `smoothScroll off still scrolled: ${jumped.seen.seen.join(',')}`);
+    console.log('[it] smooth scroll to the next edit ok');
+
     // A rename shows the old name, moves the mirror, then types the edit (at-kbn.2).
     await setting('agentTypewriter', 'charsPerMinute', 3600);
     const mirrorTabs = (rel: string) =>

@@ -169,6 +169,9 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 | `maxSpeedup` | 8 | Cap on automatic catch-up |
 | `maxAnimatedChars` | 6000 | Bigger changes are applied instantly |
 | `fileSwitchDelayMs` | 600 | Pause when flipping to another file |
+| `smoothScroll` | true | Scroll to the next edit in the same file instead of jumping there. Edits already in view only move the caret |
+| `scrollPauseMs` | 400 | Pause before that scroll, to read the last lines typed |
+| `scrollLinesPerSecond` | 60 | Scroll speed. A scroll takes at most one second at 1x; far edits jump most of the way first |
 | `debounceMs` | 200 | Writes to one file inside this window merge into one change |
 | `reorderWindowMs` | `"auto"` | Hold each change this long so changes enter the timeline in write order even when the watcher reports them late. `"auto"` is 2500 ms on Windows, 250 ms elsewhere; `0` disables |
 | `maxFileSizeKB` | 512 | Larger files are ignored |

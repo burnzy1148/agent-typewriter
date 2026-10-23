@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { MirrorFileSystem, mirrorBytes } from './mirrorFs';
 import { baseCharsPerMinute } from './pace';
 import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
+import { SCROLL_FRAME_MS, centeredTop, scrollSteps } from './scroll';
 import type { ChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 import { backspaceStep, typingChunkEnd } from './typingChunks';
@@ -84,6 +85,8 @@ export class Player implements vscode.Disposable {
 
   /** Until the next change plays there is no playback mirror, e.g. after loading another session. */
   forgetPlaybackMirror(): void {
+    // The next change is the first one played: it is jumped to, not scrolled to.
+    this.lastRelPath = undefined;
     if (this.playbackPath === undefined) return;
     this.playbackPath = undefined;
     this.mirrorChanged.fire();
@@ -227,11 +230,14 @@ export class Player implements vscode.Disposable {
       return;
     }
 
+    // After a file switch the first edit is jumped to; later ones are scrolled to.
+    let smooth = !switching;
     for (const h of hunks) {
       if (this.finishNow) break;
       if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
-      await this.typeHunk(e.relPath, editor, h, epoch);
+      await this.typeHunk(e.relPath, editor, h, smooth, epoch);
       if (!this.live(epoch)) return;
+      smooth = true;
     }
 
     if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
@@ -278,18 +284,20 @@ export class Player implements vscode.Disposable {
 
   // ---------------------------------------------------------------- typing
 
-  private async typeHunk(relPath: string, editor: vscode.TextEditor, h: Hunk, epoch: number): Promise<void> {
+  private async typeHunk(relPath: string, editor: vscode.TextEditor, h: Hunk, smooth: boolean, epoch: number): Promise<void> {
     const s = this.settings();
-    const doc = editor.document;
-    const start = posAt(doc, h.offset);
+    const caretOffset = h.deleteText.length > 0 && h.deleteText.length <= BACKSPACE_MAX && !h.deleteText.includes('\n')
+      ? h.offset + h.deleteText.length
+      : h.offset;
 
-    // Navigate: put the caret where the edit happens, the way a person clicks there.
-    const caretAt = h.deleteText.length > 0 && h.deleteText.length <= BACKSPACE_MAX && !h.deleteText.includes('\n')
-      ? posAt(doc, h.offset + h.deleteText.length)
-      : start;
+    // Navigate: bring the edit into view, then put the caret there, the way a person clicks.
+    const ed = await this.scrollTo(relPath, editor, posAt(editor.document, caretOffset).line, smooth, epoch);
+    if (!ed) return;
+    editor = ed;
+    const caretAt = posAt(editor.document, caretOffset);
     editor.selection = new vscode.Selection(caretAt, caretAt);
-    editor.revealRange(new vscode.Range(caretAt, caretAt), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     await this.sleep(this.humanize(220, s) / this.speedMultiplier(s));
+    if (!this.live(epoch)) return;
 
     if (h.deleteText.length > 0) {
       await this.deleteText(relPath, editor, h, epoch);
@@ -298,6 +306,51 @@ export class Player implements vscode.Disposable {
     if (h.insertText.length > 0) {
       await this.typeText(relPath, editor, h.offset, h.insertText, epoch);
     }
+  }
+
+  /**
+   * Brings `line` into view. With `smooth` and smoothScroll on, a line outside
+   * the viewport is scrolled to after a pause to read what was just typed;
+   * otherwise the view jumps there. Undefined once the change was interrupted.
+   */
+  private async scrollTo(relPath: string, editor: vscode.TextEditor, line: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
+    const s = this.settings();
+    const at = new vscode.Range(line, 0, line, 0);
+    const view = editor.visibleRanges;
+    const jump = () => editor.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    if (!smooth || !s.smoothScroll || view.length === 0 || this.finishNow) {
+      jump();
+      return editor;
+    }
+    const first = view[0].start.line;
+    const last = view[view.length - 1].end.line;
+    if (line >= first && line <= last) return editor;
+
+    await this.sleep(this.humanize(s.scrollPauseMs, s) / this.speedMultiplier(s));
+    let ed: vscode.TextEditor | undefined = editor;
+    if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
+    const height = last - first + 1;
+    let shown = ed.visibleRanges[0]?.start.line ?? first;
+    const steps = scrollSteps(shown, centeredTop(line, height, ed.document.lineCount), height, s.scrollLinesPerSecond, this.speedMultiplier(s));
+    // Each frame shows the step for the time elapsed, so late timers skip
+    // steps instead of stretching the scroll. Time spent paused doesn't count.
+    let started = Date.now();
+    for (let k = -1; k < steps.length - 1; ) {
+      const waited = Date.now();
+      if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
+      started += Date.now() - waited;
+      if (this.finishNow) break;
+      k = Math.min(steps.length - 1, Math.max(k + 1, Math.floor((Date.now() - started) / SCROLL_FRAME_MS)));
+      if (steps[k] !== shown) {
+        ed.revealRange(new vscode.Range(steps[k], 0, steps[k], 0), vscode.TextEditorRevealType.AtTop);
+        shown = steps[k];
+      }
+      if (k < steps.length - 1) await this.sleep(SCROLL_FRAME_MS);
+    }
+    if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
+    // Lands on the edit after finish now, a frame VS Code clamped, or a scroll by the user during a pause.
+    ed.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    return ed;
   }
 
   private async deleteText(relPath: string, editor: vscode.TextEditor, h: Hunk, epoch: number): Promise<void> {
@@ -532,9 +585,24 @@ export class Player implements vscode.Disposable {
     while (this.paused && this.epoch === epoch && !this.disposed && !this.finishNow) await this.nextPoke();
   }
 
+  /** Waits `ms` (at most 5 s), or less once finish now is pressed, the change is interrupted, or the player disposed. */
   private sleep(ms: number): Promise<void> {
     if (ms <= 0 || this.finishNow) return Promise.resolve();
-    return new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5000)));
+    const epoch = this.epoch;
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        const i = this.waiters.indexOf(wake);
+        if (i >= 0) this.waiters.splice(i, 1);
+        resolve();
+      };
+      const wake = () => {
+        if (this.finishNow || this.epoch !== epoch || this.disposed) done();
+        else this.waiters.push(wake);
+      };
+      const timer = setTimeout(done, Math.min(ms, 5000));
+      this.waiters.push(wake);
+    });
   }
 }
 
