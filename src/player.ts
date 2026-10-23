@@ -275,9 +275,10 @@ export class Player implements vscode.Disposable {
    */
   private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
     const s = this.settings();
-    const from = editor.selection.active;
+    const from = editor.document.validatePosition(editor.selection.active);
     const to = posAt(editor.document, offset);
-    const walk = smooth && s.arrowNavigation && !this.finishNow && inView(editor, from.line) && inView(editor, to.line);
+    // One visible range holds the whole walk, so the caret never enters a folded region and unfolds it.
+    const walk = smooth && s.arrowNavigation && !this.finishNow && inView(editor, Math.min(from.line, to.line), Math.max(from.line, to.line));
     let ed = await this.scrollTo(relPath, editor, to.line, smooth, epoch);
     if (!ed) return undefined;
     const doc = ed.document;
@@ -292,6 +293,8 @@ export class Player implements vscode.Disposable {
     if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
     const caret = posAt(ed.document, offset);
     ed.selection = new vscode.Selection(caret, caret);
+    // Setting the caret doesn't scroll; the view may have moved during a pause or a reopened tab.
+    ed.revealRange(new vscode.Range(caret, caret), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     return ed;
   }
 
@@ -593,9 +596,9 @@ export class Player implements vscode.Disposable {
   }
 }
 
-/** True when `line` is inside one of the editor's visible ranges. */
-function inView(editor: vscode.TextEditor, line: number): boolean {
-  return editor.visibleRanges.some((r) => r.start.line <= line && line <= r.end.line);
+/** True when lines `first` to `last` all lie inside one of the editor's visible ranges. */
+function inView(editor: vscode.TextEditor, first: number, last = first): boolean {
+  return editor.visibleRanges.some((r) => r.start.line <= first && last <= r.end.line);
 }
 
 function fullRange(doc: vscode.TextDocument): vscode.Range {

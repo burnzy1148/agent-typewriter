@@ -18,4 +18,4 @@
 
 ## 5. Integration
 
-- [x] 5.1 Set `arrowNavigation: false` in the `it/runTest.ts` workspaces; in `it/suite.ts` PLAY, a 24-line mirror where a change edits lines 1 and 9 visits every line between; pause mid-walk holds the caret and keeps the change playing; with `arrowNavigation` off the caret skips the lines between; verify `npm run it` passes
+- [x] 5.1 Set `arrowNavigation: false` in the `it/runTest.ts` workspaces; in `it/suite.ts` PLAY, a 24-line mirror where a change edits lines 1 and 9 visits every line between; pause mid-walk holds the caret and keeps the change playing; finish current mid-walk ends with the caret on the edit; skip to latest mid-walk snaps the mirror and stops the caret; with `arrowNavigation` off the caret skips the lines between; verify `npm run it` passes

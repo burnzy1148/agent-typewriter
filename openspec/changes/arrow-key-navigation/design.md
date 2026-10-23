@@ -28,9 +28,9 @@ It takes a `lineText(n)` callback instead of the whole document, so a walk on a 
 ### `Player.navigate` decides walk or click
 
 `navigate(relPath, editor, offset, smooth, epoch)`:
-- Walks only when `smooth` (the same flag that suppresses scrolling after a file switch) is set, `arrowNavigation` is on, finish current isn't pending, and both the caret and the target line are in view **before** `scrollTo` runs. An edit that needed a scroll is clicked, the way a person who scrolled with the mouse clicks.
+- Walks only when `smooth` (the same flag that suppresses scrolling after a file switch) is set, `arrowNavigation` is on, finish current isn't pending, and one visible range holds every line from the caret to the target **before** `scrollTo` runs. An edit that needed a scroll is clicked, the way a person who scrolled with the mouse clicks. Requiring a single range keeps the walk out of folded regions, which VS Code would unfold when the caret entered them. The start is `validatePosition(selection.active)`.
 - Calls `scrollTo` (a no-op when the target is in view), then for each key: `ready()`, stop on finish current, set the selection, sleep `humanize(1000 / arrowKeysPerSecond) / speedMultiplier`.
-- Always ends by setting the caret at the edit's offset, so a walk cut short by finish current still lands right.
+- Always ends by setting the caret at the edit's offset, so a walk cut short by finish current still lands right, then reveals it if it is outside the view (setting a selection doesn't scroll, and the user may have scrolled during a pause).
 
 `ARROW_MAX_KEYS = 24` is a constant rather than a setting: about ten lines plus a few words is where a person stops pressing keys and clicks.
 
@@ -43,7 +43,7 @@ It takes a `lineText(n)` callback instead of the whole document, so a walk on a 
 
 ### Integration tests
 
-The general integration workspaces in `it/runTest.ts` set `arrowNavigation: false`. Their timing-sensitive checks (partial inserts, pause and seek windows) were tuned to the caret being placed at once. The PLAY section turns the setting on and covers the walk, pause during the walk, and the setting turned off.
+The general integration workspaces in `it/runTest.ts` set `arrowNavigation: false`. Their timing-sensitive checks (partial inserts, pause and seek windows) were tuned to the caret being placed at once. The PLAY section turns the setting on and covers the walk, pause, finish current, and skip to latest during the walk, and the setting turned off.
 
 ## Risks / Trade-offs
 
