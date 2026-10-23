@@ -121,6 +121,21 @@ export class ReorderBuffer<T> {
     };
   }
 
+  /**
+   * Removes the held item `choose` picks from the held items (with their
+   * keys, in release order) and returns it with its key; undefined when it
+   * picks none. Lets a caller replace two held halves of one change with
+   * one; nothing is released until the replacement is added.
+   */
+  take(choose: (held: ReadonlyArray<{ item: T; key: number }>) => T | undefined): { item: T; key: number } | undefined {
+    this.now(); // shift for a clock step before handing out keys
+    const item = choose(this.held.map((h) => ({ item: h.item, key: h.key })));
+    const i = item === undefined ? -1 : this.held.findIndex((h) => h.item === item);
+    if (i === -1) return undefined;
+    const [h] = this.held.splice(i, 1);
+    return { item: h.item, key: h.key };
+  }
+
   /** Releases everything held right now, in order, holds or not. */
   drain(): void {
     this.clearTimer();

@@ -11,11 +11,18 @@ export class ChangeItem extends vscode.TreeItem {
     super(name, vscode.TreeItemCollapsibleState.None);
 
     const time = new Date(event.time).toLocaleTimeString();
+    const counts = `+${event.linesAdded} -${event.linesRemoved}`;
     const delta =
-      event.kind === 'delete' ? 'deleted' : event.kind === 'create' ? `new +${event.linesAdded}` : `+${event.linesAdded} -${event.linesRemoved}`;
+      event.kind === 'delete'
+        ? 'deleted'
+        : event.kind === 'create'
+          ? `new +${event.linesAdded}`
+          : event.kind === 'rename'
+            ? `renamed from ${event.fromRelPath}${event.before === event.after ? '' : ` ${counts}`}`
+            : counts;
     this.description = [delta, dir, time].filter(Boolean).join('  ·  ');
     this.tooltip = new vscode.MarkdownString(
-      `**${event.relPath}**  \n#${event.seq} · ${event.kind} · ${time}  \n${delta} lines · ${state}`,
+      `**${event.fromRelPath !== undefined ? `${event.fromRelPath} \u2192 ` : ''}${event.relPath}**  \n#${event.seq} · ${event.kind} · ${time}  \n${delta} lines · ${state}`,
     );
     this.contextValue = 'changeEvent';
     this.iconPath =
@@ -25,7 +32,9 @@ export class ChangeItem extends vscode.TreeItem {
           ? new vscode.ThemeIcon('circle-outline')
           : event.kind === 'delete'
             ? new vscode.ThemeIcon('trash')
-            : new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
+            : event.kind === 'rename'
+              ? new vscode.ThemeIcon('diff-renamed')
+              : new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
     this.command = { command: 'agentTypewriter.showDiff', title: 'Show Diff', arguments: [this] };
   }
 }

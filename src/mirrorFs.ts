@@ -143,6 +143,12 @@ export class MirrorFileSystem implements vscode.FileSystemProvider {
     this.emitter.fire([{ type: vscode.FileChangeType.Deleted, uri }]);
   }
 
+  /** Deletes one file, leaving any files under a directory of the same name. */
+  deleteFile(uri: vscode.Uri): void {
+    if (!this.files.delete(uri.path)) return;
+    this.emitter.fire([{ type: vscode.FileChangeType.Deleted, uri }]);
+  }
+
   rename(oldUri: vscode.Uri, newUri: vscode.Uri): void {
     const f = this.files.get(oldUri.path);
     if (!f) throw vscode.FileSystemError.FileNotFound(oldUri);

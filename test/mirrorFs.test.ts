@@ -61,3 +61,20 @@ test('seed adds only new files, in one change event, with their line ending', ()
   assert.equal(fs.seed([]), 0);
   assert.equal(events.length, 1, 'an empty seed fired an event');
 });
+
+test('deleteFile removes one file and keeps files under a directory of the same name', () => {
+  const fs = new MirrorFileSystem();
+  fs.open();
+  const file = MirrorFileSystem.uriFor('src/config');
+  const inside = MirrorFileSystem.uriFor('src/config/default.json');
+  fs.writeFile(file, mirrorBytes('old\n', '\n'));
+  fs.writeFile(inside, mirrorBytes('{}\n', '\n'));
+  const events: vscode.FileChangeEvent[][] = [];
+  fs.onDidChangeFile((e) => events.push(e));
+  fs.deleteFile(file);
+  assert.equal(fs.has(file), false);
+  assert.equal(text(fs.readFile(inside) as Uint8Array), '{}\n');
+  assert.deepEqual(events.flat().map((e) => [e.type, e.uri.path]), [[vscode.FileChangeType.Deleted, '/src/config']]);
+  fs.deleteFile(file);
+  assert.equal(events.length, 1, 'deleting a missing file fired an event');
+});

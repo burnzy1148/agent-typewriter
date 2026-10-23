@@ -31,6 +31,7 @@ import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { KeyedSerial } from './keyedSerial';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
+import { pickRenamePartner } from './renames';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
@@ -1423,7 +1424,11 @@ export class Recorder implements vscode.Disposable {
         // Its `.git` may just not be gone yet: wait until deletes there stop.
         if (!isDir && previous !== undefined) {
           this.snapshots.delete(key);
-          this.holdDelete(scope, uri, relPath, previous, burst);
+          // Unless it is half of a rename whose create in this checkout is
+          // already held: that shows the checkout is not being removed.
+          const deletedAt = burst.deletedAt ?? burst.lastArrival;
+          const event = changeEvent(uri, relPath, 'delete', previous.text, '', previous.eol, deletedAt);
+          if (!this.recordRename(event, deletedAt, scope.root.toString())) this.holdDelete(scope, uri, relPath, previous, burst);
           return;
         }
       }
@@ -1666,20 +1671,84 @@ export class Recorder implements vscode.Disposable {
     eol: Eol,
     writtenAt: number,
   ): void {
-    const { added, removed } = countChanges(before, after);
-    const event: NewChangeEvent = {
-      uri: uri.toString(),
-      relPath,
+    const event = changeEvent(uri, relPath, kind, before, after, eol, writtenAt);
+    if (this.recordRename(event, writtenAt)) return;
+    this.note(`recorded ${kind} ${relPath}`);
+    this.reorder.add(event, writtenAt, event.uri);
+  }
+
+  /**
+   * Records a create from nothing, or a delete to nothing, together with the
+   * other half of its rename when that is still held: a delete in the reorder
+   * buffer or held in a chosen worktree for a create, a create in the reorder
+   * buffer for a delete. True when it did. The rename keeps the later of the
+   * two write times, so it stays after earlier changes to the old path. A
+   * held half with a later change of its file held too is left alone: the
+   * rename would go out after that change. With `root`, only a create in
+   * that recorded root pairs.
+   */
+  private recordRename(event: NewChangeEvent, key: number, root?: string): boolean {
+    const isCreate = event.kind === 'create' && event.before === '';
+    if (!isCreate && !(event.kind === 'delete' && event.after === '')) return false;
+    const text = isCreate ? event.after : event.before;
+    const rootOf = (uri: string) => this.scopeOf(vscode.Uri.parse(uri))?.root.toString();
+    // A create in a chosen worktree shows that checkout is not being removed.
+    const createRoot = isCreate ? rootOf(event.uri) : undefined;
+    const heldDeletes = [...this.heldDeletes.values()]
+      .filter((h) => createRoot !== undefined && h.root === createRoot && h.session === this.session)
+      .map((h) => ({ held: h, relPath: h.relPath, text: h.before.text, key: h.order.key() }));
+    let heldDelete: HeldDelete | undefined;
+    const taken = this.reorder.take((items) => {
+      const perFile = new Map<string, number>();
+      for (const { item } of items) perFile.set(item.uri, (perFile.get(item.uri) ?? 0) + 1);
+      const halves = items
+        .filter(({ item }) => (isCreate ? item.kind === 'delete' && item.after === '' : item.kind === 'create' && item.before === ''))
+        .filter(({ item }) => perFile.get(item.uri) === 1 && (root === undefined || rootOf(item.uri) === root))
+        .map(({ item, key }) => ({ item, relPath: item.relPath, text: isCreate ? item.before : item.after, key }));
+      const pick = pickRenamePartner<{ relPath: string; text: string; key: number; item?: NewChangeEvent; held?: HeldDelete }>(
+        text,
+        event.relPath,
+        key,
+        [...halves, ...heldDeletes],
+      );
+      heldDelete = pick?.held;
+      return pick?.item;
+    });
+    let from: { uri: string; relPath: string; before: string };
+    let to: NewChangeEvent;
+    let partnerKey: number;
+    if (taken) {
+      from = isCreate ? taken.item : event;
+      to = isCreate ? event : taken.item;
+      partnerKey = taken.key;
+    } else if (heldDelete) {
+      this.heldDeletes.delete(heldDelete.uri.toString());
+      from = { uri: heldDelete.uri.toString(), relPath: heldDelete.relPath, before: heldDelete.before.text };
+      to = event;
+      partnerKey = heldDelete.order.key();
+    } else {
+      return false;
+    }
+    const writtenAt = Math.max(key, partnerKey);
+    const { added, removed } = countChanges(from.before, to.after);
+    const rename: NewChangeEvent = {
+      uri: to.uri,
+      relPath: to.relPath,
+      fromUri: from.uri,
+      fromRelPath: from.relPath,
       time: writtenAt,
-      kind,
-      before,
-      after,
-      eol,
+      kind: 'rename',
+      before: from.before,
+      after: to.after,
+      eol: to.eol,
       linesAdded: added,
       linesRemoved: removed,
     };
-    this.note(`recorded ${kind} ${relPath}`);
-    this.reorder.add(event, writtenAt, event.uri);
+    this.note(`recorded rename ${from.relPath} -> ${to.relPath}`);
+    this.reorder.add(rename, writtenAt, rename.uri);
+    // Ended after the rename is added, so changes it held back stay behind it.
+    heldDelete?.done();
+    return true;
   }
 
   /** Undefined for binary, oversized, or unreadable files; `onError` hears why a read failed. */
@@ -1710,6 +1779,12 @@ export class Recorder implements vscode.Disposable {
     if (text === undefined || isBinaryText(text)) return undefined;
     return { text: normalizeEol(text), eol: detectEol(text) };
   }
+}
+
+/** A recorded change, keyed for the reorder buffer by `writtenAt`, which becomes its time. */
+function changeEvent(uri: vscode.Uri, relPath: string, kind: ChangeKind, before: string, after: string, eol: Eol, writtenAt: number): NewChangeEvent {
+  const { added, removed } = countChanges(before, after);
+  return { uri: uri.toString(), relPath, time: writtenAt, kind, before, after, eol, linesAdded: added, linesRemoved: removed };
 }
 
 /** What the latest editor save of a file wrote. `done` once did-save has fired. */

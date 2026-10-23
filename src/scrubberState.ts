@@ -3,7 +3,8 @@ import type { ChangeKind, Timeline } from './timeline';
 /** What the scrubber panel renders. Plain data, posted to the webview as is. */
 export interface ScrubberState {
   type: 'state';
-  changes: Array<{ seq: number; relPath: string; kind: ChangeKind }>;
+  /** fromRelPath is set for a rename. */
+  changes: Array<{ seq: number; relPath: string; kind: ChangeKind; fromRelPath?: string }>;
   /** Slider position: index of the next change to play, or changes.length when caught up. */
   index: number;
   /** Seq being typed right now, if any. */
@@ -33,7 +34,7 @@ export function scrubberState(
   const first = events[0]?.seq ?? timeline.cursor;
   const index = Math.min(Math.max(timeline.cursor - first, 0), events.length);
   const facts: PlaybackFacts = {
-    changes: events.map((e) => ({ seq: e.seq, relPath: e.relPath, kind: e.kind })),
+    changes: events.map((e) => ({ seq: e.seq, relPath: e.relPath, kind: e.kind, ...(e.fromRelPath !== undefined && { fromRelPath: e.fromRelPath }) })),
     index,
     playingSeq: events.find((e) => timeline.stateOf(e.seq) === 'playing')?.seq,
     queued: timeline.pendingCount(),
@@ -46,7 +47,8 @@ export function scrubberState(
 export function describePlayback(s: PlaybackFacts): { label: string; position: string } {
   const n = s.changes.length;
   const position = `${Math.min(s.index + 1, n)} / ${n}`;
-  const describe = (c: { seq: number; relPath: string }) => `#${c.seq} ${c.relPath}`;
+  const describe = (c: { seq: number; relPath: string; fromRelPath?: string }) =>
+    `#${c.seq} ${c.fromRelPath !== undefined ? `${c.fromRelPath} \u2192 ` : ''}${c.relPath}`;
   if (n === 0) return { label: s.watching ? 'Waiting for changes' : 'Not watching', position };
   const queued = s.queued ? ` \u00b7 ${s.queued} queued` : '';
   const playing = s.changes.find((c) => c.seq === s.playingSeq);
