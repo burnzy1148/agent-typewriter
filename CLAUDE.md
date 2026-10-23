@@ -32,5 +32,6 @@ A VS Code extension that watches files change on disk and replays each change as
 - OpenSpec holds feature definitions. Specs in `openspec/specs/` describe current behavior; archived changes in `openspec/changes/archive/` are design history.
 - Each feature or behavior change is one OpenSpec change: explore, propose, apply, archive. The `/opsx:*` commands and `openspec-*` skills in `.claude/` drive each step. Fixes that do not change specified behavior need no change.
 - Implementation tasks live in the change's `tasks.md`.
-- Work lands through a PR to `main`. CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows. Archive the OpenSpec change on the PR branch before merging, once its tasks are done and CI is green, so the updated specs land on `main` with the code.
+- Work lands through a PR to `develop`, the default branch, squash-merged. CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows. Archive the OpenSpec change on the PR branch before merging, once its tasks are done and CI is green, so the updated specs land on `develop` with the code.
+- `main` is the release branch. The Release workflow (`.github/workflows/release.yml`) promotes `develop` through a `release/v<version>` PR into `main`, merged with a merge commit, never squashed. The merge tags `main`, publishes, and opens a PR syncing `main` back into `develop`, also merged with a merge commit. Never commit to `main` directly.
 - Maintainers may keep personal workflow notes (issue tracker, review automation) in `CLAUDE.local.md`, which is gitignored.
