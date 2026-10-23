@@ -16,7 +16,7 @@
 ## 4. Integration checks
 
 - [x] 4.1 At the end of `it/suite.ts` (section 18), make sure mirror tabs are open for at least one played file, a CRLF file if the suite has one, and a file whose newest change is queued behind a played one, and record their relative paths and the text and line ending each tab shows in `IT_EXPECT`. At the top of `it/restore.ts`, before anything plays, assert `mirrorRestore` refilled at least those files, open each tab (`vscode.open`), then assert each document reads its expected text and line ending with no error. Check that resuming types the queued change into its tab. Verify `npm run it` passes.
-- [ ] 4.2 In `it/restore.ts`, open a mirror tab and a compare tab for paths not in the timeline, and a real-file tab, call `api.closeOrphanMirrorTabs()`, and assert both orphan tabs are closed and the real-file tab is still open. Place it so the PLAY section's hand-opened `play/reload2.ts` tab is not touched. Verify `npm run it` passes locally, and on CI on Ubuntu and Windows.
+- [x] 4.2 In `it/restore.ts`, open a mirror tab and a compare tab for paths not in the timeline, and a real-file tab, call `api.closeOrphanMirrorTabs()`, and assert both orphan tabs are closed and the real-file tab is still open. Place it so the PLAY section's hand-opened `play/reload2.ts` tab is not touched. Verify `npm run it` passes locally, and on CI on Ubuntu and Windows. Done in `it/restore.ts` section 2b, which runs before the PLAY section opens `play/reload2.ts` and landed with #29.
 
 ## 5. Docs
 

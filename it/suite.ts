@@ -364,6 +364,9 @@ export async function run(): Promise<void> {
   const queuedSeq = timeline.all()[timeline.all().length - 1].seq;
   const titles = await row(aMirror);
   assert.ok(titles.includes('$(play) Play'), `row has no play: ${titles.join(' | ')}`);
+  for (const button of ['$(zap) Finish', '$(arrow-right) Next', '$(debug-continue) Latest']) {
+    assert.ok(titles.includes(button), `row has no ${button}: ${titles.join(' | ')}`);
+  }
   assert.ok(titles.includes('1x'), `row has no speed: ${titles.join(' | ')}`);
   assert.ok(
     titles.some((t) => t.startsWith(`Paused before #${queuedSeq} src/a.ts · 1 queued · `)),
@@ -380,7 +383,12 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('agentTypewriter.resume');
   assert.equal(player.isPaused, false, 'resume while playing paused');
   await until('row change 2 to play', idle, 20000);
-  assert.ok((await row(aMirror)).includes('$(debug-pause) Pause'), 'row did not switch to pause');
+  const caughtUp = await row(aMirror);
+  assert.ok(caughtUp.includes('$(debug-pause) Pause'), 'row did not switch to pause');
+  // With the queued change played, the readout has moved past it to the end of the buffer.
+  const n = timeline.all().length;
+  assert.ok(caughtUp.includes(`Caught up · ${n} / ${n}`), `row readout after playing wrong: ${caughtUp.join(' | ')}`);
+  assert.equal(mirrorText('src/a.ts'), disk('src/a.ts'), 'mirror text after the queued change differs from the after text');
   await cfg().update('mirrorStatusRow', false, WS);
   await settle();
   assert.deepEqual(await row(aMirror), [], 'row shown with mirrorStatusRow off');
