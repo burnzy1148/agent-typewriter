@@ -3,11 +3,14 @@ import { MirrorFileSystem, mirrorBytes } from './mirrorFs';
 import { baseCharsPerMinute } from './pace';
 import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
 import { SCROLL_FRAME_MS, centeredTop, scrollSteps } from './scroll';
+import { caretPath } from './caretPath';
 import type { ChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 import { backspaceStep, typingChunkEnd } from './typingChunks';
 
 const BACKSPACE_MAX = 24;
+/** More arrow presses than this to reach an edit, and the caret is clicked there instead. */
+const ARROW_MAX_KEYS = 24;
 const TICK_HZ = 60;
 
 /**
@@ -248,12 +251,9 @@ export class Player implements vscode.Disposable {
       ? h.offset + h.deleteText.length
       : h.offset;
 
-    // Navigate: bring the edit into view, then put the caret there, the way a person clicks.
-    const ed = await this.scrollTo(relPath, editor, posAt(editor.document, caretOffset).line, smooth, epoch);
+    const ed = await this.navigate(relPath, editor, caretOffset, smooth, epoch);
     if (!ed) return;
     editor = ed;
-    const caretAt = posAt(editor.document, caretOffset);
-    editor.selection = new vscode.Selection(caretAt, caretAt);
     await this.sleep(this.humanize(220, s) / this.speedMultiplier(s));
     if (!this.live(epoch)) return;
 
@@ -264,6 +264,33 @@ export class Player implements vscode.Disposable {
     if (h.insertText.length > 0) {
       await this.typeText(relPath, editor, h.offset, h.insertText, epoch);
     }
+  }
+
+  /**
+   * Moves the caret to LF offset `offset`. Close by and in view, it walks
+   * there with arrow keys; otherwise the edit is brought into view and the
+   * caret clicked there. Undefined once the change was interrupted.
+   */
+  private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
+    const s = this.settings();
+    const from = editor.selection.active;
+    const to = posAt(editor.document, offset);
+    const walk = smooth && s.arrowNavigation && !this.finishNow && inView(editor, from.line) && inView(editor, to.line);
+    let ed = await this.scrollTo(relPath, editor, to.line, smooth, epoch);
+    if (!ed) return undefined;
+    const doc = ed.document;
+    const keys = walk ? caretPath((n) => doc.lineAt(n).text, from, to, ARROW_MAX_KEYS) : undefined;
+    for (const k of keys ?? []) {
+      if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
+      if (this.finishNow) break;
+      const caret = new vscode.Position(k.line, k.character);
+      ed.selection = new vscode.Selection(caret, caret);
+      await this.sleep(this.humanize(1000 / s.arrowKeysPerSecond, s) / this.speedMultiplier(s));
+    }
+    if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
+    const caret = posAt(ed.document, offset);
+    ed.selection = new vscode.Selection(caret, caret);
+    return ed;
   }
 
   /**
@@ -280,9 +307,9 @@ export class Player implements vscode.Disposable {
       jump();
       return editor;
     }
+    if (inView(editor, line)) return editor;
     const first = view[0].start.line;
     const last = view[view.length - 1].end.line;
-    if (line >= first && line <= last) return editor;
 
     await this.sleep(this.humanize(s.scrollPauseMs, s) / this.speedMultiplier(s));
     let ed: vscode.TextEditor | undefined = editor;
@@ -541,6 +568,11 @@ export class Player implements vscode.Disposable {
     if (ms <= 0 || this.finishNow) return Promise.resolve();
     return new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5000)));
   }
+}
+
+/** True when `line` is inside one of the editor's visible ranges. */
+function inView(editor: vscode.TextEditor, line: number): boolean {
+  return editor.visibleRanges.some((r) => r.start.line <= line && line <= r.end.line);
 }
 
 function fullRange(doc: vscode.TextDocument): vscode.Range {

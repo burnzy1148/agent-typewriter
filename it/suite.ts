@@ -983,6 +983,60 @@ export async function run(): Promise<void> {
     assert.ok(new Set(jumped.seen.seen).size <= 2, `smoothScroll off still scrolled: ${jumped.seen.seen.join(',')}`);
     console.log('[it] smooth scroll to the next edit ok');
 
+    // A nearby edit in view is reached with arrow keys, a line at a time.
+    // Pause holds the walk; arrowNavigation off puts the caret there at once.
+    await setting('agentTypewriter', 'arrowNavigation', true);
+    await setting('agentTypewriter', 'arrowKeysPerSecond', 15);
+    const shortLines = Array.from({ length: 24 }, (_, i) => `let v${i} = ${i};`);
+    const short = (edits: Record<number, string>) => shortLines.map((l, i) => edits[i] ?? l).join('\n') + '\n';
+    let shortText = (await play('play/arrows.ts', '', short({}))).after;
+    /** Caret lines the mirror of `rel` shows, in order, until disposed. */
+    const caretLines = (rel: string) => {
+      const seen: number[] = [];
+      const sub = vscode.window.onDidChangeTextEditorSelection((ev) => {
+        if (isMirror(ev.textEditor.document, rel)) seen.push(ev.selections[0].active.line);
+      });
+      return { seen, dispose: () => sub.dispose() };
+    };
+    const arrowStep = async (label: string, edits: Record<number, string>, lines: number[]) => {
+      await toTop('play/arrows.ts');
+      for (const line of lines) assert.ok(inView('play/arrows.ts', line), `${label}: line ${line} is not in view; the window is too small`);
+      const seen = caretLines('play/arrows.ts');
+      const e = push('play/arrows.ts', shortText, short(edits));
+      return {
+        e,
+        seen,
+        done: async () => {
+          await until(`${label} playback`, playedNow(e.seq));
+          seen.dispose();
+          assert.equal(mirrorText('play/arrows.ts'), e.after, `${label}: the mirror does not hold the after text`);
+          shortText = e.after;
+        },
+      };
+    };
+    const visited = (seen: number[], from: number, to: number) => Array.from({ length: to - from - 1 }, (_, i) => from + 1 + i).filter((l) => !seen.includes(l));
+
+    const walked = await arrowStep('arrow walk', { 1: 'let v1 = 10;', 9: 'let v9 = 90;' }, [1, 9]);
+    await walked.done();
+    assert.deepEqual(visited(walked.seen.seen, 1, 9), [], `the caret skipped lines between edits: ${walked.seen.seen.join(',')}`);
+
+    const held = await arrowStep('paused arrow walk', { 16: 'let v16 = 160;' }, [9, 16]);
+    await until('the arrow walk to start', () => held.seen.seen.some((l) => l > 9 && l < 16));
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(100);
+    const heldAtKeys = held.seen.seen.length;
+    await sleep(600);
+    assert.equal(held.seen.seen.length, heldAtKeys, 'the caret kept moving while paused');
+    assert.equal(timeline.stateOf(held.e.seq), 'playing', 'the change finished while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await held.done();
+
+    await setting('agentTypewriter', 'arrowNavigation', false);
+    const clicked = await arrowStep('arrowNavigation off', { 22: 'let v22 = 220;' }, [16, 22]);
+    await clicked.done();
+    assert.deepEqual(visited(clicked.seen.seen, 16, 22), [17, 18, 19, 20, 21], `arrowNavigation off still walked: ${clicked.seen.seen.join(',')}`);
+    console.log('[it] arrow keys to nearby edits ok');
+
     for (const restore of undo.reverse()) await restore();
     await vscode.commands.executeCommand('agentTypewriter.start');
     console.log('[it] playback and mirrors ok');
