@@ -35,6 +35,8 @@ export async function run(): Promise<void> {
   // Watch, and record one live change so the replay has a buffer to replace.
   await vscode.commands.executeCommand('agentTypewriter.start');
   await until('watching', () => recorder.isRunning);
+  // Give the watcher time to start, as the other suites do (Windows can miss an early create).
+  await sleep(1000);
   fs.writeFileSync(path.join(root, 'src/live.ts'), 'export const live = 1;\n');
   await until('live change recorded', () => timeline.all().some((e) => e.relPath === 'src/live.ts'));
   await until('live change played', idle);
@@ -82,4 +84,20 @@ export async function run(): Promise<void> {
   assert.equal(fs.readFileSync(path.join(root, 'src/a.ts'), 'utf8'), disk, 'src/a.ts on disk changed');
   assert.ok(!fs.existsSync(path.join(root, 'src/b.ts')), 'src/b.ts was written to disk');
   console.log('[it] git replay: typed into mirrors, repository untouched');
+
+  // Asked to play, as a replay picked from the menus does, it types without a resume.
+  await vscode.commands.executeCommand('agentTypewriter.pause');
+  await vscode.commands.executeCommand('agentTypewriter.replayGit', { range: 'feature', play: true });
+  assert.equal(player.isPaused, false, 'a replay asked to play started paused');
+  assert.deepEqual(
+    timeline.all().map((e) => [e.kind, e.relPath]),
+    [
+      ['modify', 'src/a.ts'],
+      ['delete', 'src/gone.ts'],
+    ],
+    'the single-commit replay holds other changes',
+  );
+  await until('playing replay finished', idle);
+  assert.equal(show(mirrorText('src/a.ts') ?? ''), 'export const a = 3;\nexport const twice = a * 2;\n', 'src/a.ts mirror does not end at the commit text');
+  console.log('[it] git replay: plays right away when asked');
 }

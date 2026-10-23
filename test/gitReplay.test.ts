@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   buildReplay,
@@ -49,6 +50,11 @@ test('parseCommits: header and formatted line pairs, subjects with spaces', () =
   ]);
   assert.deepEqual(parseCommits(`commit ${SHA_A}\n${SHA_A} 1700000000\n`), [{ sha: SHA_A, time: 1700000000000, subject: '' }]);
   assert.deepEqual(parseCommits(''), []);
+  // `.` alone does not match a bare CR or a Unicode line separator.
+  assert.deepEqual(
+    parseCommits(`commit ${SHA_A}\n${SHA_A} 1700000000 ls\u2028here\rand\u2029there\n`).map((c) => c.subject),
+    ['ls\u2028here\rand\u2029there'],
+  );
 });
 
 test('parseDiffTree: kinds from the regular-file sides, others skipped', () => {
@@ -188,7 +194,7 @@ test('buildReplay: filtered, binary, oversized, symlink and mode-only changes ar
   git(repo, 'commit', '-q', '-m', 'many');
   const r = await buildReplay(repo, resolveRange('HEAD'), { filter: (p) => !p.endsWith('.txt'), maxBytes: 1000 });
   assert.deepEqual(r.events.map((e) => [e.relPath, e.after]), [['keep.ts', 'b\n']]);
-  assert.deepEqual(r.skipped, { filtered: 1, binary: 1, tooLarge: 1, unreadable: 0 });
+  assert.deepEqual(r.skipped, { filtered: 1, binary: 1, tooLarge: 1, unreadable: 0, lfs: 0, shallow: 0 });
 });
 
 test('buildReplay: CRLF text is normalized and keeps its line ending', { skip: noGit }, async () => {
@@ -206,17 +212,75 @@ test('buildReplay: an unknown revision fails with git reason; cancelling stops i
   const repo = featureRepo();
   await assert.rejects(buildReplay(repo, resolveRange('main..nope')), (err: Error) => err instanceof GitReplayError && /nope/.test(err.message));
   await assert.rejects(buildReplay(repo, resolveRange('main..feature'), { isCancelled: () => true }), /Cancelled/);
+  // A range within one batch still notices a cancel that comes while it reads.
+  let checks = 0;
+  await assert.rejects(buildReplay(repo, resolveRange('main..feature'), { isCancelled: () => ++checks > 2 }), /Cancelled/);
+});
+
+test('buildReplay: mirror paths come from mirrorPathOf, filters see the folder-relative path', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const seen: string[] = [];
+  const r = await buildReplay(repo, resolveRange('main..feature'), {
+    filter: (p) => (seen.push(p), true),
+    mirrorPathOf: (p) => `app/${p}`,
+  });
+  assert.deepEqual(r.events.map((e) => e.relPath), ['app/src/a.ts', 'app/src/b.ts', 'app/src/a.ts', 'app/src/gone.ts']);
+  assert.ok(seen.every((p) => !p.startsWith('app/')), seen.join());
+});
+
+test('buildReplay: a Git LFS pointer is skipped, not typed', { skip: noGit }, async () => {
+  const repo = tempRepo('at-replay-lfs-');
+  write(repo, 'model.ts', `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 12345\n`);
+  write(repo, 'docs.md', 'version https://git-lfs.github.com/spec/v1 is a pointer format\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'pointer');
+  const r = await buildReplay(repo, resolveRange('HEAD'));
+  assert.deepEqual(r.events.map((e) => e.relPath), ['docs.md']);
+  assert.equal(r.skipped.lfs, 1);
+});
+
+test('buildReplay: a shallow clone boundary commit is skipped, not replayed as every file created', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const shallow = path.join(tempDir('at-replay-shallow-'), 's');
+  git(path.dirname(shallow), 'clone', '-q', '--depth', '2', '--branch', 'feature', `file://${repo.replace(/\\/g, '/')}`, shallow);
+  const r = await buildReplay(shallow, resolveRange('HEAD~1..HEAD'));
+  assert.deepEqual(r.events.map((e) => [e.kind, e.relPath]), [['modify', 'src/a.ts'], ['delete', 'src/gone.ts']]);
+  const all = await buildReplay(shallow, resolveRange('HEAD'));
+  assert.equal(all.events.length, 2);
+  const boundary = await buildReplay(shallow, ['HEAD~1']);
+  assert.ok(boundary.skipped.shallow >= 1, 'the boundary commit was replayed');
+  assert.ok(!boundary.events.some((e) => e.relPath === 'README.md'), 'the boundary commit replayed every file as created');
+});
+
+/** git 2.44 added GIT_NO_LAZY_FETCH. */
+const noLazyFetch: string | undefined = (() => {
+  if (noGit) return noGit;
+  const m = /(\d+)\.(\d+)/.exec(git(os.tmpdir(), '--version'));
+  return m && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 44)) ? undefined : 'git older than 2.44';
+})();
+
+test('buildReplay: a partial clone fetches nothing; missing blobs are unreadable', { skip: noLazyFetch }, async () => {
+  const repo = featureRepo();
+  git(repo, 'config', 'uploadpack.allowFilter', 'true');
+  const partial = path.join(tempDir('at-replay-partial-'), 'p');
+  git(path.dirname(partial), 'clone', '-q', '--filter=blob:none', '--no-checkout', `file://${repo.replace(/\\/g, '/')}`, partial);
+  const objects = () => fs.readdirSync(path.join(partial, '.git', 'objects', 'pack')).sort();
+  const before = objects();
+  const r = await buildReplay(partial, resolveRange('origin/main..origin/feature'));
+  assert.deepEqual(objects(), before, 'reading history fetched objects');
+  assert.equal(r.events.length, 0);
+  assert.ok(r.skipped.unreadable > 0);
 });
 
 test('defaultBase: the remote default branch, else the usual names', { skip: noGit }, async () => {
   const repo = featureRepo();
-  assert.equal(await defaultBase(repo), 'main');
+  assert.deepEqual(await defaultBase(repo), { ref: 'refs/heads/main', name: 'main' });
   const clone = path.join(tempDir('at-replay-clone-'), 'c');
   git(path.dirname(clone), 'clone', '-q', repo, clone);
   git(clone, 'branch', '-q', 'develop', 'origin/main');
   git(clone, 'update-ref', 'refs/remotes/origin/develop', 'origin/main');
   git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
-  assert.equal(await defaultBase(clone), 'origin/develop');
+  assert.deepEqual(await defaultBase(clone), { ref: 'refs/remotes/origin/develop', name: 'origin/develop' });
   const bare = tempRepo('at-replay-none-');
   assert.equal(await defaultBase(bare), undefined);
 });
@@ -225,9 +289,15 @@ test('listBranches, currentBranch and isRepository', { skip: noGit }, async () =
   const repo = featureRepo();
   const clone = path.join(tempDir('at-replay-clone-'), 'c');
   git(path.dirname(clone), 'clone', '-q', repo, clone);
-  const branches = await listBranches(clone);
-  assert.ok(branches.includes('feature') && branches.includes('origin/main') && branches.includes('origin/feature'), branches.join());
-  assert.ok(!branches.some((b) => b === 'origin' || b.endsWith('/HEAD')), branches.join());
+  // A tag named like a branch does not shadow it: branches carry their full ref.
+  git(clone, 'tag', 'feature', 'origin/main');
+  const listed = await listBranches(clone);
+  const names = listed.map((b) => b.name);
+  assert.ok(names.includes('feature') && names.includes('origin/main') && names.includes('origin/feature'), names.join());
+  assert.ok(!names.some((b) => b === 'origin' || b.endsWith('/HEAD')), names.join());
+  assert.deepEqual(listed.find((b) => b.name === 'origin/feature'), { ref: 'refs/remotes/origin/feature', name: 'origin/feature' });
+  const viaRef = await buildReplay(clone, [`refs/remotes/origin/main..refs/heads/feature`]);
+  assert.equal(viaRef.commits.length, 2);
   assert.equal(await currentBranch(repo), 'feature');
   git(repo, 'checkout', '-q', '--detach');
   assert.equal(await currentBranch(repo), undefined);

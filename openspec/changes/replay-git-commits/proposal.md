@@ -9,9 +9,9 @@ Agent Typewriter replays changes it watched happen. Work that already landed in 
 - New command **Replay Git Commits...** builds the buffer from a git commit range in a workspace folder: one change per file per commit, in commit order, oldest first. Each change's before text is the file in the commit's parent and its after text is the file in the commit, both read from git, never from disk.
 - The command offers the current branch's commits that are not on the default branch, another branch's commits that are not on the default branch (a pull request branch that is fetched but not checked out), the last commit, or a range typed in git's syntax (`main..feature`, a single commit, `HEAD~5..HEAD`).
 - Merge commits are skipped, as `git log -p` does. Only regular files are replayed. Paths the watch filters leave out (include, exclude, extensions), binary files, and files over `maxFileSizeKB` are skipped, and the result message says how many.
-- The replay replaces the buffer after confirming, stops watching so live edits do not mix in, and starts paused at the first change, like Load Session from File. Larger ranges than `historyLimit` get the same raise-or-keep-newest choice.
+- The replay replaces the buffer after confirming, stops watching so live edits do not mix in, and starts playing at the first change. Larger ranges than `historyLimit` get the same raise-or-keep-newest choice.
 - The repository is only read: no checkout, no fetch, no change to HEAD, the index, refs or the working tree. Changes are typed into mirror documents only.
-- The command also takes a `{ range, folder }` argument that skips the pickers and the confirmation, for scripting and tests.
+- The command also takes a `{ range, folder, play }` argument that skips the pickers and the confirmation, for scripting and tests. A scripted replay starts paused unless `play` is true.
 
 ## Capabilities
 
