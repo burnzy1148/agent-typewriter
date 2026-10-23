@@ -1,4 +1,4 @@
-export type ChangeKind = 'create' | 'modify' | 'delete';
+export type ChangeKind = 'create' | 'modify' | 'delete' | 'rename';
 
 export interface ChangeEvent {
   /** Monotonic sequence number, unique for the life of the timeline. */
@@ -7,6 +7,9 @@ export interface ChangeEvent {
   uri: string;
   /** Workspace-relative path, forward slashes. Also the mirror document's path. */
   relPath: string;
+  /** A rename's old URI and path; set exactly when kind is 'rename'. */
+  fromUri?: string;
+  fromRelPath?: string;
   /** Epoch millis when the change was recorded. */
   time: number;
   kind: ChangeKind;
@@ -162,20 +165,43 @@ export class Timeline {
    */
   latestStates(): Map<string, ChangeEvent> {
     const out = new Map<string, ChangeEvent>();
-    for (const e of this.events) out.set(e.relPath, e);
+    for (const e of this.events) {
+      // A path renamed away has no state of its own any more.
+      if (e.fromRelPath !== undefined) out.delete(e.fromRelPath);
+      out.set(e.relPath, e);
+    }
     return out;
   }
 
   /**
    * The text each file's mirror shows at the cursor: the after text of its
    * newest played change, or the before text of its earliest change when none
-   * was played. Used to refill mirrors after a reload.
+   * was played. A played rename leaves no mirror at its old path; a queued
+   * one leaves its before text there and no mirror yet at its new path.
+   * Used to refill mirrors after a reload.
    */
   mirrorStates(): Map<string, { text: string; eol: ChangeEvent['eol'] }> {
     const out = new Map<string, { text: string; eol: ChangeEvent['eol'] }>();
+    /** Paths with no mirror at the cursor: renamed away, or not yet renamed to. */
+    const absent = new Set<string>();
+    const decide = (relPath: string, text: string | undefined, eol: ChangeEvent['eol']) => {
+      if (out.has(relPath) || absent.has(relPath)) return;
+      if (text === undefined) absent.add(relPath);
+      else out.set(relPath, { text, eol });
+    };
     for (const e of this.events) {
-      if (e.seq < this.cursorSeq) out.set(e.relPath, { text: e.after, eol: e.eol });
-      else if (!out.has(e.relPath)) out.set(e.relPath, { text: e.before, eol: e.eol });
+      const from = e.fromRelPath;
+      if (e.seq < this.cursorSeq) {
+        if (from !== undefined) {
+          out.delete(from);
+          absent.add(from);
+        }
+        out.set(e.relPath, { text: e.after, eol: e.eol });
+        absent.delete(e.relPath);
+      } else if (from !== undefined) {
+        decide(from, e.before, e.eol);
+        decide(e.relPath, undefined, e.eol);
+      } else decide(e.relPath, e.before, e.eol);
     }
     return out;
   }
@@ -236,7 +262,10 @@ export class Timeline {
  * teach parseSession to read every older version.
  */
 export const SESSION_FORMAT = 'agent-typewriter-session';
-export const SESSION_VERSION = 1;
+export const SESSION_VERSION = 2;
+
+/** The first session version with the 'rename' kind and its fromUri/fromRelPath fields. */
+const RENAME_VERSION = 2;
 
 export interface Session {
   format: typeof SESSION_FORMAT;
@@ -251,7 +280,7 @@ export interface Session {
 
 export class SessionFormatError extends Error {}
 
-const KINDS: readonly ChangeKind[] = ['create', 'modify', 'delete'];
+const KINDS: readonly ChangeKind[] = ['create', 'modify', 'delete', 'rename'];
 
 /**
  * The newest events whose before and after text fit in `maxTextChars`, as a
@@ -296,13 +325,18 @@ export function parseSession(raw: unknown): Session {
     if (!isInt(r.seq) || (r.seq as number) <= lastSeq) fail(`${at} has a missing or out-of-order seq`);
     lastSeq = r.seq as number;
     for (const k of ['uri', 'relPath', 'before', 'after'] as const) if (typeof r[k] !== 'string') fail(`${at} has no ${k}`);
-    if (!KINDS.includes(r.kind as ChangeKind)) fail(`${at} has unknown kind ${JSON.stringify(r.kind)}`);
+    if (!KINDS.includes(r.kind as ChangeKind) || (r.kind === 'rename' && (version as number) < RENAME_VERSION)) {
+      fail(`${at} has unknown kind ${JSON.stringify(r.kind)}`);
+    }
+    const rename = r.kind === 'rename';
+    if (rename) for (const k of ['fromUri', 'fromRelPath'] as const) if (typeof r[k] !== 'string') fail(`${at} is a rename with no ${k}`);
     if (r.eol !== '\n' && r.eol !== '\r\n') fail(`${at} has an invalid eol`);
     for (const k of ['time', 'linesAdded', 'linesRemoved'] as const) if (typeof r[k] !== 'number') fail(`${at} has no ${k}`);
     events.push({
       seq: r.seq as number,
       uri: r.uri as string,
       relPath: r.relPath as string,
+      ...(rename && { fromUri: r.fromUri as string, fromRelPath: r.fromRelPath as string }),
       time: r.time as number,
       kind: r.kind as ChangeKind,
       before: r.before as string,

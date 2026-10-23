@@ -38,6 +38,7 @@ disk write ──► watcher ──► debounce ──► diff vs snapshot ─�
 - **Write order.** Each change is ordered by its file's modification time and held for a short reorder window (`reorderWindowMs`), so a watcher that reports writes late or out of order, as on Windows, still produces the true order.
 - **Timeline buffer.** Events are kept in order (default 500, `historyLimit`). The playback cursor moves through them independently of recording, so you can replay the whole buffer or start from any event.
 - **History across reloads.** The buffer and the playback position are saved to VS Code's per-workspace extension storage (not the workspace) every couple of seconds while they change, and restored when the workspace opens again. If changes were still queued, playback comes back paused so nothing starts typing on its own. Up to 64 MB of change text is kept, newest first. `persistHistory: false` turns this off and deletes the saved history.
+- **Renames.** A file deleted and another created with the same content (or at least half its lines unchanged, as git judges renames) while the first is still held for reordering are one rename. Replay shows the old name, moves the mirror to the new one, and types any edit. A move between a path the filters record and one they leave out stays a create or a delete. With `reorderWindowMs` at `0`, renames show up as a delete and a create.
 - **Diff planning.** Changes are planned line by line, then refined word by word, so renaming one variable retypes only that token. Whole new lines are typed as lines. Leading indentation appears instantly the way an editor auto-indents. Short deletions are backspaced; longer ones are selected and then deleted.
 - **Catch-up.** Agents write far faster than people type. Speed is `base x (1 + catchUpFactor x queued)` capped at `maxSpeedup`, so playback accelerates when it falls behind and relaxes when it catches up. Changes larger than `maxAnimatedChars` are applied instantly.
 - **Mirror editors.** Each file gets one mirror tab, saved quietly after every change so closing a tab never prompts.
@@ -79,7 +80,7 @@ Work that was never watched, such as a branch an agent pushed overnight or a pul
 - **A branch...**: another local or remote-tracking branch's commits that are not on the default branch. A pull request you fetched but did not check out is replayed this way.
 - **Last commit**, or **Enter a commit or range...** in git's syntax: `main..feature`, `HEAD~5..HEAD`, or a single commit.
 
-Each change's before and after text come from the commits, not from the files on disk, so uncommitted edits do not show up. Merge commits are skipped, as `git log -p` does, and so are files the watch filters leave out, binary files, files over `maxFileSizeKB`, Git LFS files, symbolic links and submodules. A rename replays as a delete and a create. Nothing is downloaded: in a partial clone, file versions git does not have locally are skipped (this needs git 2.44 or later; older git fetches them), and in a shallow clone the oldest commit, whose parent is missing, is skipped.
+Each change's before and after text come from the commits, not from the files on disk, so uncommitted edits do not show up. Merge commits are skipped, as `git log -p` does, and so are files the watch filters leave out, binary files, files over `maxFileSizeKB`, Git LFS files, symbolic links and submodules. Renames git detects replay as renames. Nothing is downloaded: in a partial clone, file versions git does not have locally are skipped (this needs git 2.44 or later; older git fetches them), and in a shallow clone the oldest commit, whose parent is missing, is skipped.
 
 The replay replaces the buffer (after asking) and starts playing at the first change; pause it from the panel or the replay editor. It also stops watching, so live edits do not mix into the history; start watching again when you are done. The repository is only read: nothing is checked out or fetched, and HEAD, the index and your files stay as they are.
 
@@ -192,7 +193,7 @@ Claude Code in a terminal writes straight to disk, which is what this extension 
 - Text files only. Binary files and files over `maxFileSizeKB` are skipped.
 - The replay is a reconstruction, not a recording. It shows each change as a person would plausibly type it, not the agent's literal edit sequence (which is always an atomic write anyway).
 - Every matching file needs a baseline for its first change to replay. In a git repository with git installed, clean tracked files use git as their baseline and cost no memory (`gitBaselines`). Other files are kept in memory up to `baselineBudgetMB`, newest first. A file left out starts recording from its second change, and the **Agent Typewriter** output channel says how many files that is.
-- A rename shows up as a delete plus a create.
+- A rename is only detected while its first half is still held for reordering; a delete and a create further apart replay separately.
 
 ## Develop
 

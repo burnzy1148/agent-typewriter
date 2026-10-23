@@ -131,7 +131,10 @@ export class Player implements vscode.Disposable {
       // Move the cursor and read the states in one step: a change recorded
       // from here on stays queued and plays on top of the snapped text.
       this.timeline.seekToEnd();
-      const latest = [...this.timeline.latestStates().values()];
+      const states = this.timeline.latestStates();
+      const renamedAway = new Set(this.timeline.all().flatMap((e) => (e.fromRelPath !== undefined && !states.has(e.fromRelPath) ? [e.fromRelPath] : [])));
+      for (const relPath of renamedAway) if (!this.disposed) await this.retireMirror(relPath);
+      const latest = [...states.values()];
       let newest: ChangeEvent | undefined;
       for (const e of latest) {
         if (this.disposed) return;
@@ -181,6 +184,7 @@ export class Player implements vscode.Disposable {
         this.log.appendLine(`Playback of ${next.relPath} failed: ${err instanceof Error ? err.message : String(err)}`);
         // The change is marked played either way, so its mirror must not keep older text.
         if (this.live(epoch)) await this.settle(next).catch(() => undefined);
+        if (this.live(epoch) && next.fromRelPath !== undefined) await this.retireMirror(next.fromRelPath).catch(() => undefined);
       });
       await this.inFlight;
       this.timeline.complete(next.seq, token);
@@ -189,6 +193,7 @@ export class Player implements vscode.Disposable {
 
   private async play(e: ChangeEvent, epoch: number): Promise<void> {
     const s = this.settings();
+    if (e.fromRelPath !== undefined && !(await this.moveMirror(e, e.fromRelPath, epoch))) return;
     const switching = this.lastRelPath !== e.relPath;
     // Before showing the tab: VS Code asks for its CodeLens row as it opens.
     this.setPlaybackPath(e.relPath);
@@ -234,6 +239,41 @@ export class Player implements vscode.Disposable {
     if (!this.live(epoch)) return;
     await setText(editor.document, e.after, e.eol);
     this.store(e);
+  }
+
+  /**
+   * The move half of a rename: shows the old mirror with the before text,
+   * then opens the new mirror with that text and removes the old one. The
+   * rest of play() types any edit into the new mirror. False if interrupted.
+   */
+  private async moveMirror(e: ChangeEvent, from: string, epoch: number): Promise<boolean> {
+    const s = this.settings();
+    const switching = this.lastRelPath !== undefined && this.lastRelPath !== from;
+    this.setPlaybackPath(from);
+    this.currentEol = e.eol;
+    this.expected = e.before;
+    this.synced = undefined;
+    let editor: vscode.TextEditor | undefined = await this.showMirror(from, e.before, e.eol);
+    if (switching) await this.sleep(s.fileSwitchDelayMs / this.speedMultiplier(s));
+    if (!(editor = await this.ready(from, editor, epoch))) return false;
+    await this.sleep(500 / this.speedMultiplier(s));
+    if (!this.live(epoch)) return false;
+    this.mirror.store(MirrorFileSystem.uriFor(e.relPath), mirrorBytes(e.before, e.eol));
+    this.setPlaybackPath(e.relPath);
+    await this.showMirror(e.relPath, e.before, e.eol);
+    await this.retireMirror(from);
+    this.lastRelPath = e.relPath;
+    return this.live(epoch);
+  }
+
+  /** Closes a mirror's tabs and removes its document: its file was renamed away. */
+  private async retireMirror(relPath: string): Promise<void> {
+    const uri = MirrorFileSystem.uriFor(relPath);
+    const tabs = vscode.window.tabGroups.all
+      .flatMap((g) => g.tabs)
+      .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString());
+    if (tabs.length > 0) await vscode.window.tabGroups.close(tabs, true);
+    this.mirror.deleteFile(uri);
   }
 
   // ---------------------------------------------------------------- typing

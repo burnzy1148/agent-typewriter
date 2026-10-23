@@ -155,3 +155,14 @@ test('malformed messages are rejected', () => {
   ];
   for (const m of bad) assert.equal(parseScrubberMessage(m), undefined, JSON.stringify(m));
 });
+
+test('a rename is described with both paths', () => {
+  const changes = [{ seq: 7, relPath: 'src/b.ts', kind: 'rename' as const, fromRelPath: 'src/a.ts' }];
+  assert.equal(describePlayback(facts({ changes, paused: true })).label, 'Paused before #7 src/a.ts \u2192 src/b.ts');
+  const t = new Timeline(10);
+  t.push({ uri: 'file:///w/src/b.ts', relPath: 'src/b.ts', fromUri: 'file:///w/src/a.ts', fromRelPath: 'src/a.ts', time: 1, kind: 'rename', before: 'x', after: 'x', eol: '\n', linesAdded: 0, linesRemoved: 0 });
+  t.push({ uri: 'file:///w/c.ts', relPath: 'c.ts', time: 2, kind: 'create', before: '', after: 'c', eol: '\n', linesAdded: 1, linesRemoved: 0 });
+  const s = scrubberState(t, { paused: false, speed: 1, watching: true });
+  assert.equal(s.changes[0].fromRelPath, 'src/a.ts');
+  assert.equal('fromRelPath' in s.changes[1], false);
+});
