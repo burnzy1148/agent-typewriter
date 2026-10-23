@@ -168,7 +168,10 @@ export function gitChildEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = 
  * missing, not because git is, it rejects with code `ENOCWD` instead, so the
  * folder reads as not a repository rather than git being unavailable.
  */
-export const execGit: GitRunner = (args, cwd) =>
+export const execGit: GitRunner = (args, cwd) => execGitWith({})(args, cwd);
+
+/** Like `execGit`, with `extraEnv` added to the child's environment. */
+export const execGitWith = (extraEnv: NodeJS.ProcessEnv): GitRunner => (args, cwd) =>
   new Promise<Buffer>((resolve, reject) => {
     execFile(
       'git',
@@ -179,7 +182,7 @@ export const execGit: GitRunner = (args, cwd) =>
         maxBuffer: 512 * 1024 * 1024,
         timeout: 30_000,
         windowsHide: true,
-        env: gitChildEnv(process.env),
+        env: { ...gitChildEnv(process.env), ...extraEnv },
       },
       (err, stdout) => (err ? reject(err) : resolve(stdout)),
     );
