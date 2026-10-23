@@ -4,6 +4,8 @@
 
 Watch Claude Code (or any agent, script, or teammate) write code as if a person were typing it.
 
+![An agent edits three files in under two seconds; Agent Typewriter replays each change as typing, flipping between the files in the order they were written](images/demo.gif)
+
 Agent Typewriter ignores *how* a file was edited. It watches the workspace for changes on disk, records every change in order with its full before and after text, and replays each one into a side-by-side replay editor at human speed. When the agent touched three files, playback flips between those three tabs in the same order.
 
 Your real files are never modified by the extension. Replay happens in mirror documents (`agent-typewriter:/src/foo.ts`) that get proper syntax highlighting from the file extension.
