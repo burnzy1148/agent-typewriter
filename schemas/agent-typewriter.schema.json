@@ -160,6 +160,17 @@
       "minimum": 1,
       "description": "How fast the view scrolls to the next edit in the same file. A scroll takes at most one second at 1x; far edits jump most of the way first."
     },
+    "arrowNavigation": {
+      "type": "boolean",
+      "default": true,
+      "description": "Walk the caret to the next edit with arrow keys (a line at a time, then by words) when it is close by and in view, instead of clicking there."
+    },
+    "arrowKeysPerSecond": {
+      "type": "number",
+      "default": 15,
+      "minimum": 1,
+      "description": "Arrow key presses per second when walking the caret to the next edit. Multiplied by the playback speed."
+    },
     "debounceMs": {
       "type": "number",
       "default": 200,
