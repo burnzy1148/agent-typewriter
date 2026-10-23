@@ -27,6 +27,8 @@ export interface GitCommit {
 export interface FileChange {
   /** Folder-relative, forward slashes. */
   path: string;
+  /** A rename's old path, folder-relative; set exactly when kind is 'rename'. */
+  fromPath?: string;
   kind: ChangeKind;
   /** Blob of the regular file before the commit; undefined for a create. */
   beforeSha?: string;
@@ -124,22 +126,49 @@ export function parseCommits(out: string): GitCommit[] {
   return commits;
 }
 
-/** Parses `diff-tree -r -z --raw`: `:<old mode> <new mode> <old sha> <new sha> <status>` then the path, NUL separated. */
+/**
+ * Parses `diff-tree -r -z --raw`: `:<old mode> <new mode> <old sha> <new sha> <status>`
+ * then the path, NUL separated. A rename (status `R<score>`) has the old path, then the new.
+ */
 export function parseDiffTree(out: string): FileChange[] {
   const fields = out.split('\0');
   const changes: FileChange[] = [];
   for (let i = 0; i + 1 < fields.length; i++) {
     const meta = fields[i];
     if (!meta.startsWith(':')) continue;
-    const path = fields[++i];
-    const [oldMode, newMode, oldSha, newSha] = meta.slice(1).split(' ');
+    const [oldMode, newMode, oldSha, newSha, status] = meta.slice(1).split(' ');
+    const renamed = status?.startsWith('R') ?? false;
+    const oldPath = fields[++i];
+    const path = renamed ? fields[++i] : oldPath;
     const before = REGULAR_FILE_MODES.has(oldMode) ? oldSha : undefined;
     const after = REGULAR_FILE_MODES.has(newMode) ? newSha : undefined;
     if (before === undefined && after === undefined) continue;
-    const kind: ChangeKind = before === undefined ? 'create' : after === undefined ? 'delete' : 'modify';
-    changes.push({ path, kind, ...(before !== undefined && { beforeSha: before }), ...(after !== undefined && { afterSha: after }) });
+    const kind: ChangeKind = before === undefined ? 'create' : after === undefined ? 'delete' : renamed ? 'rename' : 'modify';
+    changes.push({
+      // A rename whose new side is not a regular file is a delete of the old path.
+      path: kind === 'delete' ? oldPath : path,
+      ...(kind === 'rename' && { fromPath: oldPath }),
+      kind,
+      ...(before !== undefined && { beforeSha: before }),
+      ...(after !== undefined && { afterSha: after }),
+    });
   }
   return changes;
+}
+
+/**
+ * The change as the filter leaves it: a rename with one side filtered out is
+ * a create of the new path or a delete of the old one; undefined when nothing
+ * of it passes.
+ */
+function filtered(change: FileChange, filter: (path: string) => boolean): FileChange | undefined {
+  if (change.fromPath === undefined) return filter(change.path) ? change : undefined;
+  const from = filter(change.fromPath);
+  const to = filter(change.path);
+  if (from && to) return change;
+  if (to) return { path: change.path, kind: 'create', afterSha: change.afterSha };
+  if (from) return { path: change.fromPath, kind: 'delete', beforeSha: change.beforeSha };
+  return undefined;
 }
 
 /** The non-merge commits of the range, oldest first. */
@@ -150,7 +179,7 @@ export async function listCommits(folder: string, revs: string[], run: GitRunner
 
 /** The regular files a commit changed under the folder, against its parent (or nothing, for a root commit). */
 export async function commitChanges(folder: string, sha: string, run: GitRunner = runReplayGit): Promise<FileChange[]> {
-  const out = await git(run, folder, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-commit-id', '--root', '--relative', sha, '--']);
+  const out = await git(run, folder, ['diff-tree', '-r', '-z', '--raw', '-M', '--no-commit-id', '--root', '--relative', sha, '--']);
   return parseDiffTree(out);
 }
 
@@ -178,16 +207,16 @@ export async function buildReplay(folder: string, revs: string[], options: Repla
       skipped.shallow++;
       return [];
     }
-    const changes = (await commitChanges(folder, commit.sha, run)).filter((c) => {
-      if (filter(c.path)) return true;
-      skipped.filtered++;
-      return false;
+    const changes = (await commitChanges(folder, commit.sha, run)).flatMap((c) => {
+      const kept = filtered(c, filter);
+      if (!kept) skipped.filtered++;
+      return kept ? [kept] : [];
     });
     return Promise.all(
       changes.map(async (change) => {
         stopIfCancelled();
         const [before, after] = await Promise.all([
-          change.beforeSha === undefined ? EMPTY : textOf(change.path, change.beforeSha),
+          change.beforeSha === undefined ? EMPTY : textOf(change.fromPath ?? change.path, change.beforeSha),
           change.afterSha === undefined ? EMPTY : textOf(change.path, change.afterSha),
         ]);
         return { commit, change, before, after };
@@ -210,11 +239,12 @@ export async function buildReplay(folder: string, revs: string[], options: Repla
     }
     const b = before as Text;
     const a = after as Text;
-    if (b.text === a.text) continue;
+    if (b.text === a.text && change.kind !== 'rename') continue;
     const { added, removed } = countChanges(b.text, a.text);
     events.push({
       uri: uriOf(change.path),
       relPath: mirrorPathOf(change.path),
+      ...(change.fromPath !== undefined && { fromUri: uriOf(change.fromPath), fromRelPath: mirrorPathOf(change.fromPath) }),
       time: commit.time,
       kind: change.kind,
       before: b.text,
