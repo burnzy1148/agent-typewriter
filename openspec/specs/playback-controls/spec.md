@@ -1,7 +1,7 @@
 # playback-controls Specification
 
 ## Purpose
-Defines how the user plays, pauses, seeks, and sets the speed of replay, and what the scrubber panel shows while it does.
+Defines how the user plays, pauses, seeks, and sets the speed of replay, and what the scrubber panel and the controls on the playback mirror show while it does.
 
 ## Requirements
 
@@ -98,7 +98,7 @@ The playback mirror SHALL be the mirror document of the change being typed. When
 - **THEN** the real file's tab shows no playback controls
 
 ### Requirement: Mirror title bar controls
-The playback mirror's editor title bar SHALL show buttons to replay all, play or pause, finish the current change instantly, skip to the next change, and skip to the latest change. Each button SHALL behave the same as the matching command. While the buffer is empty, only play or pause SHALL show, in the title bar and in the status row.
+The playback mirror's editor title bar SHALL show buttons to replay all, play or pause, finish the current change instantly, skip to the next change, and skip to the latest change. Each button SHALL behave the same as the matching command. While the buffer is empty, play or pause SHALL be the only playback button, in the title bar and in the status row.
 
 #### Scenario: Skip to latest from the title bar
 - **WHEN** three changes are queued and the user presses skip to latest in the playback mirror's title bar
@@ -127,8 +127,8 @@ The title bar's play/pause button SHALL show a pause icon while playback is runn
 The playback mirror SHALL show a row above its first line, without changing the document's text. The row SHALL hold clickable controls to play or pause, finish current, skip to next, and skip to latest, plus the current speed and a readout of the playing or next change, the position in the buffer, and the queued count.
 
 #### Scenario: Row while typing
-- **WHEN** change #12 to `src/a.ts` is being typed, it is the 4th of 12 changes in the buffer, 3 are queued, and the speed is 2x
-- **THEN** the row reads as typing `#12 src/a.ts`, position 4 of 12, 3 queued, and 2x
+- **WHEN** change #12 to `src/a.ts` is being typed, it is the 9th of 12 changes in the buffer, 3 are queued, and the speed is 2x
+- **THEN** the row reads as typing `#12 src/a.ts`, position 9 of 12, 3 queued, and 2x
 
 #### Scenario: File name with icon syntax
 - **WHEN** the change being typed is to `docs/$(home)-notes.md`

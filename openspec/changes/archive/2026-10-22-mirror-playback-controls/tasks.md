@@ -23,7 +23,7 @@
 
 ## 5. Integration checks
 
-- [x] 5.1 Add an integration section to `it/suite.ts`. Check that after a change plays, `executeCommand('vscode.executeCodeLensProvider', mirrorUri)` returns the row with the readout naming that change. Check that the provider returns no lenses for another mirror or for the real file. Check that `pause` while paused and `resume` while playing leave the state as is. Check that `mirrorStatusRow: false` yields no lenses. Check that the mirror text equals the after text. Verify that `npm run it` passes locally and on CI (Ubuntu and Windows). Done in `it/suite.ts` section 12b ("Mirror controls"), which landed with #28
+- [x] 5.1 Add an integration section to `it/suite.ts`. Check that after a change plays, `executeCommand('vscode.executeCodeLensProvider', mirrorUri)` returns the row with the readout naming that change. Check that the provider returns no lenses for another mirror or for the real file. Check that `pause` while paused and `resume` while playing leave the state as is. Check that `mirrorStatusRow: false` yields no lenses. Check that the mirror text equals the after text. Verify that `npm run it` passes locally and on CI (Ubuntu and Windows). Done in `it/suite.ts` section 12b ("Mirror controls"), which landed with #28. This change adds checks there for the row's Finish, Next and Latest buttons, and for the readout and mirror text once the queued change has played
 
 ## 6. Review fixes
 
