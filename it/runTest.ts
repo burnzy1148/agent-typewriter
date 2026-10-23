@@ -48,15 +48,6 @@ async function main() {
   git('worktree', 'add', '-q', '-b', 'nested', '.worktrees/nested');
   git('worktree', 'add', '-q', '-b', 'sibling', `${workspace}-sibling`);
 
-  // Review fix groups add their fixtures directly below their own anchor (see suite.ts).
-  // --- review group PLAY: fixtures
-
-  // --- review group SET: fixtures
-
-  // --- review group ACT: fixtures
-
-  // --- review group REC1: fixtures
-
   // REC2: committed files for the baseline sections, in a second commit.
   fs.mkdirSync(path.join(workspace, 'src/rec2'), { recursive: true });
   fs.writeFileSync(path.join(workspace, 'src/rec2/hidden.ts'), 'export const hidden = 1;\n');
@@ -85,10 +76,6 @@ async function main() {
   await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
   await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
 
-  // Review fix groups add any extra VS Code launches directly below their own anchor.
-  // --- review group PLAY: launches
-
-  // --- review group ACT: launches
   // The repository file's autoStart applies at activation: true there starts
   // watching, false there beats a user-level true. Each launch runs this probe.
   const actRepoFile = path.join(workspace, '.agent-typewriter.json');
@@ -126,7 +113,6 @@ exports.run = async () => {
   delete actUser['agentTypewriter.autoStart'];
   fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
 
-  // --- review group REC1: launches
   // A saved multi-root workspace [a, b] where b has a sibling worktree, for
   // adding and removing folders while recording (folders.ts). Adding a folder
   // to a single-folder window restarts the extension host, so it needs its own

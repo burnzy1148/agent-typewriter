@@ -632,10 +632,6 @@ export async function run(): Promise<void> {
   await until('worktree playback', idle);
   console.log('[it] worktrees ok');
 
-  // Review fix groups add their sections directly below their own anchor, so
-  // branches worked on in parallel merge cleanly. Later recorder groups use
-  // REC1's. Remove the anchors once the review groups have merged.
-  // --- review group PLAY
   // --- PLAY. Playback and mirror documents. Changes go straight onto the
   // timeline with the recorder stopped, so only the player sets the timing.
   {
@@ -905,7 +901,6 @@ export async function run(): Promise<void> {
     console.log('[it] playback and mirrors ok');
   }
 
-  // --- review group SET
   // Settings layering: wrong-typed VS Code settings resolve as if unset,
   // object settings merge across user and workspace, and a repository file
   // replaced by a directory stops applying.
@@ -995,7 +990,6 @@ export async function run(): Promise<void> {
     console.log('[it] settings layering ok');
   }
 
-  // --- review group ACT
   // ACT a. Watch Only This and Add to Watch on the workspace root write a
   // folder-relative glob, and a folder named like a route ("[id]") matches itself.
   const includeValue = () => cfg().inspect('include')?.workspaceValue;
@@ -1136,7 +1130,6 @@ export async function run(): Promise<void> {
   assert.ok(api.store?.isRunning, 'the user persistHistory stopped saving though the repository file turns it on');
   console.log(`[it] ACT: repository file history settings ok (${timeline.all().length} changes)`);
 
-  // --- review group REC1
   {
     // Settings these sections change; restored at the end for the sections below.
     const restoreExtensions = cfg().inspect('extensions')?.workspaceValue;
