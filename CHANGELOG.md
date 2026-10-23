@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The next edit in the same file is scrolled to instead of jumped to: a short pause to read the last lines typed (`scrollPauseMs`), then an eased scroll (`scrollLinesPerSecond`) that follows the playback speed, pause, and skip. `smoothScroll: false` brings back the jump.
 - Typing speed is set in characters per minute: `charsPerMinute` replaces `charsPerSecond`, and the default is 350 per minute (was 35 per second, 2100 per minute). **Set Playback Speed... > Base speed...** reads and writes it.
 - `charsPerSecond` is deprecated but still honored, times 60, wherever `charsPerMinute` is not set. The output channel says when it is in effect.
 - **BREAKING**: `languageSpeeds` values are characters per minute. Multiply existing values by 60 to keep the same speed.
