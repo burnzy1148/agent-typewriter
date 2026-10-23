@@ -68,7 +68,7 @@ function recorderOn(s: Settings, ...dirs: string[]) {
   /** Waits for every debounce and read to finish, then hands held changes to the timeline. */
   const settle = async () => {
     await sleep(s.debounceMs + 150);
-    for (let i = 0; i < 100 && recorder.describeActivity().includes('debouncing: ') && !recorder.describeActivity().includes('debouncing: none'); i++) await sleep(20);
+    for (let i = 0; i < 250 && !recorder.describeActivity().includes('debouncing: none; reading: 0;'); i++) await sleep(20);
     await sleep(50);
     recorder.drainHeld();
   };
@@ -230,8 +230,9 @@ test('a new file a filter refresh reads before its create event arrives is recor
 });
 
 test('a refresh leaves a file with a change in its debounce to that change', async () => {
+  // The debounce outlasts the refresh, which runs git and can be slow.
   const dir = tempDir('at-rec-race2-');
-  const t = recorderOn(settings({ gitBaselines: false, debounceMs: 300 }), dir);
+  const t = recorderOn(settings({ gitBaselines: false, debounceMs: 2000 }), dir);
   await t.recorder.start();
   write(dir, 'src/new.ts', 'brand new\n');
   mock.fire('create', path.join(dir, 'src/new.ts'));

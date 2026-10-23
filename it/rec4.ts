@@ -56,7 +56,7 @@ export async function runRec4(): Promise<void> {
   /** Waits for debounces and reads to finish, then hands held changes to the timeline. */
   const settled = async () => {
     await sleep(1500);
-    for (let i = 0; i < 200 && !recorder.describeActivity().includes('debouncing: none'); i++) await sleep(50);
+    for (let i = 0; i < 200 && !recorder.describeActivity().includes('debouncing: none; reading: 0;'); i++) await sleep(50);
     recorder.drainHeld();
   };
   const mirrorText = (rel: string) =>
