@@ -4,6 +4,7 @@ dist/
 .test-out/
 .it-out/
 .vscode-test/
+.demo-out/
 *.vsix
 
 # Personal agent and issue-tracker setup, kept out of the public repo

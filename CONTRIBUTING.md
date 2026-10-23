@@ -26,6 +26,8 @@ npm run package   # typecheck, test, bundle, produce the .vsix
 
 Run `npm run build` (or keep `npm run watch` running), then press F5 with the folder open to launch an Extension Development Host with your build loaded.
 
+The README demo (`images/demo.gif`) is recorded by `node scripts/demo/record.mjs` on macOS with ffmpeg installed. It opens a throwaway VS Code profile on a copy of `scripts/demo/workspace`, lets a scripted agent edit it, and screen-records the window. The header of `record.mjs` lists options for choosing the display. Re-record it when the UI in the shot changes.
+
 ## How the code fits together
 
 [CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
