@@ -92,7 +92,7 @@ export function readSettings(): Settings {
     maxAnimatedChars: num('maxAnimatedChars', 6000),
     fileSwitchDelayMs: num('fileSwitchDelayMs', 600, 0),
     smoothScroll: c.get('smoothScroll', true),
-    scrollPauseMs: num('scrollPauseMs', 400, 0),
+    scrollPauseMs: num('scrollPauseMs', 400, 0, 5000),
     scrollLinesPerSecond: num('scrollLinesPerSecond', 60, 1),
     debounceMs: num('debounceMs', 200, 0),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),

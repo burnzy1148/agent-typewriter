@@ -911,7 +911,8 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'scrollPauseMs', 0);
     await setting('agentTypewriter', 'scrollLinesPerSecond', 60);
     const tallLines = Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`);
-    const tall = (edits: Record<number, string>) => tallLines.map((l, i) => edits[i] ?? l).join('\n') + '\n';
+    /** The mirror's current text with `edits` applied, so each step's change holds only its own hunks. */
+    const tall = (edits: Record<number, string>) => (tallText ?? tallLines.join('\n') + '\n').split('\n').map((l, i) => edits[i] ?? l).join('\n');
     /** Top lines the mirror of `rel` shows, in order, until disposed. */
     const tops = (rel: string) => {
       const seen: number[] = [];
@@ -927,11 +928,12 @@ export async function run(): Promise<void> {
       ed.revealRange(new vscode.Range(0, 0, 0, 0), vscode.TextEditorRevealType.AtTop);
       await until(`${rel} scrolled to the top`, () => ed.visibleRanges[0]?.start.line === 0);
     };
-    let tallText = (await play('play/scroll.ts', '', tall({}))).after;
+    let tallText: string | undefined;
+    tallText = (await play('play/scroll.ts', '', tall({}))).after;
     const scrollStep = async (label: string, edits: Record<number, string>, line: number) => {
       await toTop('play/scroll.ts');
       const seen = tops('play/scroll.ts');
-      const e = push('play/scroll.ts', tallText, tall(edits));
+      const e = push('play/scroll.ts', tallText!, tall(edits));
       return {
         e,
         seen,
@@ -954,7 +956,7 @@ export async function run(): Promise<void> {
     const paused = await scrollStep('paused scroll', { 360: 'const line360 = 3600;' }, 360);
     await until('the scroll to start', () => paused.seen.seen.some((t) => t > 0));
     await vscode.commands.executeCommand('agentTypewriter.togglePause');
-    await sleep(100);
+    await sleep(300);
     const heldAt = paused.seen.seen.length;
     await sleep(600);
     assert.equal(paused.seen.seen.length, heldAt, 'the view kept scrolling while paused');

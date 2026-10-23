@@ -85,6 +85,8 @@ export class Player implements vscode.Disposable {
 
   /** Until the next change plays there is no playback mirror, e.g. after loading another session. */
   forgetPlaybackMirror(): void {
+    // The next change is the first one played: it is jumped to, not scrolled to.
+    this.lastRelPath = undefined;
     if (this.playbackPath === undefined) return;
     this.playbackPath = undefined;
     this.mirrorChanged.fire();
@@ -290,14 +292,20 @@ export class Player implements vscode.Disposable {
     const height = last - first + 1;
     let shown = ed.visibleRanges[0]?.start.line ?? first;
     const steps = scrollSteps(shown, centeredTop(line, height, ed.document.lineCount), height, s.scrollLinesPerSecond, this.speedMultiplier(s));
-    for (const top of steps) {
+    // Each frame shows the step for the time elapsed, so late timers skip
+    // steps instead of stretching the scroll. Time spent paused doesn't count.
+    let started = Date.now();
+    for (let k = -1; k < steps.length - 1; ) {
+      const waited = Date.now();
       if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
+      started += Date.now() - waited;
       if (this.finishNow) break;
-      if (top !== shown) {
-        ed.revealRange(new vscode.Range(top, 0, top, 0), vscode.TextEditorRevealType.AtTop);
-        shown = top;
+      k = Math.min(steps.length - 1, Math.max(k + 1, Math.floor((Date.now() - started) / SCROLL_FRAME_MS)));
+      if (steps[k] !== shown) {
+        ed.revealRange(new vscode.Range(steps[k], 0, steps[k], 0), vscode.TextEditorRevealType.AtTop);
+        shown = steps[k];
       }
-      await this.sleep(SCROLL_FRAME_MS);
+      if (k < steps.length - 1) await this.sleep(SCROLL_FRAME_MS);
     }
     if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
     // Lands on the edit after finish now, a frame VS Code clamped, or a scroll by the user during a pause.
@@ -537,9 +545,24 @@ export class Player implements vscode.Disposable {
     while (this.paused && this.epoch === epoch && !this.disposed && !this.finishNow) await this.nextPoke();
   }
 
+  /** Waits `ms` (at most 5 s), or less once finish now is pressed, the change is interrupted, or the player disposed. */
   private sleep(ms: number): Promise<void> {
     if (ms <= 0 || this.finishNow) return Promise.resolve();
-    return new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5000)));
+    const epoch = this.epoch;
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        const i = this.waiters.indexOf(wake);
+        if (i >= 0) this.waiters.splice(i, 1);
+        resolve();
+      };
+      const wake = () => {
+        if (this.finishNow || this.epoch !== epoch || this.disposed) done();
+        else this.waiters.push(wake);
+      };
+      const timer = setTimeout(done, Math.min(ms, 5000));
+      this.waiters.push(wake);
+    });
   }
 }
 
