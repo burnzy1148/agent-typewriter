@@ -31,6 +31,7 @@ import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { KeyedSerial } from './keyedSerial';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
+import { pickRenamePartner } from './renames';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
 
@@ -1678,8 +1679,76 @@ export class Recorder implements vscode.Disposable {
       linesAdded: added,
       linesRemoved: removed,
     };
+    if (this.recordRename(event, writtenAt)) return;
     this.note(`recorded ${kind} ${relPath}`);
     this.reorder.add(event, writtenAt, event.uri);
+  }
+
+  /**
+   * Records a create from nothing, or a delete to nothing, together with the
+   * other half of its rename when that is still held: a delete in the reorder
+   * buffer or held in a chosen worktree for a create, a create in the reorder
+   * buffer for a delete. True when it did. The rename keeps the later of the
+   * two write times, so it stays after earlier changes to the old path.
+   */
+  private recordRename(event: NewChangeEvent, key: number): boolean {
+    const isCreate = event.kind === 'create' && event.before === '';
+    if (!isCreate && !(event.kind === 'delete' && event.after === '')) return false;
+    const text = isCreate ? event.after : event.before;
+    // A create in a chosen worktree shows that checkout is not being removed.
+    const root = isCreate ? this.scopeOf(vscode.Uri.parse(event.uri))?.root.toString() : undefined;
+    const heldDeletes = [...this.heldDeletes.values()]
+      .filter((h) => root !== undefined && h.root === root && h.session === this.session)
+      .map((h) => ({ held: h, relPath: h.relPath, text: h.before.text, key: h.order.key() }));
+    let heldDelete: HeldDelete | undefined;
+    const taken = this.reorder.take((items) => {
+      const halves = items
+        .filter(({ item }) => (isCreate ? item.kind === 'delete' && item.after === '' : item.kind === 'create' && item.before === ''))
+        .map(({ item, key }) => ({ item, relPath: item.relPath, text: isCreate ? item.before : item.after, key }));
+      const pick = pickRenamePartner<{ relPath: string; text: string; key: number; item?: NewChangeEvent; held?: HeldDelete }>(
+        text,
+        event.relPath,
+        key,
+        [...halves, ...heldDeletes],
+      );
+      heldDelete = pick?.held;
+      return pick?.item;
+    });
+    let from: { uri: string; relPath: string; before: string };
+    let to: NewChangeEvent;
+    let partnerKey: number;
+    if (taken) {
+      from = isCreate ? taken.item : event;
+      to = isCreate ? event : taken.item;
+      partnerKey = taken.key;
+    } else if (heldDelete) {
+      this.heldDeletes.delete(heldDelete.uri.toString());
+      from = { uri: heldDelete.uri.toString(), relPath: heldDelete.relPath, before: heldDelete.before.text };
+      to = event;
+      partnerKey = heldDelete.order.key();
+    } else {
+      return false;
+    }
+    const writtenAt = Math.max(key, partnerKey);
+    const { added, removed } = countChanges(from.before, to.after);
+    const rename: NewChangeEvent = {
+      uri: to.uri,
+      relPath: to.relPath,
+      fromUri: from.uri,
+      fromRelPath: from.relPath,
+      time: writtenAt,
+      kind: 'rename',
+      before: from.before,
+      after: to.after,
+      eol: to.eol,
+      linesAdded: added,
+      linesRemoved: removed,
+    };
+    this.note(`recorded rename ${from.relPath} -> ${to.relPath}`);
+    this.reorder.add(rename, writtenAt, rename.uri);
+    // Ended after the rename is added, so changes it held back stay behind it.
+    heldDelete?.done();
+    return true;
   }
 
   /** Undefined for binary, oversized, or unreadable files; `onError` hears why a read failed. */

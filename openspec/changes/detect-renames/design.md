@@ -49,7 +49,7 @@ Pairing only sees changes the recorder records, so a move from a filtered-out pa
 ### 6. Timeline states
 
 - `latestStates`: a rename removes its old path's entry, so a later snap does not refill it.
-- `mirrorStates` (refill after a restart): a played rename drops the old path and sets the new path to its after text; a queued rename sets the old path to its before text and the new path to empty, unless an earlier event already decided either.
+- `mirrorStates` (refill after a restart): a played rename drops the old path and sets the new path to its after text; a queued rename sets the old path to its before text and leaves no mirror at the new path, unless an earlier event already decided either.
 
 ### 7. Session version 2
 
