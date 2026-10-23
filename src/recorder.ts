@@ -310,6 +310,11 @@ export class Recorder implements vscode.Disposable {
     ].join('\n');
   }
 
+  /** The mirror path of a file in its folder's own checkout, as recorded changes name it. */
+  mirrorPathOf(uri: vscode.Uri): string {
+    return this.displayPathOf(uri);
+  }
+
   /** The path `flush` would show for this file, so watcher and outcome lines match. */
   private traceName(uri: vscode.Uri): string {
     return this.displayOf(this.scopeOf(uri), uri);

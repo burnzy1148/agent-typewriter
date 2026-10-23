@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
+import { buildReplay, countCommits, currentBranch, defaultBase, isRepository, listBranches, resolveRange } from './gitReplay';
 import { MirrorControls } from './mirrorControls';
 import { MirrorFileSystem, MIRROR_SCHEME, mirrorBytes, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
@@ -15,6 +16,7 @@ import { ScrubberView } from './scrubberView';
 import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { statusPresentation } from './statusText';
+import { decodeBytes } from './textDecode';
 import { Timeline, toSession } from './timeline';
 import { ChangeItem, TimelineView } from './timelineView';
 
@@ -296,6 +298,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     vscode.window.setStatusBarMessage(`Agent Typewriter: saved ${session.events.length} change(s) to ${uri.fsPath}`, 4000);
   });
 
+  /**
+   * When `count` changes from `name` exceed historyLimit: interactively, lets
+   * the user raise the limit or keep the newest; otherwise warns that only the
+   * newest are kept. False when the user cancels.
+   */
+  const fitHistoryLimit = async (count: number, name: string, interactive: boolean): Promise<boolean> => {
+    const limit = readSettings().historyLimit;
+    if (count <= limit) return true;
+    const raise = `Raise historyLimit to ${count}`;
+    const pick = interactive
+      ? await vscode.window.showWarningMessage(`${name} has ${count} changes but historyLimit is ${limit}.`, { modal: true }, raise, `Load newest ${limit}`)
+      : undefined;
+    if (interactive && !pick) return false;
+    if (pick === raise) {
+      await updateSetting('historyLimit', count);
+      timeline.setLimit(count);
+    } else if (!interactive) {
+      vscode.window.showWarningMessage(`Agent Typewriter: loaded the newest ${limit} of ${count} changes (historyLimit).`);
+    }
+    return true;
+  };
+
   register('agentTypewriter.loadSession', async (target?: vscode.Uri) => {
     const interactive = !target;
     const uri =
@@ -322,25 +346,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       );
       if (pick !== replace) return;
     }
-    const limit = readSettings().historyLimit;
-    if (session.events.length > limit) {
-      const raise = `Raise historyLimit to ${session.events.length}`;
-      const pick = interactive
-        ? await vscode.window.showWarningMessage(
-            `${name} has ${session.events.length} changes but historyLimit is ${limit}.`,
-            { modal: true },
-            raise,
-            `Load newest ${limit}`,
-          )
-        : undefined;
-      if (interactive && !pick) return;
-      if (pick === raise) {
-        await updateSetting('historyLimit', session.events.length);
-        timeline.setLimit(session.events.length);
-      } else if (!interactive) {
-        vscode.window.showWarningMessage(`Agent Typewriter: loaded the newest ${limit} of ${session.events.length} changes (historyLimit).`);
-      }
-    }
+    if (!(await fitHistoryLimit(session.events.length, name, interactive))) return;
     // Loaded sessions start paused at their first change; the user resumes when ready.
     player.setPaused(true);
     // Changes recorded while the prompts were open are replaced too.
@@ -350,6 +356,161 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     player.forgetPlaybackMirror();
     log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
     vscode.window.setStatusBarMessage(`Agent Typewriter: loaded ${timeline.all().length} change(s). Resume playback to start.`, 6000);
+  });
+
+  // The folder whose repository a git replay reads: by name or URI string, the only one, or picked.
+  const gitReplayFolder = async (named?: string): Promise<vscode.WorkspaceFolder | undefined> => {
+    const folders = (vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file');
+    if (named !== undefined) {
+      const found = folders.find((f) => f.name === named || f.uri.toString() === named);
+      if (!found) throw new Error(`no workspace folder ${named}.`);
+      return found;
+    }
+    if (folders.length <= 1) {
+      if (!folders[0]) throw new Error('open a folder in a git repository first.');
+      return folders[0];
+    }
+    return vscode.window.showWorkspaceFolderPick({ placeHolder: 'Replay the git commits of which folder?' });
+  };
+
+  // What to replay: this branch or another one against the default branch, the last commit, or a typed range.
+  // Branches go to git as full refs, so a tag or a local branch named like a remote one cannot shadow them.
+  const pickGitRange = async (cwd: string): Promise<{ range: string; label: string } | undefined> => {
+    const title = 'Agent Typewriter: replay git commits';
+    const [base, branch] = await Promise.all([defaultBase(cwd), currentBranch(cwd)]);
+    type Item = vscode.QuickPickItem & { range?: string; pick?: 'branch' | 'enter' };
+    const items: Item[] = [];
+    if (base) {
+      const ahead = await countCommits(cwd, [`${base.ref}..HEAD`]).catch(() => 0);
+      if (ahead > 0) {
+        items.push({
+          label: '$(git-branch) This branch',
+          description: `${base.name}..HEAD`,
+          detail: `${ahead} commit(s) on ${branch ?? 'HEAD'} that are not on ${base.name}`,
+          range: `${base.ref}..HEAD`,
+        });
+      }
+      items.push({ label: '$(git-pull-request) A branch...', description: `its commits that are not on ${base.name}`, pick: 'branch' });
+    }
+    items.push({ label: '$(git-commit) Last commit', description: 'HEAD', range: 'HEAD' });
+    items.push({ label: '$(edit) Enter a commit or range...', description: 'main..feature, a1b2c3d, HEAD~5..HEAD', pick: 'enter' });
+    const chosen = await vscode.window.showQuickPick(items, { title, placeHolder: 'Which commits? Merge commits are skipped.' });
+    if (!chosen) return undefined;
+    if (chosen.range) return { range: chosen.range, label: chosen.description ?? chosen.range };
+    if (chosen.pick === 'branch' && base) {
+      const branches = (await listBranches(cwd)).filter((b) => b.ref !== base.ref);
+      const b = await vscode.window.showQuickPick(
+        branches.map((x) => ({ label: x.name, ref: x.ref })),
+        { title, placeHolder: `Replay a branch's commits that are not on ${base.name}` },
+      );
+      return b && { range: `${base.ref}..${b.ref}`, label: `${base.name}..${b.label}` };
+    }
+    const typed = await vscode.window.showInputBox({
+      title,
+      prompt: 'A commit, or a range in git syntax (base..head). Merge commits are skipped.',
+      placeHolder: 'main..feature',
+      validateInput: (v) => {
+        try {
+          resolveRange(v);
+          return undefined;
+        } catch (err) {
+          return (err as Error).message;
+        }
+      },
+    });
+    return typed === undefined ? undefined : { range: typed, label: typed.trim() };
+  };
+
+  register('agentTypewriter.replayGit', async (arg?: { range?: string; folder?: string; play?: boolean }) => {
+    const interactive = typeof arg?.range !== 'string';
+    const folder = await gitReplayFolder(arg?.folder);
+    if (!folder) return;
+    const cwd = folder.uri.fsPath;
+    if (!(await isRepository(cwd))) throw new Error(`${folder.name} is not in a git repository.`);
+    const picked = interactive ? await pickGitRange(cwd) : { range: arg!.range!, label: arg!.range! };
+    if (!picked) return;
+    const { label: range } = picked;
+    const revs = resolveRange(picked.range);
+    const s = readSettings();
+    const filter = new PathFilter(s);
+    let cancelled = false;
+    const replay = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Agent Typewriter: reading ${range}`, cancellable: true },
+      (_progress, token) => {
+        token.onCancellationRequested(() => (cancelled = true));
+        return buildReplay(cwd, revs, {
+          filter: (p) => filter.matches(p),
+          maxBytes: s.maxFileSizeKB * 1024,
+          decode: (bytes, p) => decodeBytes(bytes, vscode.workspace.getConfiguration('files', vscode.Uri.joinPath(folder.uri, p)).get<string>('encoding')),
+          uriOf: (p) => vscode.Uri.joinPath(folder.uri, p).toString(),
+          // The folder's own mirror path, as the recorder names it (with the folder's label in a multi-root workspace).
+          mirrorPathOf: (p) => recorder.mirrorPathOf(vscode.Uri.joinPath(folder.uri, p)),
+          isCancelled: () => token.isCancellationRequested,
+        }).catch((err: unknown) => {
+          if (token.isCancellationRequested) return undefined;
+          throw err;
+        });
+      },
+    );
+    // A cancel the build no longer checked for (its last git calls were running) still cancels.
+    if (!replay || cancelled) return;
+    const { events, skipped } = replay;
+    const skips = Object.entries({
+      filtered: skipped.filtered,
+      binary: skipped.binary,
+      'too large': skipped.tooLarge,
+      unreadable: skipped.unreadable,
+      'in Git LFS': skipped.lfs,
+    })
+      .filter(([, n]) => n > 0)
+      .map(([why, n]) => `${n} ${why}`);
+    if (skipped.shallow > 0) skips.push(`${skipped.shallow} shallow-clone boundary commit(s)`);
+    const skipNote = skips.length > 0 ? ` (skipped ${skips.join(', ')})` : '';
+    if (events.length === 0) {
+      vscode.window.showInformationMessage(`Agent Typewriter: ${range} has no file changes to replay${skipNote}.`);
+      return;
+    }
+    recorder.drainHeld();
+    const commits = new Set(replay.commitOf).size;
+    if (interactive && (timeline.all().length > 0 || recorder.isRunning)) {
+      const effects = [
+        ...(timeline.all().length > 0 ? [`replaces the ${timeline.all().length} recorded change(s)`] : []),
+        ...(recorder.isRunning ? ['stops watching'] : []),
+      ];
+      const replayIt = 'Replay';
+      const pick = await vscode.window.showWarningMessage(
+        `Replay ${events.length} change(s) from ${commits} commit(s)? This ${effects.join(' and ')}.`,
+        { modal: true },
+        replayIt,
+      );
+      if (pick !== replayIt) return;
+    }
+    if (!(await fitHistoryLimit(events.length, range, interactive))) return;
+    // Paused before stopping: stopping adds held live changes, which must not start typing.
+    player.setPaused(true);
+    // Live edits would start from the disk, not from the replayed history.
+    if (recorder.isRunning) {
+      recorder.stop();
+      await setWatching(false);
+    }
+    timeline.restore(
+      events.map((e, i) => ({ ...e, seq: i + 1 })),
+      1,
+    );
+    await player.interrupt();
+    player.forgetPlaybackMirror();
+    // Picking the range is the cue to play; a scripted replay starts paused unless it asks to play.
+    const play = interactive || arg?.play === true;
+    // historyLimit may have kept only the newest changes.
+    const kept = timeline.all().length;
+    const keptCommits = new Set(replay.commitOf.slice(replay.commitOf.length - kept));
+    log.appendLine(`Replaying ${kept} change(s) from ${keptCommits.size} commit(s) of ${range} in ${folder.name}${skipNote}${play ? '' : '; playback paused'}.`);
+    for (const c of keptCommits) log.appendLine(`  ${c.sha.slice(0, 7)} ${c.subject}`);
+    vscode.window.setStatusBarMessage(
+      `Agent Typewriter: ${kept} change(s) from ${keptCommits.size} commit(s)${skipNote}.${play ? '' : ' Resume playback to start.'}`,
+      6000,
+    );
+    if (play) player.setPaused(false);
   });
 
   register('agentTypewriter.setExtensions', async () => {
