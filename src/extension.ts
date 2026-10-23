@@ -264,9 +264,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const e = arg.event;
     await vscode.commands.executeCommand(
       'vscode.diff',
-      SnapshotProvider.uriFor(e.seq, 'before', e.relPath),
+      SnapshotProvider.uriFor(e.seq, 'before', e.fromRelPath ?? e.relPath),
       SnapshotProvider.uriFor(e.seq, 'after', e.relPath),
-      `${e.relPath} (#${e.seq} ${e.kind})`,
+      `${e.fromRelPath !== undefined ? `${e.fromRelPath} \u2192 ` : ''}${e.relPath} (#${e.seq} ${e.kind})`,
       { preview: true },
     );
   });

@@ -87,6 +87,39 @@ test('mirrorStates shows the newest played after text, else the earliest before 
   assert.deepEqual(t.mirrorStates().get('d'), { text: 'gone', eol: '\n' });
 });
 
+function rename(from: string, to: string, before: string, after: string): NewChangeEvent {
+  return { ...ev(to, before, after), kind: 'rename', fromUri: 'file:///w/' + from, fromRelPath: from };
+}
+
+test('latestStates drops a path renamed away, unless it changes again', () => {
+  const t = new Timeline(10);
+  t.push(ev('a', '', '1'));
+  t.push(rename('a', 'b', '1', '1'));
+  assert.deepEqual([...t.latestStates().keys()], ['b']);
+  t.push(ev('a', '', 'again'));
+  assert.equal(t.latestStates().get('a')?.after, 'again');
+});
+
+test('mirrorStates: a played rename leaves no old mirror, a queued one no new mirror yet', () => {
+  const t = new Timeline(10);
+  const a = t.push(ev('a', '', '1'));
+  const r = t.push(rename('a', 'b', '1', '2'));
+  t.push(ev('b', '2', '3'));
+  t.seek(r.seq);
+  assert.deepEqual([...t.mirrorStates()], [['a', { text: '1', eol: '\n' }]]);
+  t.seek(a.seq);
+  assert.deepEqual([...t.mirrorStates()], [['a', { text: '', eol: '\n' }]]);
+  t.seek(r.seq + 1);
+  assert.deepEqual([...t.mirrorStates()], [['b', { text: '2', eol: '\n' }]]);
+  t.seekToEnd();
+  assert.deepEqual([...t.mirrorStates()], [['b', { text: '3', eol: '\n' }]]);
+  // A file created again at the old path after the played rename gets its own mirror.
+  const again = t.push(ev('a', '', 'new a'));
+  assert.deepEqual(t.mirrorStates().get('a'), undefined);
+  t.complete(again.seq);
+  assert.deepEqual(t.mirrorStates().get('a'), { text: 'new a', eol: '\n' });
+});
+
 test('filter: extension allow-list', () => {
   const f = new PathFilter({ include: ['**/*'], exclude: [], extensions: ['ts', '.Java'] });
   assert.ok(f.matches('src/a.ts'));

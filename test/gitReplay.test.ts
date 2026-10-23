@@ -77,6 +77,16 @@ test('parseDiffTree: kinds from the regular-file sides, others skipped', () => {
   ]);
 });
 
+test('parseDiffTree: a rename has the old path, then the new; a non-regular side makes it a create or delete', () => {
+  const rec = (oldMode: string, newMode: string, status: string, from: string, to: string) => `:${oldMode} ${newMode} ${SHA_A} ${SHA_B} ${status}\0${from}\0${to}\0`;
+  const out = rec('100644', '100644', 'R100', 'src/a.ts', 'lib/a.ts') + rec('120000', '100644', 'R090', 'link', 'file') + rec('100644', '120000', 'R090', 'file2', 'link2');
+  assert.deepEqual(parseDiffTree(out), [
+    { path: 'lib/a.ts', fromPath: 'src/a.ts', kind: 'rename', beforeSha: SHA_A, afterSha: SHA_B },
+    { path: 'file', kind: 'create', afterSha: SHA_B },
+    { path: 'file2', kind: 'delete', beforeSha: SHA_A },
+  ]);
+});
+
 test('gitReason: git fatal lines without the command line', () => {
   const err = new Error("Command failed: git --no-optional-locks rev-list nope --\nfatal: bad revision 'nope'\n");
   assert.equal(gitReason(err), "bad revision 'nope'");
@@ -226,6 +236,53 @@ test('buildReplay: mirror paths come from mirrorPathOf, filters see the folder-r
   });
   assert.deepEqual(r.events.map((e) => e.relPath), ['app/src/a.ts', 'app/src/b.ts', 'app/src/a.ts', 'app/src/gone.ts']);
   assert.ok(seen.every((p) => !p.startsWith('app/')), seen.join());
+});
+
+test('buildReplay: git renames are renames; one side filtered makes a create or a delete', { skip: noGit }, async () => {
+  const repo = tempRepo('at-replay-ren-');
+  const ten = Array.from({ length: 10 }, (_, i) => `export const v${i} = ${i};\n`).join('');
+  write(repo, 'src/a.ts', ten);
+  write(repo, 'src/b.ts', 'export const b = 1;\n');
+  write(repo, 'notes.txt', 'some notes\nmore notes\n');
+  write(repo, 'src/out.ts', 'export const out = 1;\nexport const out2 = 2;\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'initial');
+  fs.mkdirSync(path.join(repo, 'lib'));
+  git(repo, 'mv', 'src/a.ts', 'lib/a.ts');
+  git(repo, 'mv', 'src/b.ts', 'lib/b.ts');
+  write(repo, 'lib/b.ts', 'export const b = 1;\n');
+  git(repo, 'mv', 'notes.txt', 'notes.ts');
+  git(repo, 'mv', 'src/out.ts', 'src/out.txt');
+  write(repo, 'lib/a.ts', ten.replace('v3 = 3', 'v3 = 33'));
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'Move things');
+  const r = await buildReplay(repo, resolveRange('HEAD'), { filter: (p) => p.endsWith('.ts'), uriOf: (p) => `file:///ws/${p}` });
+  const shown = r.events.map((e) => [e.kind, e.fromRelPath ?? '', e.relPath]).sort((x, y) => x[2].localeCompare(y[2]));
+  assert.deepEqual(shown, [
+    ['rename', 'src/a.ts', 'lib/a.ts'],
+    ['rename', 'src/b.ts', 'lib/b.ts'],
+    ['create', '', 'notes.ts'],
+    ['delete', '', 'src/out.ts'],
+  ]);
+  const a = r.events.find((e) => e.relPath === 'lib/a.ts')!;
+  assert.deepEqual([a.before, a.after, a.fromUri, a.linesAdded, a.linesRemoved], [ten, ten.replace('v3 = 3', 'v3 = 33'), 'file:///ws/src/a.ts', 1, 1]);
+  const b = r.events.find((e) => e.relPath === 'lib/b.ts')!;
+  assert.equal(b.before, b.after, 'a pure rename is kept');
+});
+
+test('buildReplay: a rename whose new side is too large keeps the delete of the old path', { skip: noGit }, async () => {
+  const repo = tempRepo('at-replay-ren-');
+  const base = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  write(repo, 'a.ts', base);
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'one');
+  git(repo, 'mv', 'a.ts', 'b.ts');
+  fs.appendFileSync(path.join(repo, 'b.ts'), Array.from({ length: 30 }, (_, i) => `more ${i}`).join('\n') + '\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'two');
+  const r = await buildReplay(repo, resolveRange('HEAD'), { maxBytes: base.length + 50 });
+  assert.deepEqual(r.events.map((e) => [e.kind, e.relPath, e.before === base, e.after]), [['delete', 'a.ts', true, '']]);
+  assert.equal(r.skipped.tooLarge, 1);
 });
 
 test('buildReplay: a Git LFS pointer is skipped, not typed', { skip: noGit }, async () => {

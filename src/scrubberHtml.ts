@@ -63,7 +63,7 @@ export function renderHtml(nonce: string): string {
   let state;
   let held = false;
 
-  const describe = (c) => '#' + c.seq + ' ' + c.relPath;
+  const describe = (c) => '#' + c.seq + ' ' + (c.fromRelPath !== undefined ? c.fromRelPath + ' \u2192 ' : '') + c.relPath;
 
   function seekText(i) {
     const n = state.changes.length;

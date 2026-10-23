@@ -125,6 +125,29 @@ export async function run(): Promise<void> {
   assert.equal(mirrorText('src/b.ts'), '');
   console.log('[it] delete ok');
 
+  // --- 4b. A rename is one change and moves the mirror (at-kbn.2).
+  const mirrorTabOpen = (rel: string) =>
+    vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === 'agent-typewriter' && t.input.uri.path === '/' + rel);
+  write('src/moveme.ts', 'export const moved = true;\n');
+  await until('moveme create', () => timeline.all().some((e) => e.relPath === 'src/moveme.ts'));
+  await sleep(300);
+  await until('moveme playback', idle);
+  assert.ok(mirrorTabOpen('src/moveme.ts'), 'the created file has no mirror tab');
+  const beforeRename = timeline.all().length;
+  fs.renameSync(path.join(root, 'src/moveme.ts'), path.join(root, 'src/moved.ts'));
+  await until('rename recorded', () => timeline.all().slice(beforeRename).some((e) => e.relPath === 'src/moved.ts'));
+  // A stray half would arrive within the reorder window (2.5 s on Windows).
+  await sleep(3000);
+  await until('rename playback', idle);
+  assert.deepEqual(
+    timeline.all().slice(beforeRename).map((e) => `${e.kind} ${e.fromRelPath ?? ''} ${e.relPath}`),
+    ['rename src/moveme.ts src/moved.ts'],
+  );
+  assert.equal(mirrorText('src/moved.ts'), disk('src/moved.ts'));
+  assert.ok(mirrorTabOpen('src/moved.ts'), 'no mirror tab for the new name');
+  assert.ok(!mirrorTabOpen('src/moveme.ts'), 'the old name\'s mirror tab is still open');
+  console.log('[it] rename ok');
+
   // --- 5. Own saves from a VS Code editor are ignored.
   const before = timeline.all().length;
   const doc = await vscode.workspace.openTextDocument(path.join(root, 'src/existing.ts'));
@@ -984,6 +1007,56 @@ export async function run(): Promise<void> {
     await jumped.done();
     assert.ok(new Set(jumped.seen.seen).size <= 2, `smoothScroll off still scrolled: ${jumped.seen.seen.join(',')}`);
     console.log('[it] smooth scroll to the next edit ok');
+
+    // A rename shows the old name, moves the mirror, then types the edit (at-kbn.2).
+    await setting('agentTypewriter', 'charsPerMinute', 3600);
+    const mirrorTabs = (rel: string) =>
+      vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.input instanceof vscode.TabInputText && isMirror({ uri: t.input.uri } as vscode.TextDocument, rel));
+    const mirrorGone = async (rel: string) => {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel }));
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const moved0 = 'const a = 1;\nconst b = 2;\n';
+    const moved1 = moved0 + 'const c = 3;\n';
+    const pushRename = (from: string, to: string, before: string, after: string) =>
+      timeline.push({
+        uri: vscode.Uri.file(path.join(root, to)).toString(),
+        relPath: to,
+        fromUri: vscode.Uri.file(path.join(root, from)).toString(),
+        fromRelPath: from,
+        time: Date.now(),
+        kind: 'rename',
+        before,
+        after,
+        eol: '\n',
+        linesAdded: 1,
+        linesRemoved: 0,
+      });
+    await play('play/old-name.ts', '', moved0);
+    const typedAfterMove = record('play/new-name.ts');
+    const ren = pushRename('play/old-name.ts', 'play/new-name.ts', moved0, moved1);
+    await until('rename playback', playedNow(ren.seq));
+    typedAfterMove.dispose();
+    assert.equal(mirrorText('play/new-name.ts'), moved1);
+    assert.equal(mirrorTabs('play/old-name.ts').length, 0, 'the old name still has a tab');
+    assert.equal(mirrorTabs('play/new-name.ts').length, 1, 'the new name has no tab');
+    assert.ok(await mirrorGone('play/old-name.ts'), 'the old mirror document is still there');
+    assert.ok(typedAfterMove.changes.length > 0 && typedAfterMove.texts.every((t) => t.startsWith(moved0)), 'the edit was not typed onto the moved text');
+
+    // Skip to latest past a queued rename leaves no old mirror either.
+    await play('play/snap-old.ts', '', moved0);
+    await vscode.commands.executeCommand('agentTypewriter.pause');
+    const snapRen = pushRename('play/snap-old.ts', 'play/snap-new.ts', moved0, moved1);
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(timeline.stateOf(snapRen.seq), 'played');
+    assert.ok(await mirrorGone('play/snap-old.ts'), 'skip to latest left the old mirror');
+    assert.equal(mirrorTabs('play/snap-old.ts').length, 0, 'skip to latest left the old tab');
+    assert.equal(new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/play/snap-new.ts' }))), moved1);
+    await vscode.commands.executeCommand('agentTypewriter.resume');
 
     for (const restore of undo.reverse()) await restore();
     await vscode.commands.executeCommand('agentTypewriter.start');
