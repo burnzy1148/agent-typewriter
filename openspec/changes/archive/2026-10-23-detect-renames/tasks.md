@@ -22,7 +22,7 @@
 
 ## 5. Integration checks and docs
 
-- [ ] 5.1 In `it/suite.ts`: a live rename while watching becomes one rename and the new mirror matches disk with no old mirror left; a pushed rename with an edit plays by moving the mirror and typing the edit; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
+- [x] 5.1 In `it/suite.ts`: a live rename while watching becomes one rename and the new mirror matches disk with no old mirror left; a pushed rename with an edit plays by moving the mirror and typing the edit; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
 - [x] 5.2 README and CHANGELOG (`## Unreleased`): renames replay as moves
 
 ## Workflow follow-up
