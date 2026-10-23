@@ -306,7 +306,7 @@ export class Recorder implements vscode.Disposable {
     const debouncing = [...this.timers.keys()].map((k) => relPathOf(vscode.Uri.parse(k)));
     return [
       ...this.activity,
-      `debouncing: ${debouncing.length > 0 ? debouncing.join(', ') : 'none'}; held for reordering: ${this.reorder.size}; deletes held: ${this.heldDeletes.size}`,
+      `debouncing: ${debouncing.length > 0 ? debouncing.join(', ') : 'none'}; reading: ${this.flushes.size}; held for reordering: ${this.reorder.size}; deletes held: ${this.heldDeletes.size}`,
     ].join('\n');
   }
 

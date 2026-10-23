@@ -70,7 +70,7 @@ function recorderOn(s: Settings, dirs: string[], choices?: CheckoutChoices) {
   /** Waits for every debounce and read to finish, then hands held changes to the timeline. */
   const settle = async () => {
     await sleep(s.debounceMs + 150);
-    for (let i = 0; i < 100 && !recorder.describeActivity().includes('debouncing: none'); i++) await sleep(20);
+    for (let i = 0; i < 250 && !recorder.describeActivity().includes('debouncing: none; reading: 0;'); i++) await sleep(20);
     await sleep(50);
     recorder.drainHeld();
   };
