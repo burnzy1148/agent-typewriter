@@ -137,6 +137,12 @@
         "icon": "$(folder-opened)"
       },
       {
+        "command": "agentTypewriter.replayGit",
+        "title": "Replay Git Commits...",
+        "category": "Agent Typewriter",
+        "icon": "$(git-commit)"
+      },
+      {
         "command": "agentTypewriter.setExtensions",
         "title": "Set Watched Extensions...",
         "category": "Agent Typewriter",
@@ -265,6 +271,11 @@
           "command": "agentTypewriter.loadSession",
           "when": "view == agentTypewriter.timeline",
           "group": "2_buffer@3"
+        },
+        {
+          "command": "agentTypewriter.replayGit",
+          "when": "view == agentTypewriter.timeline",
+          "group": "2_buffer@4"
         }
       ],
       "view/item/context": [
@@ -565,7 +576,7 @@
     "test": "esbuild test/*.test.ts --bundle --platform=node --format=cjs --target=node18 --alias:vscode=./test/vscode-mock.ts --outdir=.test-out && node --test .test-out/*.test.js",
     "package": "npm run typecheck && npm test && npm run build -- --minify && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
+    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",

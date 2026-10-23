@@ -234,6 +234,55 @@ exports.run = async () => {
     launchArgs: [path.join(rec4Open, 'rec4.code-workspace'), `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
     extensionTestsEnv: { IT_REC4: rec4Open },
   });
+
+  // Git replay (gitReplay.ts): main is checked out with an uncommitted edit;
+  // feature has two commits on main and a merge of main, and is not checked out.
+  const replayRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-replay-'));
+  const replayWrite = (rel: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(replayRepo, rel)), { recursive: true });
+    fs.writeFileSync(path.join(replayRepo, rel), text);
+  };
+  replayWrite('src/a.ts', 'export const a = 1;\n');
+  replayWrite('src/gone.ts', 'export const gone = true;\n');
+  replayWrite('notes.txt', 'notes\n');
+  gitAt(replayRepo, 'init', '-q', '-b', 'main');
+  gitAt(replayRepo, 'add', '-A');
+  gitAt(replayRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(replayRepo, 'checkout', '-q', '-b', 'feature');
+  replayWrite('src/a.ts', 'export const a = 2;\n');
+  replayWrite('src/b.ts', 'export const b = 1;\n');
+  replayWrite('notes.txt', 'notes, filtered out\n');
+  gitAt(replayRepo, 'add', '-A');
+  gitAt(replayRepo, 'commit', '-q', '-m', 'Change a, add b');
+  gitAt(replayRepo, 'checkout', '-q', 'main');
+  replayWrite('notes.txt', 'notes on main\n');
+  gitAt(replayRepo, 'commit', '-q', '-am', 'Main: notes');
+  gitAt(replayRepo, 'checkout', '-q', 'feature');
+  gitAt(replayRepo, 'merge', '-q', '--no-edit', '-X', 'theirs', 'main');
+  replayWrite('src/a.ts', 'export const a = 3;\nexport const twice = a * 2;\n');
+  fs.rmSync(path.join(replayRepo, 'src/gone.ts'));
+  gitAt(replayRepo, 'add', '-A');
+  gitAt(replayRepo, 'commit', '-q', '-m', 'Change a again, remove gone');
+  gitAt(replayRepo, 'checkout', '-q', 'main');
+  replayWrite('src/a.ts', 'export const a = 1; // uncommitted\n');
+  fs.mkdirSync(path.join(replayRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(replayRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.persistHistory': false,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'gitReplay.js'),
+    launchArgs: [replayRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+  });
 }
 
 main().catch((err) => {
