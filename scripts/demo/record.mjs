@@ -1,42 +1,53 @@
 // Records the README demo (images/demo.gif) on macOS. It packages the
 // extension, installs it into a throwaway VS Code profile so personal settings
-// and extensions stay out of the shot, opens a copy of scripts/demo/workspace,
-// lets agent.mjs edit it, and screen-records the window with ffmpeg.
+// and extensions stay out of the shot, opens the replay tour's repository
+// (scripts/tour-scenarios.mjs), plays a few of its agent steps, and
+// screen-records the window with ffmpeg.
 //
-//   node scripts/demo/record.mjs [--screen 0] [--origin 0,0] [--at 120,120] [--seconds 30]
+//   npm run demo -- [--screen 0] [--origin 0,0] [--at 120,120] [--seconds 28]
 //
 // --screen is ffmpeg's avfoundation screen index (ffmpeg -f avfoundation
 // -list_devices true -i ""), --origin that screen's top-left in global
 // coordinates, and --at where the window goes on it. Needs ffmpeg and the
-// Screen Recording permission for the terminal running this. Leave the window
-// alone while it records.
+// Screen Recording permission for the terminal running this. Keep the mouse
+// pointer off the window (ffmpeg may draw it anyway) and leave the window alone
+// while it records.
 import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { parseArgs } from 'node:util';
 import { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath } from '@vscode/test-electron';
+import { makeRepo, steps, workspace } from '../tour-scenarios.mjs';
 
 const { values: opts } = parseArgs({
   options: {
     screen: { type: 'string', default: '0' },
     origin: { type: 'string', default: '0,0' },
     at: { type: 'string', default: '120,120' },
-    seconds: { type: 'string', default: '30' },
+    seconds: { type: 'string', default: '28' },
   },
 });
 const [originX, originY] = opts.origin.split(',').map(Number);
 const [atX, atY] = opts.at.split(',').map(Number);
 const width = 1280;
 const height = 820;
+// Tour steps to play, by id, each followed by a pause in ms before the next.
+// The pauses let each change mostly play first, so catch-up does not rush it.
+const shot = [
+  ['create-file', 4000],
+  ['change-word', 6000],
+  ['backspace-words', 4000],
+  ['delete-block', 4500],
+  ['edits-far-apart', 0],
+];
 
 const root = path.resolve(import.meta.dirname, '../..');
 const outDir = path.join(root, '.demo-out');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'typewriter-demo-'));
 const userData = path.join(tmp, 'user-data');
 const extensionsDir = path.join(tmp, 'extensions');
-const workspace = path.join(tmp, 'shop');
-const goFile = path.join(tmp, 'go');
+const repo = path.join(tmp, 'shop');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const run = (cmd, args, options = {}) => {
   const r = spawnSync(cmd, args, { stdio: 'inherit', cwd: root, ...options });
@@ -63,27 +74,10 @@ const vscode = await downloadAndUnzipVSCode({ version: 'stable', cachePath: path
 const [cli] = resolveCliArgsFromVSCodeExecutablePath(vscode);
 run(cli, ['--user-data-dir', userData, '--extensions-dir', extensionsDir, '--install-extension', vsix, '--install-extension', helperVsix], { env });
 
-fs.cpSync(path.join(import.meta.dirname, 'workspace'), workspace, { recursive: true });
-writeJson(path.join(workspace, '.vscode/settings.json'), {
-  'agentTypewriter.autoStart': true,
-  'agentTypewriter.extensions': ['ts'],
+makeRepo(repo, {
   'agentTypewriter.persistHistory': false,
   'agentTypewriter.viewColumn': 'active',
   'agentTypewriter.charsPerMinute': 1100,
-});
-writeJson(path.join(workspace, '.vscode/tasks.json'), {
-  version: '2.0.0',
-  tasks: [
-    {
-      label: 'agent',
-      type: 'process',
-      command: process.execPath,
-      args: [path.join(import.meta.dirname, 'agent.mjs'), goFile],
-      runOptions: { runOn: 'folderOpen' },
-      presentation: { reveal: 'always', panel: 'dedicated', echo: false, showReuseMessage: false, focus: false },
-      problemMatcher: [],
-    },
-  ],
 });
 writeJson(path.join(userData, 'User/settings.json'), {
   'workbench.colorTheme': 'Default Dark Modern',
@@ -95,7 +89,6 @@ writeJson(path.join(userData, 'User/settings.json'), {
   'window.commandCenter': false,
   'window.title': '${rootName}',
   'security.workspace.trust.enabled': false,
-  'task.allowAutomaticTasks': 'on',
   'chat.disableAIFeatures': true,
   'telemetry.telemetryLevel': 'off',
   'update.mode': 'none',
@@ -117,14 +110,14 @@ writeJson(path.join(userData, 'User/settings.json'), {
 writeJson(path.join(userData, 'User/globalStorage/storage.json'), {
   windowsState: {
     lastActiveWindow: {
-      folder: `file://${workspace}`,
+      folder: `file://${repo}`,
       uiState: { mode: 1, x: originX + atX, y: originY + atY, width, height },
     },
     openedWindows: [],
   },
 });
 
-const code = spawn(vscode, ['--user-data-dir', userData, '--extensions-dir', extensionsDir, '--skip-welcome', '--skip-release-notes', workspace], {
+const code = spawn(vscode, ['--user-data-dir', userData, '--extensions-dir', extensionsDir, '--skip-welcome', '--skip-release-notes', repo], {
   env,
   stdio: 'ignore',
 });
@@ -138,8 +131,13 @@ const ffmpeg = spawn(
   { stdio: ['pipe', 'inherit', 'inherit'] },
 );
 await sleep(1500);
-fs.writeFileSync(goFile, '');
-await sleep(Number(opts.seconds) * 1000);
+const started = Date.now();
+const ws = workspace(repo);
+for (const [id, pause] of shot) {
+  await steps.find((step) => step.id === id).run(ws);
+  await sleep(pause);
+}
+await sleep(Number(opts.seconds) * 1000 - (Date.now() - started));
 ffmpeg.stdin.write('q');
 await new Promise((r) => ffmpeg.on('exit', r));
 code.kill();
