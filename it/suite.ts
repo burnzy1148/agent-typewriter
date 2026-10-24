@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import type { AgentTypewriterApi } from '../src/extension';
+import { baselines } from '../src/highlights';
+import type { Timeline } from '../src/timeline';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1132,6 +1134,111 @@ export async function run(): Promise<void> {
     assert.equal(new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/play/snap-new.ts' }))), moved1);
     await vscode.commands.executeCommand('agentTypewriter.resume');
 
+    // Highlights: marks against the baseline as a net diff, growing while typing,
+    // cleared per file and for all, brought back by replaying from before a clear.
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    const hlUri = (rel: string) => vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel });
+    const drawn = (rel: string) => api.highlights.drawn.get(hlUri(rel).toString());
+    const drawnIs = (rel: string, want: unknown) => () => JSON.stringify(drawn(rel) ?? null) === JSON.stringify(want);
+    const hl0 = 'one\nlet two = 2;\nthree\nfour\n';
+    const hl1 = 'one\nlet TWO = 2;\nthree\nfour\nfive\n';
+    const hl2 = 'one\nlet TWO = 2;\nfour\nfive\n';
+    const firstHl = await play('play/hl-a.ts', hl0, hl1);
+    assert.equal(mirrorText('play/hl-a.ts'), hl1, 'highlighting changed the mirror text');
+    await until('word change and new line highlighted', drawnIs('play/hl-a.ts', {
+      lines: [1, 4],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }],
+    }), 5000);
+    await play('play/hl-a.ts', hl1, hl2);
+    await until('removed line marked', drawnIs('play/hl-a.ts', {
+      lines: [1, 3],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }, { line: 2, texts: ['three\n'] }],
+    }), 5000);
+    assert.equal(mirrorText('play/hl-a.ts'), hl2);
+    // Added and then removed again: nothing to show.
+    await play('play/hl-c.ts', 'p\n', 'p\nq\n');
+    await until('hl-c highlighted', drawnIs('play/hl-c.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    await play('play/hl-c.ts', 'p\nq\n', 'p\n');
+    await until('added then removed leaves no mark', drawnIs('play/hl-c.ts', null), 5000);
+    assert.ok(api.highlights.hasHighlights, 'hl-a has highlights but none are reported');
+    // Typed text is highlighted before the change finishes.
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const slow = push('play/hl-e.ts', 'a\n', 'a\nhello there, typed slowly\n');
+    await until('typed text highlighted mid-change', () => timeline.stateOf(slow.seq) === 'playing' && (drawn('play/hl-e.ts')?.lines ?? []).includes(1), 15000);
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('slow change played', playedNow(slow.seq));
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await until('finished change stays highlighted', drawnIs('play/hl-e.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    // Clear one file: it starts over from its current text; other files keep theirs.
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-e.ts'));
+    await until('hl-e cleared', drawnIs('play/hl-e.ts', null), 5000);
+    assert.ok(api.highlights.hasHighlights, 'clearing hl-e cleared hl-a too');
+    await play('play/hl-a.ts', hl2, hl2 + 'six\n');
+    await until('hl-a still highlighted against its old baseline', drawnIs('play/hl-a.ts', {
+      lines: [1, 3, 4],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }, { line: 2, texts: ['three\n'] }],
+    }), 5000);
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-a.ts'));
+    await until('hl-a cleared', drawnIs('play/hl-a.ts', null), 5000);
+    await play('play/hl-a.ts', hl2 + 'six\n', hl2 + 'six\nseven\n');
+    await until('later change highlighted against the new baseline', drawnIs('play/hl-a.ts', { lines: [5], chars: [], removals: [] }), 5000);
+    // Clear all, then replay from before the clear: the highlights come back.
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
+    await until('all cleared', () => drawn('play/hl-a.ts') === undefined && !api.highlights.hasHighlights, 5000);
+    await vscode.commands.executeCommand('agentTypewriter.seek', firstHl.seq);
+    await until('replay after clear', idle, 20000);
+    await vscode.commands.executeCommand('vscode.open', hlUri('play/hl-a.ts'), { preview: false });
+    await until('replay brings the cleared highlights back', drawnIs('play/hl-a.ts', {
+      lines: [1, 3, 4, 5],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }, { line: 2, texts: ['three\n'] }],
+    }), 5000);
+    // Text about to be deleted is previewed before it goes, and not with markDeletions off.
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const delText = 'first\nsecond\nthird\n';
+    const previews = (want: string) => {
+      const seen = { hit: false, stop: () => clearInterval(timer) };
+      const timer = setInterval(() => {
+        if (api.player.deletionPreview === want) seen.hit = true;
+      }, 10);
+      return seen;
+    };
+    const longDel = previews('second\nthird\n');
+    await play('play/hl-g.ts', delText, 'first\n');
+    longDel.stop();
+    assert.ok(longDel.hit, 'a multi-line deletion was not previewed');
+    // "total" -> "t" backspaces the word, then types the "t".
+    const shortDel = previews('total');
+    await play('play/hl-g.ts', 'first\n', 'first\nlet total = 1;\n');
+    await play('play/hl-g.ts', 'first\nlet total = 1;\n', 'first\nlet t = 1;\n');
+    shortDel.stop();
+    assert.ok(shortDel.hit, 'a backspaced word was not previewed');
+    assert.equal(api.player.deletionPreview, undefined, 'the preview stayed up after the deletion');
+    await setting('agentTypewriter', 'markDeletions', false);
+    const offDel = previews('first\nlet t = 1;\n');
+    await play('play/hl-g.ts', 'first\nlet t = 1;\n', '');
+    offDel.stop();
+    assert.ok(!offDel.hit, 'a deletion was previewed with markDeletions off');
+    await setting('agentTypewriter', 'markDeletions', true);
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+
+    // A deleted file shows one removal marker at line 1.
+    await play('play/hl-d.ts', 'gone\nfile\n', '', 'delete');
+    await until('deleted file marked', drawnIs('play/hl-d.ts', { lines: [], chars: [], removals: [{ line: 0, texts: ['gone\nfile\n'] }] }), 5000);
+    // Both settings off: nothing is drawn.
+    await setting('agentTypewriter', 'markDeletions', false);
+    await until('markDeletions off', drawnIs('play/hl-d.ts', null), 5000);
+    await setting('agentTypewriter', 'highlightAdditions', false);
+    await until('highlights off everywhere', () => !api.highlights.hasHighlights, 5000);
+    await play('play/hl-f.ts', 'x\n', 'x\ny\n');
+    await sleep(300);
+    assert.equal(drawn('play/hl-f.ts'), undefined, 'drawn with both settings off');
+    assert.equal(mirrorText('play/hl-f.ts'), 'x\ny\n');
+    console.log('[it] highlights ok');
+
     for (const restore of undo.reverse()) await restore();
     await vscode.commands.executeCommand('agentTypewriter.start');
     console.log('[it] playback and mirrors ok');
@@ -2105,6 +2212,8 @@ export async function run(): Promise<void> {
   // tabs stay open across it: an LF file played to the end, and a CRLF file
   // played once with a second change queued behind it.
   await until('idle before reload setup', idle);
+  // restore.ts checks the clear survives: only files changed after it are highlighted.
+  await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
   write('src/tabPlayed.ts', 'export const tabPlayed = 1;\n');
   await sleep(300);
   write('src/tabQueued.ts', 'export const tabQueued = 1;\r\n');
@@ -2126,16 +2235,28 @@ export async function run(): Promise<void> {
   const mirrorTabs = Object.fromEntries(['src/tabPlayed.ts', 'src/tabQueued.ts'].map((rel) => [rel, shown(rel)]));
   assert.deepEqual(mirrorTabs['src/tabPlayed.ts'], { text: 'export const tabPlayed = 1;\n', eol: '\n' });
   assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'the queued change was typed while paused');
+  const highlighted = highlightedFiles(timeline);
+  for (const rel of ['src/tabPlayed.ts', 'src/tabQueued.ts']) assert.ok(highlighted.includes(rel), `${rel} is not highlighted after the clear`);
+  assert.ok(!highlighted.includes('src/a.ts'), 'a file changed before the clear is still highlighted');
   assert.ok(api.store, 'no timeline store');
   await api.store.flush();
   fs.writeFileSync(
     process.env.IT_EXPECT!,
-    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount(), mirrorTabs }),
+    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount(), mirrorTabs, highlighted }),
   );
   console.log(`[it] left ${timeline.all().length} changes (3 queued) for the reload check`);
   // Stop first, so choosing only stores the choice; restore.ts checks it survives the reload.
   await vscode.commands.executeCommand('agentTypewriter.stop');
   await choose(nestedDir);
+}
+
+/** Files whose mirror text differs from their highlight baseline, sorted. */
+export function highlightedFiles(t: Timeline): string[] {
+  const texts = t.mirrorStates();
+  return [...baselines(t.all(), t.cursor, t.highlightClears)]
+    .filter(([relPath, base]) => texts.has(relPath) && texts.get(relPath)!.text !== base)
+    .map(([relPath]) => relPath)
+    .sort();
 }
 
 /** The recorded fields a restored change must keep. */

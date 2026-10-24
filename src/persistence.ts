@@ -241,7 +241,8 @@ export class TimelineStore {
     const events = session.events;
     const key = events.length === 0 ? '' : `${events[0].seq}-${events[events.length - 1].seq}`;
     if (this.cachedEvents?.key !== key) this.cachedEvents = { key, json: JSON.stringify(events) };
-    const envelope = JSON.stringify({ format: session.format, version: session.version, savedAt: session.savedAt, cursor: session.cursor });
+    const { format, version, savedAt, cursor, highlightsFrom } = session;
+    const envelope = JSON.stringify({ format, version, savedAt, cursor, ...(highlightsFrom && { highlightsFrom }) });
     return envelope.slice(0, -1) + `,"events":${this.cachedEvents.json}}`;
   }
 }

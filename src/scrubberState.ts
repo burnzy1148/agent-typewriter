@@ -13,6 +13,8 @@ export interface ScrubberState {
   paused: boolean;
   speed: number;
   watching: boolean;
+  /** Whether any mirror has highlights or removal markers to clear. */
+  hasHighlights: boolean;
   /** What is playing or next, e.g. "Typing #12 src/a.ts · 3 queued". */
   label: string;
   /** Position within the buffer, e.g. "4 / 12". */
@@ -22,13 +24,13 @@ export interface ScrubberState {
 export type PlaybackFacts = Omit<ScrubberState, 'type' | 'label' | 'position'>;
 
 export type ScrubberMessage =
-  | { type: 'ready' | 'togglePause' | 'finishCurrent' | 'skipToNext' | 'catchUp' | 'replayAll' }
+  | { type: 'ready' | 'togglePause' | 'finishCurrent' | 'skipToNext' | 'catchUp' | 'replayAll' | 'clearHighlights' }
   | { type: 'seek'; seq: number }
   | { type: 'speed'; value: number };
 
 export function scrubberState(
   timeline: Timeline,
-  player: { paused: boolean; speed: number; watching: boolean },
+  player: { paused: boolean; speed: number; watching: boolean; hasHighlights: boolean },
 ): ScrubberState {
   const events = timeline.all();
   const first = events[0]?.seq ?? timeline.cursor;
@@ -63,7 +65,7 @@ export function rowReadout(s: Pick<ScrubberState, 'label' | 'position'>): string
   return `${s.label} \u00b7 ${s.position}`.replace(/\$\([A-Za-z0-9-]+(?:~[A-Za-z]+)?\)/g, (m) => `\\${m}`);
 }
 
-const SIMPLE = new Set(['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll']);
+const SIMPLE = new Set(['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll', 'clearHighlights']);
 
 /** Validates a message posted by the webview; anything unexpected comes back undefined. */
 export function parseScrubberMessage(raw: unknown): ScrubberMessage | undefined {

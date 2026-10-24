@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import type { AgentTypewriterApi } from '../src/extension';
-import { persisted } from './suite';
+import { highlightedFiles, persisted } from './suite';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,6 +52,17 @@ export async function run(): Promise<void> {
       assert.ok(tabOf(uri), `mirror tab for ${rel} is not open`);
     }
     console.log(`[it] mirror tabs reopen after reload ok (${refilled} refilled, ${closed} orphan tab(s) closed, ${restoredByVsCode} tab(s) restored by VS Code)`);
+
+    // A clear made before the reload still applies: the same files are highlighted, and a reopened tab shows its marks.
+    assert.deepEqual(highlightedFiles(timeline), expected.highlighted, 'highlighted files differ after the reload');
+    const playedUri = vscode.Uri.from({ scheme: 'agent-typewriter', path: '/src/tabPlayed.ts' });
+    await vscode.commands.executeCommand('vscode.open', playedUri, { preview: false });
+    await until(
+      'restored highlights on tabPlayed.ts',
+      () => JSON.stringify(api.highlights.drawn.get(playedUri.toString())) === JSON.stringify({ lines: [0], chars: [], removals: [] }),
+      10000,
+    );
+    console.log('[it] highlights after reload ok');
   }
 
   // --- 1. Same changes, same recorded text, same queue; playback paused.

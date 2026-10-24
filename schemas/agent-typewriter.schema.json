@@ -229,6 +229,16 @@
       "type": "boolean",
       "default": true,
       "description": "Show a row of playback controls and status above the first line of the replay editor. Turn off to keep it out of screen recordings. Hidden anyway when editor.codeLens is off."
+    },
+    "highlightAdditions": {
+      "type": "boolean",
+      "default": true,
+      "description": "Keep text that replay added highlighted, like a git diff, until highlights are cleared. When off, each typed edit only flashes briefly."
+    },
+    "markDeletions": {
+      "type": "boolean",
+      "default": true,
+      "description": "Show text in red with a strikethrough just before replay deletes it, and mark where text was removed with a gutter marker whose hover shows the removed text."
     }
   },
   "additionalProperties": false

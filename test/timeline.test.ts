@@ -233,3 +233,73 @@ test('seekToEnd while a change is playing leaves nothing playing or queued', () 
   t.complete(5, token);
   assert.equal(t.pendingCount(), 0);
 });
+
+// ------------------------------------------------------------------ highlight clears
+
+function played(n: number): Timeline {
+  const t = new Timeline(100);
+  for (let i = 0; i < n; i++) t.push(ev('a', String(i), String(i + 1)));
+  t.seekToEnd();
+  return t;
+}
+
+test('clearing highlights records the cursor, for all files or one', () => {
+  const t = played(3);
+  t.clearHighlights('a');
+  assert.deepEqual(t.highlightClears, { all: undefined, files: new Map([['a', 4]]) });
+  t.clearHighlights();
+  assert.deepEqual(t.highlightClears, { all: 4, files: new Map() });
+});
+
+test('a clear while a change is typed counts that change as baseline', () => {
+  const t = played(2);
+  t.seek(2);
+  t.begin(2);
+  t.clearHighlights();
+  assert.equal(t.highlightClears.all, 3);
+  t.complete(2);
+  assert.equal(t.highlightClears.all, 3);
+});
+
+test('seeking before a clear undoes it; seeking to or past it keeps it', () => {
+  const t = played(5);
+  t.seek(4);
+  t.clearHighlights();
+  t.clearHighlights('a');
+  t.seek(4);
+  assert.equal(t.highlightClears.all, 4);
+  t.seekToEnd();
+  assert.equal(t.highlightClears.files.get('a'), 4);
+  t.seek(3);
+  assert.deepEqual(t.highlightClears, { all: undefined, files: new Map() });
+});
+
+test('replay from the start undoes every clear', () => {
+  const t = played(3);
+  t.clearHighlights();
+  t.seekToStart();
+  assert.equal(t.highlightClears.all, undefined);
+});
+
+test('clearing the buffer drops the clears', () => {
+  const t = played(2);
+  t.clearHighlights();
+  t.clearHighlights('a');
+  t.clear();
+  assert.deepEqual(t.highlightClears, { all: undefined, files: new Map() });
+});
+
+test('restore maps clears by position and drops ones at or before the first kept change', () => {
+  const t = new Timeline(2);
+  const events = played(4).all();
+  t.restore(events, 5, { all: 4, files: new Map([['a', 5], ['b', 2]]) });
+  // Kept: old seqs 3 and 4, renumbered 1 and 2. Clear 4 sits after the first kept change; 5 is the end.
+  assert.deepEqual(t.highlightClears, { all: 2, files: new Map([['a', 3]]) });
+});
+
+test('restore without clears has none', () => {
+  const t = played(2);
+  t.clearHighlights();
+  t.restore(played(2).all(), 3);
+  assert.deepEqual(t.highlightClears, { all: undefined, files: new Map() });
+});

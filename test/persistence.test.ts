@@ -333,3 +333,27 @@ test('an unreadable saved timeline that cannot be moved aside is not saved over'
   assert.deepEqual(fs.readFileSync(path.join(dir, 'timeline.unreadable.json.gz')), original);
   assert.equal(loadFrom(dir)?.events.length, 2);
 });
+
+test('highlight clears are saved with the timeline', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  store.start();
+  t.push(ev('a.ts', '', 'one'));
+  t.seekToEnd();
+  t.clearHighlights();
+  await store.flush();
+  store.stop();
+  assert.deepEqual(loadFrom(dir)?.highlightsFrom, { all: 2 });
+});
+
+test('a timeline saved without clears loads with none', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  store.start();
+  t.push(ev('a.ts', '', 'one'));
+  await store.flush();
+  store.stop();
+  assert.equal(loadFrom(dir)?.highlightsFrom, undefined);
+});

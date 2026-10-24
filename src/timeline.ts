@@ -1,3 +1,5 @@
+import type { HighlightClears } from './highlights';
+
 export type ChangeKind = 'create' | 'modify' | 'delete' | 'rename';
 
 export interface ChangeEvent {
@@ -47,6 +49,9 @@ export class Timeline {
   private listeners = new Set<Listener>();
   /** Count of unplayed events dropped because the buffer overflowed. */
   droppedUnplayed = 0;
+  /** Where highlights were last cleared for every file, and for single files; see HighlightClears. */
+  private clearAllSeq: number | undefined;
+  private clearFileSeqs = new Map<string, number>();
 
   constructor(private limit: number) {}
 
@@ -98,6 +103,7 @@ export class Timeline {
     this.cursorSeq = Math.min(Math.max(seq, first), this.nextSeq);
     this.generation++;
     this.playingSeq = undefined;
+    this.dropClearsAfter(this.cursorSeq);
     this.emit();
   }
 
@@ -119,26 +125,63 @@ export class Timeline {
     this.generation++;
     this.playingSeq = undefined;
     this.droppedUnplayed = 0;
+    this.clearAllSeq = undefined;
+    this.clearFileSeqs.clear();
     this.emit();
+  }
+
+  /**
+   * Clears highlights for every file, or for `relPath`: the text at the cursor
+   * becomes the baseline. While a change is typed, that change counts as part
+   * of the baseline.
+   */
+  clearHighlights(relPath?: string): void {
+    const at = this.playingSeq !== undefined ? this.playingSeq + 1 : this.cursorSeq;
+    if (relPath === undefined) {
+      this.clearAllSeq = at;
+      this.clearFileSeqs.clear();
+    } else {
+      this.clearFileSeqs.set(relPath, at);
+    }
+    this.emit();
+  }
+
+  get highlightClears(): HighlightClears {
+    return { all: this.clearAllSeq, files: new Map(this.clearFileSeqs) };
   }
 
   /**
    * Replaces the buffer with saved events, oldest first. They get fresh seqs
    * so seqs stay unique for the life of the timeline; `cursor` (a seq from the
-   * same save) maps by position, so played events stay played. The current
-   * limit applies, newest kept.
+   * same save) maps by position, so played events stay played, and so do
+   * highlight `clears`. A clear at or before the first kept event changes
+   * nothing, so it is dropped. The current limit applies, newest kept.
    */
-  restore(events: readonly ChangeEvent[], cursor: number): void {
+  restore(events: readonly ChangeEvent[], cursor: number, clears?: HighlightClears): void {
     const kept = events.slice(Math.max(0, events.length - this.limit));
-    const played = kept.filter((e) => e.seq < cursor).length;
     const first = this.nextSeq;
+    const map = (seq: number) => first + kept.filter((e) => e.seq < seq).length;
     this.events = kept.map((e, i) => ({ ...e, seq: first + i }));
     this.nextSeq = first + kept.length;
-    this.cursorSeq = first + played;
+    this.cursorSeq = map(cursor);
     this.generation++;
     this.playingSeq = undefined;
     this.droppedUnplayed = 0;
+    const keep = (seq: number | undefined) => (seq !== undefined && map(seq) > first ? map(seq) : undefined);
+    this.clearAllSeq = keep(clears?.all);
+    this.clearFileSeqs = new Map();
+    for (const [relPath, seq] of clears?.files ?? []) {
+      const at = keep(seq);
+      if (at !== undefined) this.clearFileSeqs.set(relPath, at);
+    }
+    this.dropClearsAfter(this.cursorSeq);
     this.emit();
+  }
+
+  /** Undoes clears made later than `cursor`, so replayed changes are highlighted again. */
+  private dropClearsAfter(cursor: number): void {
+    if (this.clearAllSeq !== undefined && this.clearAllSeq > cursor) this.clearAllSeq = undefined;
+    for (const [relPath, seq] of this.clearFileSeqs) if (seq > cursor) this.clearFileSeqs.delete(relPath);
   }
 
   get(seq: number): ChangeEvent | undefined {
@@ -215,6 +258,11 @@ export class Timeline {
     return this.cursorSeq;
   }
 
+  /** Seq being typed right now, if any. */
+  get playing(): number | undefined {
+    return this.playingSeq;
+  }
+
   /** Changes on every cursor jump (seek, skip, clear, restore), so a caller can tell one happened while it waited. */
   get jumps(): number {
     return this.generation;
@@ -259,7 +307,8 @@ export class Timeline {
 /**
  * The on-disk form of a timeline, shared by workspace persistence and session
  * files. Bump SESSION_VERSION when the shape or the set of kinds changes, and
- * teach parseSession to read every older version.
+ * teach parseSession to read every older version. An optional field older
+ * versions can safely ignore, like highlightsFrom, needs no bump.
  */
 export const SESSION_FORMAT = 'agent-typewriter-session';
 export const SESSION_VERSION = 2;
@@ -276,6 +325,8 @@ export interface Session {
   cursor: number;
   /** Oldest first, seqs increasing. */
   events: ChangeEvent[];
+  /** Where highlights were last cleared, as seqs like `cursor`. Absent when they never were. */
+  highlightsFrom?: { all?: number; files?: Record<string, number> };
 }
 
 export class SessionFormatError extends Error {}
@@ -297,7 +348,14 @@ export function toSession(timeline: Timeline, maxTextChars = Infinity): { sessio
     start--;
   }
   return {
-    session: { format: SESSION_FORMAT, version: SESSION_VERSION, savedAt: Date.now(), cursor: timeline.cursor, events: events.slice(start) },
+    session: {
+      format: SESSION_FORMAT,
+      version: SESSION_VERSION,
+      savedAt: Date.now(),
+      cursor: timeline.cursor,
+      events: events.slice(start),
+      ...highlightsFrom(timeline.highlightClears),
+    },
     omitted: start,
   };
 }
@@ -347,7 +405,33 @@ export function parseSession(raw: unknown): Session {
     });
   }
   const savedAt = typeof s.savedAt === 'number' ? s.savedAt : 0;
-  return { format: SESSION_FORMAT, version: SESSION_VERSION, savedAt, cursor: s.cursor as number, events };
+  const highlights = parseHighlightsFrom(s.highlightsFrom);
+  return { format: SESSION_FORMAT, version: SESSION_VERSION, savedAt, cursor: s.cursor as number, events, ...(highlights && { highlightsFrom: highlights }) };
+}
+
+/** The session field for `clears`, or nothing when highlights were never cleared. */
+function highlightsFrom(clears: HighlightClears): Pick<Session, 'highlightsFrom'> {
+  if (clears.all === undefined && clears.files.size === 0) return {};
+  return {
+    highlightsFrom: {
+      ...(clears.all !== undefined && { all: clears.all }),
+      ...(clears.files.size > 0 && { files: Object.fromEntries(clears.files) }),
+    },
+  };
+}
+
+/** A saved highlightsFrom with malformed parts left out; losing a clear only shows older highlights. */
+function parseHighlightsFrom(raw: unknown): Session['highlightsFrom'] {
+  if (!isObject(raw)) return undefined;
+  const files = isObject(raw.files) ? Object.entries(raw.files).filter(([, seq]) => isInt(seq)) : [];
+  const all = isInt(raw.all) ? (raw.all as number) : undefined;
+  if (all === undefined && files.length === 0) return undefined;
+  return { ...(all !== undefined && { all }), ...(files.length > 0 && { files: Object.fromEntries(files) as Record<string, number> }) };
+}
+
+/** A session's highlightsFrom as clears for Timeline.restore. */
+export function sessionClears(session: Session): HighlightClears {
+  return { all: session.highlightsFrom?.all, files: new Map(Object.entries(session.highlightsFrom?.files ?? {})) };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

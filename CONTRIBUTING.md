@@ -26,6 +26,8 @@ npm run package   # typecheck, test, bundle, produce the .vsix
 
 Run `npm run build` (or keep `npm run watch` running), then press F5 with the folder open to launch an Extension Development Host with your build loaded.
 
+To try replay by hand, run `npm run tour`. It builds the extension, makes a throwaway git repository, and opens it in a VS Code window running your build in a throwaway profile. Then it acts as an agent, one scenario per Enter: new files, word changes, short and long deletions, far edits, file switching, a burst of changes, a big paste, a CRLF file, a rename and a deleted file. Each step says what to watch for. It ends with a checklist of things to try by hand: seeking, clearing highlights, settings, reload, sessions, and Replay Git Commits on the repository's `main..feature`. `--auto` runs the steps without waiting; the header of `scripts/replay-tour.mjs` lists the other options.
+
 The README demo (`images/demo.gif`) is recorded by `node scripts/demo/record.mjs` on macOS with ffmpeg installed. It opens a throwaway VS Code profile on a copy of `scripts/demo/workspace`, lets a scripted agent edit it, and screen-records the window. The header of `record.mjs` lists options for choosing the display. Re-record it when the UI in the shot changes.
 
 ## How the code fits together

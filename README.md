@@ -45,18 +45,39 @@ disk write ──► watcher ──► debounce ──► diff vs snapshot ─�
 - **Catch-up.** Agents write far faster than people type. Speed is `base x (1 + catchUpFactor x queued)` capped at `maxSpeedup`, so playback accelerates when it falls behind and relaxes when it catches up. Changes larger than `maxAnimatedChars` are applied instantly.
 - **Mirror editors.** Each file gets one mirror tab, saved quietly after every change so closing a tab never prompts.
 
+## Highlights
+
+Replay marks what changed in each mirror the way a git diff does, compared with the file before its first replayed change (or since you last cleared highlights):
+
+- Lines with added text get a soft green background, a bar in the gutter, and a mark in the scrollbar. On a line that keeps some older text, the new characters get a slightly stronger green. Text appears highlighted as it is typed and stays highlighted.
+- Just before replay deletes text, the text turns red with a strikethrough. Where text was removed, a small red marker sits in the gutter; hover the line to see the removed text.
+- Highlights follow the playback position: seeking back removes highlights for changes not yet replayed, and skip to latest highlights everything that jumped in. Text added and later removed again leaves no mark.
+- **Clear Highlights** (in the Playback panel and the Command Palette) starts over from what every mirror shows now. **Clear Highlights in This File** (in the replay editor's title bar and the Command Palette) does the same for one file. Replaying from before a clear brings its highlights back.
+
+Turn `highlightAdditions` off to get only a brief flash on each typed edit, and `markDeletions` off to drop the red preview and removal markers. The colors follow your theme and can be changed with `workbench.colorCustomizations`:
+
+```jsonc
+"workbench.colorCustomizations": {
+  "agentTypewriter.addedLineBackground": "#2ea04326",
+  "agentTypewriter.addedTextBackground": "#2ea0434d",
+  "agentTypewriter.addedOverviewRuler": "#2ea04399",
+  "agentTypewriter.removedOverviewRuler": "#f8514999",
+  "agentTypewriter.deletingTextBackground": "#f8514940"
+}
+```
+
 ## The panels
 
 **Explorer > Playback** controls replay like a media player:
 
-- Replay from the start, play/pause, finish the current change instantly, skip to the next change, and skip to latest.
+- Replay from the start, play/pause, finish the current change instantly, skip to the next change, skip to latest, and clear highlights.
 - Drag the slider to any recorded change and let go to seek there. Seeking keeps playback paused or playing as it was; the far end of the slider skips to latest.
 - The speed picker sets a multiplier (0.5x to 5x) on top of the base speed.
 - The line under the slider shows what is typing or next, and how many changes are queued.
 
 **The replay editor** has controls too, on the tab of the file being typed (or played last):
 
-- Its title bar has the same buttons: replay from the start, play/pause, finish current, skip to next, and skip to latest. Right-click the title bar to hide any of them.
+- Its title bar has the same buttons: replay from the start, play/pause, finish current, skip to next, and skip to latest, plus clear highlights in this file while it has any. Right-click the title bar to hide any of them.
 - A row above the first line has play/pause, finish, next, latest, the speed (click to change it), and what is typing or next with the position in the buffer (click to open the Playback panel). The row is not part of the text. Set `mirrorStatusRow` to `false` to hide it, for example for screen recordings.
 
 **Explorer > Agent Typewriter** lists recorded changes, newest first, with their state (pending, typing, played) and line counts.
@@ -186,6 +207,8 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 | `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor (matched by content, so an outside write right after your save is still replayed) |
 | `viewColumn` | beside | Replay in a column beside you, or in the active column |
 | `mirrorStatusRow` | true | Show the playback controls and status row above the first line of the replay editor. Also hidden when `editor.codeLens` is off |
+| `highlightAdditions` | true | Keep added text highlighted, like a git diff, until highlights are cleared. Off: each typed edit only flashes briefly |
+| `markDeletions` | true | Show text in red with a strikethrough just before it is deleted, and mark where text was removed with a gutter marker that shows the removed text on hover |
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 
