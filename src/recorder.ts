@@ -13,6 +13,7 @@ import {
   commonDirOf,
   folderCheckoutChoice,
   folderLabels,
+  initializing,
   innermostRoot,
   isWorktreeOf,
   laneKey,
@@ -89,6 +90,10 @@ const DELETE_HOLD_MAX_MS = 15_000;
  */
 const DELETE_ORDER_HOLD_MAX_MS = DELETE_HOLD_MAX_MS + DELETE_SETTLE_MS;
 
+/** How soon worktrees are listed again while `git worktree add` is still checking one out, and how many times. */
+const INIT_RETRY_MS = 1000;
+const INIT_RETRIES = 60;
+
 /** Longest wait between checks of whether a chosen worktree is gone. */
 const GONE_CHECK_MAX_MS = 5000;
 
@@ -146,6 +151,8 @@ export class Recorder implements vscode.Disposable {
   private readonly listings = new Map<string, Worktree[]>();
   /** Per folder URI, `pathKey`s of the worktrees auto-record has already seen since start. */
   private readonly knownWorktrees = new Map<string, Set<string>>();
+  /** Per worktree `pathKey`, how many listings found it still being created by `git worktree add`. */
+  private readonly initWaits = new Map<string, number>();
   /** While auto-record is on, a watcher per recorded repository's common git directory, by its key. */
   private readonly commonWatchers = new Map<string, vscode.Disposable[]>();
   /** Chosen worktree labels per folder URI, by worktree `pathKey`, and folder prefixes, when `choices` cannot keep them. */
@@ -563,6 +570,7 @@ export class Recorder implements vscode.Disposable {
     this.capNoted = '';
     this.listings.clear();
     this.knownWorktrees.clear();
+    this.initWaits.clear();
     for (const subs of this.commonWatchers.values()) for (const d of subs) d.dispose();
     this.commonWatchers.clear();
     for (const burst of this.timers.values()) {
@@ -656,14 +664,17 @@ export class Recorder implements vscode.Disposable {
    */
   private refreshScopes(): Promise<void> {
     const work = this.scopeWork.then(async () => {
+      // A refresh that a stop overtook writes nothing, even when recording started again meanwhile.
+      const session = this.session;
+      const stale = () => !this.running || session !== this.session;
       const folders = vscode.workspace.workspaceFolders ?? [];
       let all: Scope[] = [];
       for (const folder of folders) all.push(...(await this.resolveScopes(folder)));
-      if (!this.running) return;
+      if (stale()) return;
       if (await this.autoRecord(all)) {
         all = [];
         for (const folder of folders) all.push(...(await this.resolveScopes(folder)));
-        if (!this.running) return;
+        if (stale()) return;
       }
       // Only by default can more than MAX_LANES come up: one per folder in a large multi-root workspace.
       const left = all.slice(MAX_LANES).map((s) => (s.own ? s.folder.name : `${s.folder.name} (${s.name})`));
@@ -899,18 +910,28 @@ export class Recorder implements vscode.Disposable {
   private async autoRecord(scopes: Scope[]): Promise<boolean> {
     const mode = this.settings().autoRecordWorktrees;
     const fresh: Array<{ folder: vscode.WorkspaceFolder; worktree: Worktree }> = [];
+    let waiting = false;
+    // A lock left by a `git worktree add` that died never goes; after a while the worktree is taken as it is.
+    const stillInitializing = (w: Worktree) => initializing(w) && (this.initWaits.get(pathKey(w.path)) ?? 0) < INIT_RETRIES;
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const key = folder.uri.toString();
       const listed = this.listings.get(key);
       if (!listed) continue;
       const known = this.knownWorktrees.get(key);
-      this.knownWorktrees.set(key, new Set(listed.map((w) => pathKey(w.path))));
+      // One `git worktree add` is still checking out stays new until it is done, so it is decided then.
+      const settled = listed.filter((w) => !stillInitializing(w) || known?.has(pathKey(w.path)));
+      this.knownWorktrees.set(key, new Set(settled.map((w) => pathKey(w.path))));
       if (!known || mode === 'off') continue;
       for (const w of listed) {
         if (w.prunable || known.has(pathKey(w.path)) || scopes.some((s) => pathKey(s.checkout.fsPath) === pathKey(w.path))) continue;
-        fresh.push({ folder, worktree: w });
+        if (stillInitializing(w)) {
+          waiting = true;
+          this.initWaits.set(pathKey(w.path), (this.initWaits.get(pathKey(w.path)) ?? 0) + 1);
+        } else fresh.push({ folder, worktree: w });
       }
     }
+    // Git removes the lock once the files are out; the watcher sees that, and this looks again in case it does not.
+    if (waiting) this.scheduleWorktreeRefresh(INIT_RETRY_MS);
     if (fresh.length === 0) return false;
     // What records once each decision is applied.
     let lanes = scopes
@@ -980,7 +1001,8 @@ export class Recorder implements vscode.Disposable {
     }
     for (const [key, dir] of want) {
       if (this.commonWatchers.has(key)) continue;
-      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), 'worktrees/*'));
+      // A new worktree's directory, and the lock `git worktree add` holds until its files are checked out.
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), '{worktrees/*,worktrees/*/locked}'));
       const subs: vscode.Disposable[] = [watcher];
       watcher.onDidCreate(() => this.scheduleWorktreeRefresh(), null, subs);
       watcher.onDidDelete(() => this.scheduleWorktreeRefresh(), null, subs);
@@ -1304,11 +1326,11 @@ export class Recorder implements vscode.Disposable {
     return false;
   }
 
-  private scheduleWorktreeRefresh(): void {
+  private scheduleWorktreeRefresh(delayMs = 300): void {
     clearTimeout(this.worktreeRefresh);
     this.worktreeRefresh = setTimeout(() => {
       this.refreshFilter('Worktrees changed').catch((err) => this.log.appendLine(`Failed to re-read worktrees: ${String(err)}`));
-    }, 300);
+    }, delayMs);
   }
 
   /**

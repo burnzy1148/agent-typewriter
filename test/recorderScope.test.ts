@@ -932,3 +932,46 @@ test('with six folders and recording off, a folder can still choose its checkout
   await assert.rejects(recorder.setCheckouts(folders[0], [dirs[0], `${dirs[0]}-x`]), /At most 5 checkouts/);
   await assert.rejects(recorder.setCheckouts(folders[5], [dirs[5]]), /At most 5 checkouts/);
 });
+
+test('auto-record waits until git worktree add has checked the worktree out', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  let initializingNow = '';
+  // Reports the new worktree as git does while it is still checking files out.
+  const lister = async (folder: string): Promise<WorktreeListResult> => {
+    const r = await listWorktrees(folder);
+    if (r.kind !== 'ok' || !initializingNow) return r;
+    return { kind: 'ok', worktrees: r.worktrees.map((w) => (pathKey(w.path) === pathKey(initializingNow) ? { ...w, locked: 'initializing' } : w)) };
+  };
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), { lister }, repo);
+  await t.recorder.start();
+  const dir = `${repo}-slow`;
+  initializingNow = dir;
+  addWorktree(t, repo, 'slow');
+  await until('listed while initializing', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
+  assert.equal(t.checkout()?.lanes, 1, 'recorded before git finished');
+  initializingNow = '';
+  await until('recorded once done', () => t.checkout()?.lanes === 2, 5000);
+  assert.ok(t.logs.some((l) => l.startsWith('Recording the new worktree slow')));
+});
+
+test('a scope refresh overtaken by a stop and start does not use up the start\'s choice of lane to follow', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const sideLane = laneKey(vscode.Uri.file(repo).toString(), false, side);
+  const choices: CheckoutChoices = { get: () => undefined, set: () => undefined, getSet: () => [repo, side], setSet: () => undefined, followed: sideLane };
+  let slow = 0;
+  const lister = async (folder: string) => {
+    if (slow > 0) await sleep(slow);
+    return listWorktrees(folder);
+  };
+  const t = recorderOn(settings(), { choices, lister }, repo);
+  await t.recorder.start();
+  t.timeline.follow(vscode.Uri.file(repo).toString());
+  slow = 400;
+  const overtaken = t.recorder.refreshFilter('Filter changed').catch(() => {});
+  await sleep(100);
+  t.recorder.stop();
+  const restarted = t.recorder.start();
+  await Promise.all([overtaken, restarted]);
+  assert.equal(t.timeline.followed, sideLane, 'the remembered lane is followed after the restart');
+  assert.equal(t.checkout()?.lanes, 2);
+});

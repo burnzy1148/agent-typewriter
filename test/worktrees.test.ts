@@ -20,6 +20,7 @@ import {
   nestedUnder,
   ownCheckout,
   parseWorktreeList,
+  initializing,
   relativeInside,
   rootIn,
   uniqueLabels,
@@ -500,4 +501,11 @@ test('CheckoutChoiceFile: sets, the followed lane and colors survive a reload', 
   assert.equal(c.getSet('file:///ws'), undefined);
   assert.equal(c.followed, undefined);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('parseWorktreeList: a locked worktree keeps its reason; initializing means git worktree add is not done', () => {
+  const out = ['worktree /r', 'HEAD abc', 'branch refs/heads/main', '', 'worktree /r-new', 'HEAD def', 'branch refs/heads/new', 'locked initializing', '', 'worktree /r-kept', 'HEAD fed', 'locked', ''].join('\n');
+  const list = parseWorktreeList(out, '\n');
+  assert.deepEqual(list.map((w) => w.locked), [undefined, 'initializing', '']);
+  assert.deepEqual(list.map(initializing), [false, true, false]);
 });

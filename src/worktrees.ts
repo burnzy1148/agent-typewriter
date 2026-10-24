@@ -22,6 +22,17 @@ export interface Worktree {
    * checkout, but it is never offered as one.
    */
   prunable?: boolean;
+  /**
+   * Git calls it locked, with this reason ('' when none was given).
+   * `git worktree add` holds the lock with the reason `initializing` until it
+   * has checked out the files.
+   */
+  locked?: string;
+}
+
+/** True while `git worktree add` is still checking the worktree out. */
+export function initializing(wt: Worktree): boolean {
+  return wt.locked === 'initializing';
 }
 
 export type WorktreeListResult =
@@ -45,6 +56,7 @@ export function parseWorktreeList(out: string, sep: '\0' | '\n'): Worktree[] {
         head: current.head,
         ...(current.branch ? { branch: current.branch } : {}),
         ...(current.prunable ? { prunable: true } : {}),
+        ...(current.locked !== undefined ? { locked: current.locked } : {}),
       });
     }
     current = undefined;
@@ -71,6 +83,8 @@ export function parseWorktreeList(out: string, sep: '\0' | '\n'): Worktree[] {
       current.skip = true;
     } else if (key === 'prunable') {
       current.prunable = true;
+    } else if (key === 'locked') {
+      current.locked = value;
     }
   }
   end();
