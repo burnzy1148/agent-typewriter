@@ -9,8 +9,8 @@ export interface StatusInput {
   filter: string;
   /** The active profile's name, '' when none is active; only read while not watching. */
   profile: string;
-  /** The checkout each folder in git records. */
-  checkouts: Array<{ own: boolean; name: string; worktrees: number }>;
+  /** The checkout each folder in git records: the followed lane's, when it is that folder's. */
+  checkouts: Array<{ own: boolean; name: string; worktrees: number; /** Checkouts the folder records; 1 when absent. */ lanes?: number }>;
 }
 
 export interface StatusPresentation {
@@ -31,12 +31,19 @@ export function statusPresentation(s: StatusInput): StatusPresentation {
   const profile = s.profile ? ` (profile ${s.profile})` : '';
   const watched = `Watching ${s.watchedCount} files${inCheckout} (${s.filter})`;
   const choosable = s.checkouts.filter((c) => c.worktrees > 1).map((c) => c.name);
+  const lanes = s.checkouts.reduce((n, c) => n + (c.lanes ?? 1), 0);
+  const several = lanes > 1 && s.checkouts.some((c) => (c.lanes ?? 1) > 1);
   const checkout =
     choosable.length > 0
-      ? {
-          text: `$(git-branch) ${choosable.join(', ')}`,
-          tooltip: `Agent Typewriter ${s.watching ? 'records' : 'will record'} checkout ${choosable.join(', ')}. Click to choose another.`,
-        }
+      ? several
+        ? {
+            text: `$(git-branch) ${choosable.join(', ')} · ${lanes} checkouts`,
+            tooltip: `Agent Typewriter ${s.watching ? 'records' : 'will record'} ${lanes} checkouts, following ${choosable.join(', ')}. Click to choose which.`,
+          }
+        : {
+            text: `$(git-branch) ${choosable.join(', ')}`,
+            tooltip: `Agent Typewriter ${s.watching ? 'records' : 'will record'} checkout ${choosable.join(', ')}. Click to choose another.`,
+          }
       : undefined;
   // The filter summary leads, so an active profile's name starts the description.
   const description = s.watching

@@ -21,6 +21,7 @@ import { decodeBytes } from './textDecode';
 import { Timeline, laneOf, sessionClears, sessionLanes, toSession, type LaneInfo } from './timeline';
 import { ChangeItem, laneName, TimelineView } from './timelineView';
 import { CheckoutRow, CheckoutsView, type FolderCheckoutsModel } from './checkoutsView';
+import { LaneDecorations } from './laneDecorations';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
 export interface AgentTypewriterApi {
@@ -33,7 +34,7 @@ export interface AgentTypewriterApi {
   /** Undefined when no folder is open (no workspace storage). */
   store: TimelineStore | undefined;
   /** Re-reads each folder's checkouts, as a window focus does, and returns them by folder URI. For tests. */
-  refreshCheckouts(): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>>;
+  refreshCheckouts(): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>>;
   /** Closes mirror tabs whose file the mirror filesystem does not hold, as activation does once. Returns how many. For tests. */
   closeOrphanMirrorTabs(): Promise<number>;
   /** Settles once activation has refilled the mirrors from the restored timeline and closed orphaned mirror tabs. For tests. */
@@ -81,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     remove: (folder, p) => recorder.removeCheckout(folder, p),
     error: (message) => void vscode.window.showErrorMessage(`Agent Typewriter: ${message}`),
   });
+  const laneDecorations = new LaneDecorations(timeline);
   const checkoutsTree = vscode.window.createTreeView('agentTypewriter.checkouts', { treeDataProvider: checkoutsView, manageCheckboxStateManually: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
@@ -102,6 +104,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     tree,
     checkoutsView,
     checkoutsTree,
+    laneDecorations,
     checkoutsTree.onDidChangeCheckboxState(async (e) => {
       for (const [item, state] of e.items) {
         if (item instanceof CheckoutRow) await checkoutsView.setChecked(item, state === vscode.TreeItemCheckboxState.Checked);
@@ -114,6 +117,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
     vscode.languages.registerCodeLensProvider({ scheme: MIRROR_SCHEME }, mirrorControls),
     vscode.languages.registerHoverProvider({ scheme: MIRROR_SCHEME }, highlights),
+    vscode.window.registerFileDecorationProvider(laneDecorations),
     { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
@@ -126,12 +130,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
    * URI; only folders in git. `worktrees` counts the checkouts the chooser
    * offers: one more than git lists for a folder with no checkout of its own.
    */
-  const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+  const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>();
   // Calls overlap (scope events, focus, folder changes); only the newest one's answer is kept.
   let checkoutsGen = 0;
-  const refreshCheckouts = async (): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>> => {
+  const refreshCheckouts = async (): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>> => {
     const gen = ++checkoutsGen;
-    const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+    const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>();
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const c = await recorder.checkoutsOf(folder);
       const live = recorder.checkoutOf(folder);
@@ -139,13 +143,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
         // What is recorded comes from the recorder; the count from a fresh
         // listing, since worktrees added or removed elsewhere send no event.
         const worktrees = c ? folderCheckoutChoice(folder.name, c.own, c.worktrees).choices : live.worktrees + (live.container ? 1 : 0);
-        if (worktrees > 0) next.set(folder.uri.toString(), { own: live.own, name: live.name, worktrees });
+        if (worktrees > 0) next.set(folder.uri.toString(), { own: live.own, name: live.name, worktrees, lanes: live.lanes });
         continue;
       }
       if (!c) continue;
       const chosen = c.chosen !== undefined ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.chosen!)) : undefined;
       const choice = folderCheckoutChoice(folder.name, c.own, c.worktrees);
-      next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: chosen ? checkoutName(chosen) : choice.name, worktrees: choice.choices });
+      const recorded = c.recorded.length;
+      const first = recorded === 1 ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.recorded[0])) : undefined;
+      const shown = chosen ?? (first !== c.own ? first : undefined);
+      next.set(folder.uri.toString(), { own: !shown || shown === c.own, name: shown ? checkoutName(shown) : choice.name, worktrees: choice.choices, lanes: recorded });
     }
     if (gen !== checkoutsGen) return next;
     checkouts.clear();
@@ -199,6 +206,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (timeline.followed === followedSaved || timeline.lanesInBuffer().length === 0) return;
     followedSaved = timeline.followed;
     void Promise.resolve(choices.setFollowed?.(followedSaved)).catch(() => {});
+    // The status bar names the followed lane's checkout.
+    void refreshCheckouts();
   };
   context.subscriptions.push(
     timeline.onDidChange(refreshStatus),

@@ -316,6 +316,14 @@ export class TreeItem {
   ) {}
 }
 
+export class FileDecoration {
+  constructor(
+    readonly badge?: string,
+    readonly tooltip?: string,
+    readonly color?: ThemeColor,
+  ) {}
+}
+
 export class Hover {
   constructor(
     readonly contents: MarkdownString,
