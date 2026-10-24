@@ -116,7 +116,7 @@ export async function runRec4(): Promise<void> {
   const projKey = proj.uri.toString();
   const checkouts = await api.refreshCheckouts();
   const projEntry = checkouts.get(projKey);
-  assert.deepEqual(projEntry && { ...projEntry }, { own: true, name: '(none chosen)', worktrees: 2 }, 'the container is not choosable');
+  assert.deepEqual(projEntry && { ...projEntry }, { own: true, name: '(none chosen)', worktrees: 2, lanes: 1 }, 'the container is not choosable');
   assert.match(recorder.describeFilter(), /no checkout chosen in proj/);
   const projFile = path.join(proj.uri.fsPath, 'main', 'src', 'a.ts');
   const atProj = timeline.all().length;
@@ -134,7 +134,7 @@ export async function runRec4(): Promise<void> {
     [['modify', 'proj/main/src/a.ts', 'export const a = 2;\n']],
   );
   const chosen = (await api.refreshCheckouts()).get(projKey);
-  assert.deepEqual(chosen && { ...chosen }, { own: false, name: 'main', worktrees: 2 });
+  assert.deepEqual(chosen && { ...chosen }, { own: false, name: 'main', worktrees: 2, lanes: 1 });
   await playEveryLane('proj playback');
   console.log('[it] REC4: bare repository container ok');
 
