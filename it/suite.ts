@@ -1293,6 +1293,37 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'highlightAdditions', true);
     await setting('agentTypewriter', 'markDeletions', true);
     await until('highlights back after turning them on', drawnIs('play/hl-f.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    // With both settings off nothing is diffed. Turning one back on while a file
+    // that is slow to diff is typed still brings up a later file's clear buttons.
+    const bigPool = Array.from({ length: 8 }, (_, i) => `r,0,${i},0\n`);
+    const big1 = Array.from({ length: 8000 }, (_, i) => bigPool[(i * 5 + (i >> 3)) % 8]).join('');
+    const big2 = big1.split(/(?<=\n)/).map((l, i) => (i % 8 === 3 ? 'changed\n' : l)).join('');
+    await play('play/hl-big.ts', '', big1);
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-big.ts'));
+    await play('play/hl-big.ts', big1, big2);
+    await setting('agentTypewriter', 'markDeletions', false);
+    await setting('agentTypewriter', 'highlightAdditions', false);
+    await play('play/hl-late.ts', 'g\nx\n', 'g\ny\n');
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const slowBig = push('play/hl-big.ts', big2, big2 + 'typed slowly at the end of a file that is slow to diff\n');
+    await until('big file typing', playing(slowBig.seq), 15000);
+    await setting('agentTypewriter', 'markDeletions', true);
+    await until('later file reported while the slow file is typed', () => api.highlights.highlightedPaths.includes('/play/hl-late.ts'), 4000);
+    assert.equal(timeline.stateOf(slowBig.seq), 'playing', 'the slow change finished before the check');
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('slow big change played', playedNow(slowBig.seq));
+    await setting('agentTypewriter', 'highlightAdditions', true);
+    // Each change of an uninterrupted run is its own live change: marks drawn during one are not kept into the next.
+    const run1 = push('play/hl-t.ts', 'a\n', 'a\nthe first change of a run\n');
+    const run2 = push('play/hl-t.ts', 'a\nthe first change of a run\n', 'a\nthe first change of a run\nand the second\n');
+    await until('first change of the run typing', () => playing(run1.seq)() && api.player.liveToken('play/hl-t.ts') !== undefined, 15000);
+    const firstToken = api.player.liveToken('play/hl-t.ts');
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('second change of the run typing', () => playing(run2.seq)() && api.player.liveToken('play/hl-t.ts') !== undefined, 15000);
+    assert.notEqual(api.player.liveToken('play/hl-t.ts'), firstToken, 'two changes of one run share a live token');
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('run played', playedNow(run2.seq));
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
     // A real file open beside the mirrors is never decorated.
     await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
     await sleep(300);

@@ -38,6 +38,8 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   private readonly drawnToken = new Map<string, number>();
   /** Mirror paths with any highlights shown, as the title bar's context key holds them. */
   private highlighted: string[] | undefined;
+  /** The file the last pass over every file ran out of time at, where the next pass starts. */
+  private resumeAt: string | undefined;
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires when whether any mirror has highlights changes. */
   readonly onDidChangeHighlighted = this.changed.event;
@@ -237,24 +239,29 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     const st = this.state();
     const s = this.settings();
     const deadline = Date.now() + PASS_BUDGET_MS;
-    let unfinished = false;
+    const all = [...st.bases.keys(), ...(st.movingFrom !== undefined ? [st.movingFrom] : [])];
+    // Start with the file the last pass ran out of time at, so a file that is slow to diff cannot starve the ones after it.
+    const from = this.resumeAt !== undefined ? Math.max(0, all.indexOf(this.resumeAt)) : 0;
+    this.resumeAt = undefined;
     const paths: string[] = [];
-    for (const relPath of [...st.bases.keys(), ...(st.movingFrom !== undefined ? [st.movingFrom] : [])]) {
+    for (const relPath of [...all.slice(from), ...all.slice(0, from)]) {
       const pair = highlightPair(st, relPath, this.player.liveText(relPath));
       if (!pair || (!s.highlightAdditions && !s.markDeletions) || pair.baseline === pair.text) continue;
-      const path = MirrorFileSystem.uriFor(relPath).path;
+      const uri = MirrorFileSystem.uriFor(relPath);
       const hit = this.cache.get(relPath);
+      // The mirror being typed into is diffed by render() as it changes; its latest marks there are close enough.
+      const rendered = pair.live && vscode.window.visibleTextEditors.some((ed) => ed.document.uri.toString() === uri.toString());
       let has: boolean;
-      if (hit && hit.baseline === pair.baseline && hit.text === pair.text) has = filterMarks(hit.marks, s) !== undefined;
+      if (hit && hit.baseline === pair.baseline && (hit.text === pair.text || rendered)) has = filterMarks(hit.marks, s) !== undefined;
       // A difference can still draw nothing (a newline added at the end), so diff, within the pass's budget.
       else if (Date.now() > deadline) {
-        has = this.highlighted?.includes(path) ?? false;
-        unfinished = true;
+        has = this.highlighted?.includes(uri.path) ?? false;
+        this.resumeAt ??= relPath;
       } else has = this.shown(relPath, pair, s) !== undefined;
-      if (has) paths.push(path);
+      if (has) paths.push(uri.path);
     }
     for (const relPath of this.cache.keys()) if (!st.bases.has(relPath) && relPath !== st.movingFrom) this.cache.delete(relPath);
-    if (unfinished) setTimeout(() => this.schedule(ALL), 0);
+    if (this.resumeAt !== undefined) setTimeout(() => this.schedule(ALL), 0);
     paths.sort();
     if (this.highlighted && paths.join('\n') === this.highlighted.join('\n')) return;
     const had = this.hasHighlights;

@@ -23,7 +23,7 @@ const FOLD_MAX_COMMON = 3;
  * with the square of this (about 100 ms at this bound), so past it the
  * changed region is retyped whole.
  */
-const LINE_DIFF_MAX_EDITS = 1500;
+export const LINE_DIFF_MAX_EDITS = 1500;
 /** Most added plus removed tokens a block's word diff may search for before it is retyped instead. */
 const WORD_DIFF_MAX_EDITS = 1000;
 
@@ -61,13 +61,14 @@ export function lfOffsetToLineCol(lfText: string, offset: number): { line: numbe
  * Turns a before/after pair into an ordered list of hunks that read like a
  * person editing top to bottom: whole new lines are typed as lines, and a
  * modified line only retypes the tokens that actually changed.
+ * `maxLineEdits` raises or lowers the line diff's search limit.
  */
-export function planHunks(before: string, after: string): Hunk[] {
+export function planHunks(before: string, after: string, maxLineEdits = LINE_DIFF_MAX_EDITS): Hunk[] {
   if (before === after) return [];
   if (before.length === 0) return [{ offset: 0, deleteText: '', insertText: after }];
   if (after.length === 0) return [{ offset: 0, deleteText: before, insertText: '' }];
 
-  const parts = diffLines(before, after, { maxEditLength: LINE_DIFF_MAX_EDITS });
+  const parts = diffLines(before, after, { maxEditLength: maxLineEdits });
   if (!parts) {
     const r = changedRegion(before, after);
     return [{ offset: r.start, deleteText: r.removed, insertText: r.added }];
