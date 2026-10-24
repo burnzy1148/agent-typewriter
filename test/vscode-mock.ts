@@ -272,7 +272,7 @@ export class Range {
 }
 
 export class MarkdownString {
-  value = '';
+  constructor(public value = '') {}
   appendMarkdown(text: string): this {
     this.value += text;
     return this;
@@ -281,6 +281,39 @@ export class MarkdownString {
     this.value += '\n```' + language + '\n' + code + '\n```\n';
     return this;
   }
+}
+
+// Just enough of the tree view API for the Changes and Checkouts views.
+export class ThemeIcon {
+  constructor(
+    readonly id: string,
+    readonly color?: ThemeColor,
+  ) {}
+}
+
+export enum TreeItemCollapsibleState {
+  None = 0,
+  Collapsed = 1,
+  Expanded = 2,
+}
+
+export enum TreeItemCheckboxState {
+  Unchecked = 0,
+  Checked = 1,
+}
+
+export class TreeItem {
+  id?: string;
+  description?: string | boolean;
+  tooltip?: string | MarkdownString;
+  iconPath?: ThemeIcon;
+  contextValue?: string;
+  command?: { command: string; title: string; arguments?: unknown[] };
+  checkboxState?: TreeItemCheckboxState;
+  constructor(
+    public label: string,
+    public collapsibleState: TreeItemCollapsibleState = TreeItemCollapsibleState.None,
+  ) {}
 }
 
 export class Hover {

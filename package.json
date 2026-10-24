@@ -96,7 +96,57 @@
           "highContrast": "#f8514966",
           "highContrastLight": "#f8514966"
         }
-      }
+      },
+        {
+          "id": "agentTypewriter.lane1",
+          "description": "Color of the first lane: its icon in the Checkouts and Changes views and its mirror tabs, while more than one checkout's changes are in the buffer.",
+          "defaults": {
+            "dark": "charts.blue",
+            "light": "charts.blue",
+            "highContrast": "charts.blue",
+            "highContrastLight": "charts.blue"
+          }
+        },
+        {
+          "id": "agentTypewriter.lane2",
+          "description": "Color of the second lane: its icon in the Checkouts and Changes views and its mirror tabs, while more than one checkout's changes are in the buffer.",
+          "defaults": {
+            "dark": "charts.green",
+            "light": "charts.green",
+            "highContrast": "charts.green",
+            "highContrastLight": "charts.green"
+          }
+        },
+        {
+          "id": "agentTypewriter.lane3",
+          "description": "Color of the third lane: its icon in the Checkouts and Changes views and its mirror tabs, while more than one checkout's changes are in the buffer.",
+          "defaults": {
+            "dark": "charts.orange",
+            "light": "charts.orange",
+            "highContrast": "charts.orange",
+            "highContrastLight": "charts.orange"
+          }
+        },
+        {
+          "id": "agentTypewriter.lane4",
+          "description": "Color of the fourth lane: its icon in the Checkouts and Changes views and its mirror tabs, while more than one checkout's changes are in the buffer.",
+          "defaults": {
+            "dark": "charts.purple",
+            "light": "charts.purple",
+            "highContrast": "charts.purple",
+            "highContrastLight": "charts.purple"
+          }
+        },
+        {
+          "id": "agentTypewriter.lane5",
+          "description": "Color of the fifth lane: its icon in the Checkouts and Changes views and its mirror tabs, while more than one checkout's changes are in the buffer.",
+          "defaults": {
+            "dark": "charts.red",
+            "light": "charts.red",
+            "highContrast": "charts.red",
+            "highContrastLight": "charts.red"
+          }
+        }
     ],
     "commands": [
       {
@@ -254,16 +304,29 @@
         "icon": "$(dashboard)"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentTypewriter",
+          "title": "Agent Typewriter",
+          "icon": "images/activity.svg"
+        }
+      ]
+    },
     "views": {
-      "explorer": [
+      "agentTypewriter": [
+        {
+          "id": "agentTypewriter.checkouts",
+          "name": "Checkouts"
+        },
+        {
+          "id": "agentTypewriter.timeline",
+          "name": "Changes"
+        },
         {
           "type": "webview",
           "id": "agentTypewriter.scrubber",
           "name": "Playback"
-        },
-        {
-          "id": "agentTypewriter.timeline",
-          "name": "Agent Typewriter"
         }
       ]
     },

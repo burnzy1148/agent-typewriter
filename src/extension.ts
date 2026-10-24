@@ -240,6 +240,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   register('agentTypewriter.replayFrom', async (arg?: ChangeItem | number) => {
     const seq = typeof arg === 'number' ? arg : arg?.event.seq;
     if (seq === undefined) return;
+    // A change in another lane is replayed in that lane, which is followed from then on.
+    const event = timeline.get(seq);
+    if (event) timeline.follow(laneOf(event));
     timeline.seek(seq);
     await player.interrupt();
     player.setPaused(false);
@@ -247,7 +250,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   // Like replayFrom, but keeps the pause state; past the newest change it skips to latest.
   const seekTo = async (seq: number) => {
-    const events = timeline.all();
+    const events = timeline.laneEvents();
     if (events.length === 0 || seq > events[events.length - 1].seq) {
       await catchUp();
       return;
@@ -261,8 +264,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   // Drops the change being typed (or the next queued one) and moves on to the one after it.
   register('agentTypewriter.skipToNext', async () => {
-    const playing = timeline.all().find((e) => timeline.stateOf(e.seq) === 'playing');
-    await seekTo((playing?.seq ?? timeline.cursor) + 1);
+    const current = (timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined) ?? timeline.peek();
+    await seekTo((current?.seq ?? timeline.cursor) + 1);
   });
 
   register('agentTypewriter.showDiff', async (arg?: ChangeItem) => {
