@@ -579,7 +579,7 @@ test('fuzz: lanes stay consistent through pushes, follows, seeks, trims and play
   }
 });
 
-test('a played-out lane that is not recording gives way to a recording lane\'s new change', () => {
+test('a played-out lane that is not recording gives way to another lane\'s new change', () => {
   const t = new Timeline(100);
   t.push(lev('', 'old', '', '1'));
   drain(t);

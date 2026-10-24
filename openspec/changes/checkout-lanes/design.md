@@ -110,7 +110,7 @@ A lane's last activity is its newest change's `time` in the timeline. With no ch
 
 - The first lane registered is followed when the followed lane does not exist.
 - On the first scope refresh after start, the recorder follows the remembered lane if it records, else keeps the followed lane if it records, else the first recorded lane; unless the followed lane still has changes queued (a restored timeline), which keeps it.
-- When the followed lane is not recording and has nothing queued, a new change in a recording lane makes that lane followed (`Timeline.push`). Without this, a timeline restored from before lanes (lane `''`, all played) would leave new recordings unplayed.
+- When the followed lane is not recording and has nothing queued, a new change in any other lane makes that lane followed (`Timeline.push`). Without this, a timeline restored from before lanes (lane `''`, all played) would leave new recordings unplayed, and so would changes added after recording stops.
 - `extension.ts` saves the followed lane in the choices file whenever it changes.
 
 ### Auto-follow controller
