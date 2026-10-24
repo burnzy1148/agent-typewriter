@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { readHighlightSettings, readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
-import { buildReplay, countCommits, currentBranch, defaultBase, isRepository, listBranches, resolveRange } from './gitReplay';
+import { buildReplay, countCommits, currentBranch, defaultBase, isRepository, listBranches, replayLane, resolveRange } from './gitReplay';
 import { HighlightView } from './highlightView';
 import { MirrorControls } from './mirrorControls';
 import { MirrorFileSystem, MIRROR_SCHEME, mirrorBytes, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
@@ -282,8 +282,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   register('agentTypewriter.catchUp', catchUp);
 
   register('agentTypewriter.replayAll', async () => {
-    if (timeline.all().length === 0) {
-      vscode.window.showInformationMessage('Agent Typewriter: the buffer is empty.');
+    // Replays the followed lane, so one with nothing in it has nothing to replay.
+    if (timeline.laneEvents().length === 0) {
+      vscode.window.showInformationMessage(
+        timeline.all().length === 0 ? 'Agent Typewriter: the buffer is empty.' : 'Agent Typewriter: the followed lane has no changes yet. Follow another lane to replay it.',
+      );
       return;
     }
     timeline.seekToStart();
@@ -564,9 +567,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       recorder.stop();
       await setWatching(false);
     }
+    // The replay is one lane, labeled with its range.
+    const lane = replayLane(range);
     timeline.restore(
-      events.map((e, i) => ({ ...e, seq: i + 1 })),
+      events.map((e, i) => ({ ...e, seq: i + 1, lane: lane.id })),
       1,
+      undefined,
+      { lanes: [lane], followed: lane.id },
     );
     await player.interrupt();
     player.forgetPlaybackMirror();
@@ -928,7 +935,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
         const pending = saved.events.filter((e) => e.seq >= (saved.cursors?.[laneOf(e)] ?? saved.cursor)).length;
         if (pending > 0) player.setPaused(true);
         timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved));
-        const queued = timeline.pendingCount();
+        // Queued in every lane: any of them pauses playback.
+        const queued = timeline.lanesInBuffer().reduce((n, l) => n + timeline.pendingCount(l), 0);
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
         refreshStatus();
       }

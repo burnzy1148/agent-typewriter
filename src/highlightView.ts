@@ -294,15 +294,22 @@ export function highlightState(timeline: Timeline, isLive: (relPath: string) => 
   // With nothing playing, the followed lane's next change has not played; a clear made
   // while it was typed (before a reload) already holds for every other file.
   const next = playing ? undefined : timeline.peek();
-  const heldBack = next && { seq: next.seq, paths: [next.relPath, ...(next.fromRelPath !== undefined ? [next.fromRelPath] : [])] };
   const active = playing ? laneOf(playing) : timeline.followed;
   const bases = new Map<string, string>();
   for (const lane of timeline.lanesInBuffer()) {
     const events = all.filter((e) => laneOf(e) === lane);
     const laneClears = clears.filter((c) => laneOf(c) === lane);
     // The change being typed counts, so its file's baseline is ready for its live text.
-    const through = playing && laneOf(playing) === lane ? playing.seq + 1 : next && lane === active ? next.seq : timeline.cursorOf(lane);
-    for (const [path, base] of baselines(events, through, laneClears, lane === active ? heldBack : undefined)) bases.set(path, base);
+    if (playing && laneOf(playing) === lane) {
+      for (const [path, base] of baselines(events, playing.seq + 1, laneClears)) bases.set(path, base);
+      continue;
+    }
+    // Any lane's next change may have been typing when a clear was made, then
+    // overtaken by a reload or by following another lane: hold it back the same way.
+    const first = timeline.firstPending(lane);
+    const laneNext = first === undefined ? undefined : timeline.get(first);
+    const held = laneNext && { seq: laneNext.seq, paths: [laneNext.relPath, ...(laneNext.fromRelPath !== undefined ? [laneNext.fromRelPath] : [])] };
+    for (const [path, base] of baselines(events, laneNext ? laneNext.seq : timeline.cursorOf(lane), laneClears, held)) bases.set(path, base);
   }
   const activeClears = clears.filter((c) => laneOf(c) === active);
   const st: HighlightState = { bases, texts: timeline.mirrorStates(), clears: activeClears };

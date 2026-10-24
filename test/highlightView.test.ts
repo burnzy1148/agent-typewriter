@@ -89,3 +89,20 @@ test('clear all clears every lane; seeking back in one lane restores only its hi
   assert.deepEqual(pairOf(t, 'a'), { baseline: 'a0', text: 'a1', live: false }, 'main was replayed past its undone clear');
   assert.deepEqual(pairOf(t, 'feat/b'), { baseline: 'b1', text: 'b1', live: false }, 'feat keeps its clear');
 });
+
+test('a clear made while a lane was typing holds for its other files once another lane is followed', () => {
+  const t = new Timeline(100);
+  t.push(laneEv('main', 'a', 'a0', 'a1'));
+  t.push(laneEv('feat', 'feat/p', 'p0', 'p1'));
+  const q = t.push(laneEv('feat', 'feat/q', 'q0', 'q1'));
+  playAll(t);
+  t.follow('feat');
+  t.begin(2);
+  t.complete(2);
+  t.begin(q.seq);
+  t.clearHighlights();
+  // Following main overtakes q, which stays pending in feat.
+  t.follow('main');
+  assert.equal(t.stateOf(q.seq), 'pending');
+  assert.deepEqual(pairOf(t, 'feat/p'), { baseline: 'p1', text: 'p1', live: false }, 'the clear still holds for p');
+});
