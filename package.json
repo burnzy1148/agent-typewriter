@@ -2,7 +2,7 @@
   "name": "agent-typewriter",
   "displayName": "Agent Typewriter",
   "description": "Watches files change on disk (from Claude Code or any agent) and replays each change as if a person were typing it, flipping between files in the order they changed.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "burnzy1148",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -50,27 +50,52 @@
       {
         "id": "agentTypewriter.addedLineBackground",
         "description": "Background of lines in a replay editor that hold text added since highlights were last cleared.",
-        "defaults": { "dark": "#2ea0431a", "light": "#2ea04314", "highContrast": "#00000000", "highContrastLight": "#00000000" }
+        "defaults": {
+          "dark": "#2ea0431a",
+          "light": "#2ea04314",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
       },
       {
         "id": "agentTypewriter.addedTextBackground",
         "description": "Background of added characters on lines in a replay editor that also keep older text.",
-        "defaults": { "dark": "#2ea04340", "light": "#2ea04333", "highContrast": "#2ea04366", "highContrastLight": "#2ea04366" }
+        "defaults": {
+          "dark": "#2ea04340",
+          "light": "#2ea04333",
+          "highContrast": "#2ea04366",
+          "highContrastLight": "#2ea04366"
+        }
       },
       {
         "id": "agentTypewriter.addedOverviewRuler",
         "description": "Overview ruler mark for added lines in a replay editor.",
-        "defaults": { "dark": "#2ea04399", "light": "#2ea04399", "highContrast": "#2ea04399", "highContrastLight": "#2ea04399" }
+        "defaults": {
+          "dark": "#2ea04399",
+          "light": "#2ea04399",
+          "highContrast": "#2ea04399",
+          "highContrastLight": "#2ea04399"
+        }
       },
       {
         "id": "agentTypewriter.removedOverviewRuler",
         "description": "Overview ruler mark where text was removed in a replay editor.",
-        "defaults": { "dark": "#f8514999", "light": "#f8514999", "highContrast": "#f8514999", "highContrastLight": "#f8514999" }
+        "defaults": {
+          "dark": "#f8514999",
+          "light": "#f8514999",
+          "highContrast": "#f8514999",
+          "highContrastLight": "#f8514999"
+        }
       },
       {
         "id": "agentTypewriter.deletingTextBackground",
         "description": "Background of text a replay editor is about to delete.",
-        "defaults": { "dark": "#f8514940", "light": "#f8514933", "highContrast": "#f8514966", "highContrastLight": "#f8514966" }
+        "defaults": {
+          "dark": "#f8514940",
+          "light": "#f8514933",
+          "highContrast": "#f8514966",
+          "highContrastLight": "#f8514966"
+        }
       }
     ],
     "commands": [
