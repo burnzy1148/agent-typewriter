@@ -609,3 +609,48 @@ test('skip to latest settles only the followed lane\'s mirrors', () => {
   assert.equal(t.pendingCount('main'), 2, 'the main lane is still queued');
   assert.deepEqual([...t.snapTargets('main').states.keys()], ['b']);
 });
+
+test('restoring a buffer follows its first change, not a lane recording beside it', () => {
+  const t = new Timeline(100);
+  t.defineLane(laneInfo('live'));
+  assert.equal(t.followed, 'live');
+  const saved = new Timeline(100);
+  saved.push(ev('b.ts', '', '1'));
+  saved.push(ev('c.ts', '', '1'));
+  t.restore(saved.all(), saved.all()[0].seq);
+  assert.equal(t.followed, '');
+  assert.equal(t.peek()?.relPath, 'b.ts');
+  assert.equal(t.pendingCount(), 2);
+});
+
+test('a played-out stopped lane gives way when its last change finishes, and when it stops recording', () => {
+  const t = new Timeline(100);
+  const old = t.push(lev('', 'old', '', '1'));
+  t.defineLane(laneInfo('live'));
+  t.push(lev('live', 'a', '', '1'));
+  assert.equal(t.followed, '', 'queued changes keep the stopped lane followed');
+  t.begin(old.seq);
+  t.complete(old.seq);
+  assert.equal(t.followed, 'live', 'its last change done, the recording lane with queued changes is followed');
+  // A followed lane that stops recording with nothing queued gives way too.
+  const u = new Timeline(100);
+  u.defineLane(laneInfo('a'));
+  u.defineLane(laneInfo('b'));
+  const a1 = u.push(lev('a', 'x', '', '1'));
+  u.push(lev('b', 'y', '', '1'));
+  u.begin(a1.seq);
+  u.complete(a1.seq);
+  assert.equal(u.followed, 'a', 'a recording lane stays followed when caught up');
+  u.setLaneRecording('a', false);
+  assert.equal(u.followed, 'b');
+});
+
+test('a lane that is gone hands over to one with changes queued', () => {
+  const t = new Timeline(1);
+  t.defineLane(laneInfo('a'));
+  t.defineLane(laneInfo('b'));
+  t.push(lev('a', 'x', '', '1'));
+  t.setLaneRecording('a', false);
+  t.push(lev('b', 'y', '', '1'));
+  assert.equal(t.followed, 'b');
+});

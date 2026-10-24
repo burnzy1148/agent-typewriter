@@ -975,3 +975,52 @@ test('a scope refresh overtaken by a stop and start does not use up the start\'s
   assert.equal(t.timeline.followed, sideLane, 'the remembered lane is followed after the restart');
   assert.equal(t.checkout()?.lanes, 2);
 });
+
+test('ticking a sixth folder\'s checkout while recording is refused with the cap message', async () => {
+  const dirs = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6'].map((n) => tempDir(`at-cap-${n}-`));
+  mock.open(...dirs);
+  const logs: string[] = [];
+  const recorder = new Recorder(new Timeline(100), () => settings(), { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel);
+  current = recorder;
+  const folders = mock.folders as unknown as vscode.WorkspaceFolder[];
+  await recorder.start();
+  assert.equal(recorder.recordedLanes().length, 5);
+  assert.ok(logs.some((l) => l.includes('not recording g6') || l.includes(`not recording ${folders[5].name}`)), logs.join('\n'));
+  await assert.rejects(recorder.addCheckout(folders[5], dirs[5]), /At most 5 checkouts/);
+  recorder.stop();
+  assert.deepEqual(recorder.defaultRecorded(folders[5]), [], 'the sixth folder shows as not recorded');
+  assert.deepEqual(recorder.defaultRecorded(folders[0]), [dirs[0]]);
+});
+
+test('a checkout cleared while auto-record lists worktrees stays cleared', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const other = tempDir('at-rs-other-');
+  let slow = false;
+  // The second folder lists slowly, so the first folder's choice is read well before auto-record saves.
+  const lister = async (folder: string) => {
+    if (slow && pathKey(folder) === pathKey(other)) await sleep(500);
+    return listWorktrees(folder);
+  };
+  mock.open(repo, other);
+  const timeline = new Timeline(1000);
+  const logs: string[] = [];
+  const recorder = new Recorder(timeline, () => settings({ autoRecordWorktrees: 'fill' }), { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel, undefined, lister);
+  current = recorder;
+  const folder = mock.folders[0] as unknown as vscode.WorkspaceFolder;
+  await recorder.start();
+  await recorder.setCheckouts(folder, [repo, side]);
+  slow = true;
+  const fresh = `${repo}-fresh`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'fresh', fresh);
+  mock.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', 'fresh'));
+  // Past the debounce, the refresh has read the first folder and waits on the second; clear side meanwhile.
+  await sleep(500);
+  const cleared = recorder.setCheckouts(folder, [repo]);
+  await until('fresh recorded', () => recorder.recordedLanes().some((l) => l.name === 'fresh'), 10000);
+  await cleared;
+  slow = false;
+  await recorder.refreshFilter('Settled');
+  const names = recorder.recordedLanes().map((l) => l.name);
+  assert.ok(!names.includes('side'), `side came back: ${names.join(', ')}`);
+  assert.ok(names.includes('fresh'));
+});

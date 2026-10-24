@@ -108,9 +108,7 @@ export class Timeline {
     if (!this.cursors.has(lane)) this.cursors.set(lane, event.seq);
     if (!this.hasLane(this.followedLane)) this.followedLane = lane;
     // A followed lane that is not recording and has been played out gives way to new changes.
-    else if (lane !== this.followedLane && !this.laneInfos.get(this.followedLane)?.recording) {
-      if (this.playingSeq === undefined && this.pendingCount() === 0) this.followedLane = lane;
-    }
+    else if (lane !== this.followedLane && this.playedOut()) this.followedLane = lane;
     this.events.push(event);
     this.trim();
     this.emit();
@@ -132,6 +130,7 @@ export class Timeline {
     if (!info || info.recording === recording) return;
     this.laneInfos.set(id, { ...info, recording, ...(recording && { since: Date.now() }) });
     this.dropEmptyLanes();
+    this.giveWay();
     this.emit();
   }
 
@@ -187,13 +186,45 @@ export class Timeline {
     return this.laneInfos.has(lane) || this.events.some((e) => laneOf(e) === lane);
   }
 
+  /** The followed lane is not recording, has nothing queued, and nothing is being typed. */
+  private playedOut(): boolean {
+    return this.playingSeq === undefined && !this.laneInfos.get(this.followedLane)?.recording && this.pendingCount() === 0;
+  }
+
+  /**
+   * A played-out followed lane that is not recording gives way to the
+   * recording lane whose oldest queued change came first, so live changes
+   * already queued play on without waiting for the next one.
+   */
+  private giveWay(): void {
+    if (!this.playedOut()) return;
+    const next = this.oldestQueued((id) => this.laneInfos.get(id)?.recording === true);
+    if (next !== undefined) this.followedLane = next;
+  }
+
+  /** Among lanes other than the followed one that pass `keep`, the one whose oldest queued change came first. */
+  private oldestQueued(keep: (id: string) => boolean = () => true): string | undefined {
+    let best: string | undefined;
+    let bestSeq = Infinity;
+    for (const lane of new Set([...this.lanesInBuffer(), ...this.laneInfos.keys()])) {
+      if (lane === this.followedLane || !keep(lane)) continue;
+      const first = this.firstPending(lane);
+      if (first !== undefined && first < bestSeq) {
+        best = lane;
+        bestSeq = first;
+      }
+    }
+    return best;
+  }
+
   /** Forgets lanes with no changes left that are not recording, and follows another lane if the followed one went. */
   private dropEmptyLanes(): void {
     const withEvents = new Set(this.events.map(laneOf));
     for (const [id, info] of this.laneInfos) if (!info.recording && !withEvents.has(id)) this.laneInfos.delete(id);
     for (const id of this.cursors.keys()) if (!withEvents.has(id) && !this.laneInfos.has(id)) this.cursors.delete(id);
     if (!this.hasLane(this.followedLane)) {
-      const next = this.laneList()[0]?.id;
+      // A lane with changes queued, else the first one left.
+      const next = this.oldestQueued() ?? this.laneList()[0]?.id;
       if (next !== undefined && next !== this.followedLane) {
         this.followedLane = next;
         this.generation++;
@@ -233,6 +264,7 @@ export class Timeline {
     const event = this.get(seq);
     const lane = event ? laneOf(event) : this.followedLane;
     if (!stale && this.cursorOf(lane) <= seq) this.cursors.set(lane, seq + 1);
+    this.giveWay();
     this.emit();
   }
 
@@ -330,7 +362,9 @@ export class Timeline {
     }
     for (const l of recording) if (!this.cursors.has(l.id)) this.cursors.set(l.id, this.nextSeq);
     if (saved.followed !== undefined && this.hasLane(saved.followed)) this.followedLane = saved.followed;
-    else if (!this.hasLane(this.followedLane)) this.followedLane = kept.length > 0 ? laneOf(kept[kept.length - 1]) : (recording[0]?.id ?? '');
+    // The buffer was replaced: play what it now holds, from its first change, not a lane recording beside it.
+    else if (kept.length > 0) this.followedLane = laneOf(kept[0]);
+    else if (!this.hasLane(this.followedLane)) this.followedLane = recording[0]?.id ?? '';
     this.generation++;
     this.playingSeq = undefined;
     this.droppedUnplayed = 0;

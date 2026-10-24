@@ -75,7 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
             ...c.worktrees.filter((w) => w !== c.own).map((w) => ({ path: w.path, name: checkoutName(w), own: false })),
           ]
         : [{ path: folder.uri.fsPath, name: '', own: true }];
-      out.push({ folder, checkouts, recorded: recorder.isRunning ? live.map((l) => l.checkout) : (c?.recorded ?? [folder.uri.fsPath]) });
+      out.push({ folder, checkouts, recorded: recorder.isRunning ? live.map((l) => l.checkout) : (c?.recorded ?? recorder.defaultRecorded(folder)) });
     }
     return out;
   };
@@ -410,10 +410,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
     if (session.events.length === 0) throw new Error(`${name} holds no changes.`);
     recorder.drainHeld();
-    if (interactive && timeline.all().length > 0) {
-      const replace = 'Replace';
+    if (interactive && (timeline.all().length > 0 || recorder.isRunning)) {
+      const replace = timeline.all().length > 0 ? 'Replace' : 'Load';
+      const what = timeline.all().length > 0 ? `Replace the ${timeline.all().length} recorded change(s) with the ${session.events.length} in ${name}?` : `Load the ${session.events.length} change(s) in ${name}?`;
       const pick = await vscode.window.showWarningMessage(
-        `Replace the ${timeline.all().length} recorded change(s) with the ${session.events.length} in ${name}?`,
+        recorder.isRunning ? `${what} This stops watching, so live edits do not mix into the loaded session.` : what,
         { modal: true },
         replace,
       );
@@ -422,6 +423,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (!(await fitHistoryLimit(session.events.length, name, interactive))) return;
     // Loaded sessions start paused at their first change; the user resumes when ready.
     player.setPaused(true);
+    // Live edits would replay into the same mirrors as the loaded changes, from another starting text.
+    if (recorder.isRunning) {
+      recorder.stop();
+      await setWatching(false);
+    }
     // Changes recorded while the prompts were open are replaced too.
     recorder.drainHeld();
     // Every lane starts at its first change; the lane followed when it was saved is followed again.

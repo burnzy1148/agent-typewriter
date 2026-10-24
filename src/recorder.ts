@@ -262,7 +262,7 @@ export class Recorder implements vscode.Disposable {
     if (worktrees.length === 0) return undefined;
     const key = folder.uri.toString();
     const own = ownCheckout(folder.uri.fsPath, worktrees);
-    return { worktrees, own, chosen: this.choices.get(key), recorded: this.chosenSet(key) ?? [own?.path ?? folder.uri.fsPath] };
+    return { worktrees, own, chosen: this.choices.get(key), recorded: this.chosenSet(key) ?? this.defaultPaths(folder, own?.path ?? folder.uri.fsPath) };
   }
 
   /**
@@ -307,11 +307,21 @@ export class Recorder implements vscode.Disposable {
     await this.setCheckouts(folder, rest);
   }
 
-  /** The checkouts the folder records, or would record when started: chosen ones, or its own. */
+  /** The checkouts the folder records, or would record when started: chosen ones, or its own unless the lane cap leaves it out. */
   private async recordedPaths(folder: vscode.WorkspaceFolder): Promise<string[]> {
-    const mine = this.scopesOf(folder.uri.toString());
-    if (mine.length > 0) return mine.map((s) => s.checkout.fsPath);
-    return (await this.checkoutsOf(folder))?.recorded ?? [folder.uri.fsPath];
+    if (this.running) return this.scopesOf(folder.uri.toString()).map((s) => s.checkout.fsPath);
+    return (await this.checkoutsOf(folder))?.recorded ?? this.chosenSet(folder.uri.toString()) ?? this.defaultPaths(folder, folder.uri.fsPath);
+  }
+
+  /** What a folder outside git records once started: itself, unless the lane cap leaves it out. */
+  defaultRecorded(folder: vscode.WorkspaceFolder): string[] {
+    return this.chosenSet(folder.uri.toString()) ?? this.defaultPaths(folder, folder.uri.fsPath);
+  }
+
+  /** What a folder with nothing chosen records: its own checkout, when it is one of the first MAX_LANES folders. */
+  private defaultPaths(folder: vscode.WorkspaceFolder, ownPath: string): string[] {
+    const i = (vscode.workspace.workspaceFolders ?? []).findIndex((f) => f.uri.toString() === folder.uri.toString());
+    return i >= 0 && i < MAX_LANES ? [ownPath] : [];
   }
 
   /**
@@ -938,7 +948,10 @@ export class Recorder implements vscode.Disposable {
       .slice(0, MAX_LANES)
       .map((s) => ({ key: s.key, folderKey: s.folder.uri.toString(), checkout: s.checkout.fsPath, name: s.name || s.folder.name, added: false }));
     const pathsOf = (folderKey: string) => lanes.filter((l) => l.folderKey === folderKey).map((l) => l.checkout);
-    const touched = new Set<string>();
+    /** What this pass adds and stops, per folder; saved on top of the folder's latest choice. */
+    const added = new Map<string, string[]>();
+    const stopped = new Map<string, string[]>();
+    const note = (map: Map<string, string[]>, folderKey: string, p: string) => map.set(folderKey, [...(map.get(folderKey) ?? []), p]);
     for (const { folder, worktree } of fresh) {
       const name = `${checkoutName(worktree)} (${worktree.path})`;
       if (lanes.length >= MAX_LANES) {
@@ -965,17 +978,25 @@ export class Recorder implements vscode.Disposable {
           continue;
         }
         lanes = lanes.filter((l) => l !== victim);
-        touched.add(victim.folderKey);
+        note(stopped, victim.folderKey, victim.checkout);
         this.log.appendLine(`Stopped recording ${victim.name}, idle longest, to record the new worktree ${name}.`);
       } else {
         this.log.appendLine(`Recording the new worktree ${name} in its own lane.`);
       }
       const key = folder.uri.toString();
       lanes.push({ key: laneKey(key, false, worktree.path), folderKey: key, checkout: worktree.path, name: checkoutName(worktree), added: true });
-      touched.add(key);
+      note(added, key, worktree.path);
     }
+    const touched = new Set([...added.keys(), ...stopped.keys()]);
     for (const folderKey of touched) {
-      const unsaved = await this.saveChoiceSet(folderKey, pathsOf(folderKey));
+      // The choice may have changed while git listed worktrees (a box ticked or cleared): build on that, not on what this pass read.
+      const folder = (vscode.workspace.workspaceFolders ?? []).find((f) => f.uri.toString() === folderKey);
+      const ownPath = scopes.find((s) => s.own && s.folder.uri.toString() === folderKey)?.checkout.fsPath ?? folder?.uri.fsPath ?? '';
+      const base = this.chosenSet(folderKey) ?? (folder ? this.defaultPaths(folder, ownPath) : pathsOf(folderKey));
+      const gone = new Set((stopped.get(folderKey) ?? []).map(pathKey));
+      const kept = base.filter((p) => !gone.has(pathKey(p)));
+      const next = [...kept, ...(added.get(folderKey) ?? []).filter((p) => !kept.some((k) => pathKey(k) === pathKey(p)))];
+      const unsaved = await this.saveChoiceSet(folderKey, next);
       if (unsaved) this.log.appendLine(`Could not save the checkouts recorded: ${unsaved.message}`);
     }
     return touched.size > 0;
