@@ -9,6 +9,8 @@ import type { Timeline } from './timeline';
 export class AutoFollow {
   /** When something was last typed or queued in the followed lane. */
   private quietSince = Date.now();
+  /** Whether a change was being typed at the last timeline change. */
+  private wasPlaying = false;
   private timer: NodeJS.Timeout | undefined;
   private readonly sub: { dispose(): void };
 
@@ -41,7 +43,10 @@ export class AutoFollow {
   }
 
   private onChange(): void {
-    if (this.timeline.playing !== undefined || this.timeline.pendingCount() > 0) this.quietSince = Date.now();
+    const playing = this.timeline.playing !== undefined;
+    // A change that just finished typing counts too: the quiet starts when typing ends, not when it began.
+    if (playing || this.wasPlaying || this.timeline.pendingCount() > 0) this.quietSince = Date.now();
+    this.wasPlaying = playing;
     this.check();
   }
 

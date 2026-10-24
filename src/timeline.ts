@@ -386,6 +386,19 @@ export class Timeline {
   }
 
   /**
+   * What skip to latest settles for `lane` (the followed one by default): the
+   * newest change of each of its files, and the paths its renames moved away
+   * from, whose mirrors go. Other lanes' mirrors are left as they are.
+   */
+  snapTargets(lane = this.followedLane): { states: Map<string, ChangeEvent>; renamedAway: string[] } {
+    const states = this.latestStates(lane);
+    const renamedAway = new Set(
+      this.events.flatMap((e) => (laneOf(e) === lane && e.fromRelPath !== undefined && !states.has(e.fromRelPath) ? [e.fromRelPath] : [])),
+    );
+    return { states, renamedAway: [...renamedAway] };
+  }
+
+  /**
    * The text each file's mirror shows at its lane's cursor: the after text of
    * its newest played change, or the before text of its earliest change when
    * none was played. A played rename leaves no mirror at its old path; a

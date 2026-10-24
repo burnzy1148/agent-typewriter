@@ -307,14 +307,18 @@ export class Recorder implements vscode.Disposable {
     return (await this.checkoutsOf(folder))?.recorded ?? [folder.uri.fsPath];
   }
 
-  /** How many checkouts every other folder records, or would record when started. */
+  /**
+   * How many checkouts every other folder records, or would record when
+   * started: its chosen ones, or its own when it is one of the first
+   * MAX_LANES folders (the rest record nothing by default).
+   */
   private recordedCountExcept(folderKey: string): number {
     let n = 0;
-    for (const f of vscode.workspace.workspaceFolders ?? []) {
+    (vscode.workspace.workspaceFolders ?? []).forEach((f, i) => {
       const key = f.uri.toString();
-      if (key === folderKey) continue;
-      n += this.running ? this.scopesOf(key).length : (this.chosenSet(key)?.length ?? 1);
-    }
+      if (key === folderKey) return;
+      n += this.running ? this.scopesOf(key).length : (this.chosenSet(key)?.length ?? (i < MAX_LANES ? 1 : 0));
+    });
     return n;
   }
 
@@ -557,7 +561,6 @@ export class Recorder implements vscode.Disposable {
     const lanes = [...this.scopes.keys()];
     this.scopes.clear();
     this.capNoted = '';
-    for (const lane of lanes) this.timeline.setLaneRecording(lane, false);
     this.listings.clear();
     this.knownWorktrees.clear();
     for (const subs of this.commonWatchers.values()) for (const d of subs) d.dispose();
@@ -587,6 +590,8 @@ export class Recorder implements vscode.Disposable {
     this.dropHeldDeletes();
     this.ignored.clear();
     this.reorder.drain();
+    // After the drain: a lane whose first changes were still held keeps its label and color.
+    for (const lane of lanes) this.timeline.setLaneRecording(lane, false);
     this.snapshots.clear();
     this.gitBaselines.clear();
     this.ownSaves.clear();
@@ -908,7 +913,9 @@ export class Recorder implements vscode.Disposable {
     }
     if (fresh.length === 0) return false;
     // What records once each decision is applied.
-    let lanes = scopes.slice(0, MAX_LANES).map((s) => ({ key: s.key, folderKey: s.folder.uri.toString(), checkout: s.checkout.fsPath, name: s.name || s.folder.name }));
+    let lanes = scopes
+      .slice(0, MAX_LANES)
+      .map((s) => ({ key: s.key, folderKey: s.folder.uri.toString(), checkout: s.checkout.fsPath, name: s.name || s.folder.name, added: false }));
     const pathsOf = (folderKey: string) => lanes.filter((l) => l.folderKey === folderKey).map((l) => l.checkout);
     const touched = new Set<string>();
     for (const { folder, worktree } of fresh) {
@@ -924,7 +931,8 @@ export class Recorder implements vscode.Disposable {
           (l) =>
             l.key ===
             rotationVictim(
-              candidates.map((c) => ({ id: c.key, recording: true, lastActivity: this.lastActivity(c.key) })),
+              // A lane added in this pass has only just started: never the idlest.
+              candidates.map((c) => ({ id: c.key, recording: true, lastActivity: c.added ? Date.now() : this.lastActivity(c.key) })),
               this.timeline.followed,
               Date.now(),
             ),
@@ -942,7 +950,7 @@ export class Recorder implements vscode.Disposable {
         this.log.appendLine(`Recording the new worktree ${name} in its own lane.`);
       }
       const key = folder.uri.toString();
-      lanes.push({ key: laneKey(key, false, worktree.path), folderKey: key, checkout: worktree.path, name: checkoutName(worktree) });
+      lanes.push({ key: laneKey(key, false, worktree.path), folderKey: key, checkout: worktree.path, name: checkoutName(worktree), added: true });
       touched.add(key);
     }
     for (const folderKey of touched) {

@@ -594,3 +594,18 @@ test('a played-out lane that is not recording gives way to another lane\'s new c
   u.push(lev('live', 'a', '', '1'));
   assert.equal(u.followed, '');
 });
+
+test('skip to latest settles only the followed lane\'s mirrors', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push({ ...lev('main', 'b', '1', '1'), kind: 'rename', fromUri: 'file:///w/a', fromRelPath: 'a' });
+  t.push(lev('feat', 'feat/x', '', 'x1'));
+  t.push({ ...lev('feat', 'feat/y', 'x1', 'x1'), kind: 'rename', fromUri: 'file:///w/feat/x', fromRelPath: 'feat/x' });
+  t.follow('feat');
+  t.seekToEnd();
+  const { states, renamedAway } = t.snapTargets();
+  assert.deepEqual([...states.keys()], ['feat/y']);
+  assert.deepEqual(renamedAway, ['feat/x']);
+  assert.equal(t.pendingCount('main'), 2, 'the main lane is still queued');
+  assert.deepEqual([...t.snapTargets('main').states.keys()], ['b']);
+});

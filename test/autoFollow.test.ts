@@ -57,3 +57,22 @@ test('a busy followed lane stays followed', (t) => {
   assert.equal(tl.followed, 'main');
   auto.dispose();
 });
+
+test('the quiet period starts when a long change finishes typing, not when it began', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const tl = new Timeline(100);
+  tl.defineLane({ id: 'main', label: 'main', root: '/w', color: 1, recording: true });
+  tl.defineLane({ id: 'feat', label: 'feat', root: '/f', color: 2, recording: true });
+  const auto = new AutoFollow(tl, () => true);
+  const e = tl.push(ev('a.ts', 'main'));
+  tl.push(ev('feat/a.ts', 'feat'));
+  tl.begin(e.seq);
+  t.mock.timers.tick(AUTO_FOLLOW_IDLE_MS + 500);
+  tl.complete(e.seq);
+  assert.equal(tl.followed, 'main', 'switched the moment typing ended');
+  t.mock.timers.tick(AUTO_FOLLOW_IDLE_MS - 1);
+  assert.equal(tl.followed, 'main');
+  t.mock.timers.tick(1);
+  assert.equal(tl.followed, 'feat');
+  auto.dispose();
+});

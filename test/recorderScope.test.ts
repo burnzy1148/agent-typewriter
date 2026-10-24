@@ -882,3 +882,53 @@ test('auto-record rotate: the idlest lane stops for a new worktree, unless every
   assert.ok(t.recorder.recordedLanes().some((l) => l.name === 'next'));
   assert.equal(t.checkout()?.lanes, 5);
 });
+
+test('auto-record rotate: two worktrees added at once each take an idle lane, never each other\'s', { skip: noGit }, async () => {
+  const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
+  const t = recorderOn(settings({ autoRecordWorktrees: 'rotate' }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
+  await t.settle();
+  // Every lane but the followed one has been idle for long.
+  for (const l of t.timeline.laneList()) t.timeline.defineLane({ ...l, since: Date.now() - 10 * 60_000 });
+  const one = `${repo}-one`;
+  const two = `${repo}-two`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'one', one);
+  git(repo, 'worktree', 'add', '-q', '-b', 'two', two);
+  t.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(two)));
+  await until('both rotated in', () => t.logs.filter((l) => l.includes('idle longest, to record the new worktree')).length === 2);
+  await until('lanes refreshed', () => t.recorder.recordedLanes().some((l) => l.name === 'two'));
+  const names = t.recorder.recordedLanes().map((l) => l.name);
+  assert.ok(names.includes('one') && names.includes('two'), names.join(', '));
+  assert.ok(!t.logs.some((l) => /Stopped recording (one|two),/.test(l)), t.logs.join('\n'));
+  assert.equal(names.length, 5);
+});
+
+test('changes still held when recording stops keep their lane\'s label and color', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings({ reorderWindowMs: 5000 }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, side]);
+  t.change(path.join(side, 'src', 'a.ts'), 'side\n');
+  await until('read and held', () => t.recorder.describeActivity().includes('held for reordering: 1'));
+  t.recorder.stop();
+  assert.deepEqual(t.events(), [`modify ${path.basename(side)}/src/a.ts`]);
+  const lane = t.timeline.laneInfo(t.timeline.all()[0].lane!);
+  assert.equal(lane?.label, 'side');
+  assert.ok((lane?.color ?? 0) > 0);
+  assert.equal(lane?.recording, false);
+});
+
+test('with six folders and recording off, a folder can still choose its checkouts', async () => {
+  const dirs = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'].map((n) => tempDir(`at-six-${n}-`));
+  mock.open(...dirs);
+  const recorder = new Recorder(new Timeline(100), () => settings(), { appendLine: () => {} } as unknown as vscode.OutputChannel);
+  current = recorder;
+  const folders = mock.folders as unknown as vscode.WorkspaceFolder[];
+  // The sixth folder records nothing by default, so it does not count against the first one's choice.
+  await recorder.setCheckouts(folders[0], [dirs[0]]);
+  // Adding a second checkout to the first would make six, and so would giving the sixth folder one.
+  await assert.rejects(recorder.setCheckouts(folders[0], [dirs[0], `${dirs[0]}-x`]), /At most 5 checkouts/);
+  await assert.rejects(recorder.setCheckouts(folders[5], [dirs[5]]), /At most 5 checkouts/);
+});
