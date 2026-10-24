@@ -48,6 +48,10 @@ export interface Settings extends FilterSettings {
   viewColumn: 'beside' | 'active';
   /** Show the CodeLens status row on the playback mirror. */
   mirrorStatusRow: boolean;
+  /** Keep added text highlighted until cleared, instead of a brief flash. */
+  highlightAdditions: boolean;
+  /** Preview deletions in red and mark where text was removed. */
+  markDeletions: boolean;
 }
 
 /** Values from the repository settings file; they sit between user and workspace settings. */
@@ -109,7 +113,14 @@ export function readSettings(): Settings {
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     viewColumn: c.get('viewColumn', 'beside'),
     mirrorStatusRow: c.get('mirrorStatusRow', true),
+    ...readHighlightSettings(),
   };
+}
+
+/** Only the highlight settings; the highlight view reads them on every render. */
+export function readHighlightSettings(): Pick<Settings, 'highlightAdditions' | 'markDeletions'> {
+  const c = layered(vscode.workspace.getConfiguration(SECTION));
+  return { highlightAdditions: c.get('highlightAdditions', true), markDeletions: c.get('markDeletions', true) };
 }
 
 /** Only `mirrorStatusRow`; the CodeLens provider reads it on every request. */

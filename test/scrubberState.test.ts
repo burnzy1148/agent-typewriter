@@ -7,7 +7,7 @@ function ev(relPath: string): NewChangeEvent {
   return { uri: 'file:///w/' + relPath, relPath, time: 0, kind: 'modify', before: '', after: 'x', eol: '\n', linesAdded: 1, linesRemoved: 0 };
 }
 
-const player = { paused: false, speed: 1, watching: true };
+const player = { paused: false, speed: 1, watching: true, hasHighlights: false };
 
 test('slider index follows the cursor from start to caught up', () => {
   const t = new Timeline(100);
@@ -44,8 +44,9 @@ test('playing seq and queue count', () => {
 });
 
 test('player flags pass through', () => {
-  const s = scrubberState(new Timeline(10), { paused: true, speed: 2.5, watching: false });
+  const s = scrubberState(new Timeline(10), { paused: true, speed: 2.5, watching: false, hasHighlights: true });
   assert.equal(s.type, 'state');
+  assert.equal(s.hasHighlights, true);
   assert.equal(s.paused, true);
   assert.equal(s.speed, 2.5);
   assert.equal(s.watching, false);
@@ -85,6 +86,7 @@ function facts(over: Partial<PlaybackFacts>): PlaybackFacts {
     paused: false,
     speed: 1,
     watching: true,
+    hasHighlights: false,
     ...over,
   };
 }
@@ -128,7 +130,7 @@ test('row readout keeps icon syntax in file names literal', () => {
 });
 
 test('valid messages parse', () => {
-  for (const type of ['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll']) {
+  for (const type of ['ready', 'togglePause', 'finishCurrent', 'skipToNext', 'catchUp', 'replayAll', 'clearHighlights']) {
     assert.deepEqual(parseScrubberMessage({ type }), { type });
   }
   assert.deepEqual(parseScrubberMessage({ type: 'seek', seq: 7, extra: 1 }), { type: 'seek', seq: 7 });
@@ -162,7 +164,7 @@ test('a rename is described with both paths', () => {
   const t = new Timeline(10);
   t.push({ uri: 'file:///w/src/b.ts', relPath: 'src/b.ts', fromUri: 'file:///w/src/a.ts', fromRelPath: 'src/a.ts', time: 1, kind: 'rename', before: 'x', after: 'x', eol: '\n', linesAdded: 0, linesRemoved: 0 });
   t.push({ uri: 'file:///w/c.ts', relPath: 'c.ts', time: 2, kind: 'create', before: '', after: 'c', eol: '\n', linesAdded: 1, linesRemoved: 0 });
-  const s = scrubberState(t, { paused: false, speed: 1, watching: true });
+  const s = scrubberState(t, player);
   assert.equal(s.changes[0].fromRelPath, 'src/a.ts');
   assert.equal('fromRelPath' in s.changes[1], false);
 });

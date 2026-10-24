@@ -4,6 +4,7 @@ import {
   Timeline,
   parseSession,
   toSession,
+  sessionClears,
   SessionFormatError,
   SESSION_FORMAT,
   SESSION_VERSION,
@@ -150,4 +151,46 @@ test('a playback token from before restore is stale after it', () => {
   t.complete(1, token);
   assert.equal(t.pendingCount(), 3);
   assert.equal(t.peek()?.after, '1');
+});
+
+test('highlight clears round trip and restore to the same points', () => {
+  const t = filled(3);
+  t.seekToEnd();
+  t.clearHighlights('f1.ts');
+  t.push(ev('f0.ts', '1', '2'));
+  t.seekToEnd();
+  t.clearHighlights('f0.ts');
+  const s = viaJson(t);
+  assert.deepEqual(s.highlightsFrom, [{ seq: 4, relPath: 'f1.ts' }, { seq: 5, relPath: 'f0.ts' }]);
+  const r = new Timeline(100);
+  r.restore(s.events, s.cursor, sessionClears(s));
+  assert.deepEqual(r.highlightClears, [{ seq: 4, relPath: 'f1.ts' }, { seq: 5, relPath: 'f0.ts' }]);
+});
+
+test('a session without clears has no highlightsFrom field', () => {
+  const s = toSession(filled(2)).session;
+  assert.equal('highlightsFrom' in s, false);
+  assert.deepEqual(sessionClears(s), []);
+});
+
+test('a malformed highlightsFrom is ignored, keeping its well-formed entries', () => {
+  const raw = JSON.parse(JSON.stringify(toSession(filled(2)).session));
+  assert.equal(parseSession({ ...raw, highlightsFrom: 'x' }).highlightsFrom, undefined);
+  assert.equal(parseSession({ ...raw, highlightsFrom: { all: 2 } }).highlightsFrom, undefined);
+  assert.equal(parseSession({ ...raw, highlightsFrom: [{ seq: 1.5 }, 'x', null] }).highlightsFrom, undefined);
+  assert.deepEqual(parseSession({ ...raw, highlightsFrom: [{ seq: 2 }, { seq: 3, relPath: 7 }, { seq: 4, relPath: 'b.ts', extra: 1 }] }).highlightsFrom, [
+    { seq: 2 },
+    { seq: 4, relPath: 'b.ts' },
+  ]);
+});
+
+test('loading a session file starts with no clears', () => {
+  const t = filled(2);
+  t.seekToEnd();
+  t.clearHighlights();
+  const s = viaJson(t);
+  const loaded = new Timeline(100);
+  // Load Session restores at the first change with no clears.
+  loaded.restore(s.events, s.events[0].seq);
+  assert.deepEqual(loaded.highlightClears, []);
 });

@@ -51,6 +51,8 @@ function settings(over: Partial<Settings> = {}): Settings {
     ignoreOwnSaves: true,
     viewColumn: 'beside',
     mirrorStatusRow: true,
+    highlightAdditions: true,
+    markDeletions: true,
     ...over,
   };
 }

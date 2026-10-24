@@ -38,6 +38,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   ignoreOwnSaves: 'boolean',
   viewColumn: { enum: ['beside', 'active'] },
   mirrorStatusRow: 'boolean',
+  highlightAdditions: 'boolean',
+  markDeletions: 'boolean',
 };
 
 export type RepoValues = Readonly<Record<string, unknown>>;
