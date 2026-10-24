@@ -1837,8 +1837,17 @@ interface HeldDelete {
  * Without the label methods, labels last for the session.
  */
 export interface CheckoutChoices {
+  /** A single checkout chosen in place of the folder's own, as stored before lanes. */
   get(folderKey: string): string | undefined;
   set(folderKey: string, worktreePath: string | undefined): unknown;
+  /** Every checkout chosen for the folder; undefined when nothing was chosen. Without it, sets last for the session. */
+  getSet?(folderKey: string): string[] | undefined;
+  setSet?(folderKey: string, paths: readonly string[] | undefined): unknown;
+  /** The followed lane and lane colors; without them, they last for the session. */
+  readonly followed?: string | undefined;
+  setFollowed?(lane: string | undefined): unknown;
+  colorOf?(checkoutKey: string): number | undefined;
+  setColor?(checkoutKey: string, slot: number): unknown;
   labelsOf?(folderKey: string): ReadonlyMap<string, string>;
   setLabel?(folderKey: string, worktreeKey: string, label: string): unknown;
 }

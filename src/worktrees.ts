@@ -394,12 +394,20 @@ export function checkoutDisplayPath(folderName: string, label: string, rel: stri
 }
 
 /**
- * The checkout chosen per workspace folder, kept in a small JSON file in the
+ * The checkouts chosen per workspace folder, kept in a small JSON file in the
  * extension's workspace storage. A file, like the saved timeline, rather than
  * workspaceState, so the choice is on disk as soon as it is made.
+ *
+ * A folder's entry is one worktree path (from before lanes: that checkout
+ * instead of the folder's own) or a list of paths (every checkout recorded,
+ * the folder's own included by its path). No entry means the folder's own.
+ * The followed lane and each checkout's lane color sit beside them.
  */
 export class CheckoutChoiceFile {
-  private readonly choices = new Map<string, string>();
+  private readonly choices = new Map<string, string | string[]>();
+  private followedLane: string | undefined;
+  /** Lane color slot per checkout `pathKey`. */
+  private readonly colors = new Map<string, number>();
   /** Per folder key, the display label given to each chosen worktree, by its `pathKey`; the recorder keeps folder prefixes here too. */
   private readonly labels = new Map<string, Map<string, string>>();
 
@@ -408,8 +416,17 @@ export class CheckoutChoiceFile {
       const data: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (data && typeof data === 'object') {
         for (const [k, v] of Object.entries(data)) {
-          if (typeof v === 'string') this.choices.set(k, v);
-          // Folder keys are URIs, so this key is never one; older files have no labels.
+          // Folder keys are URIs, so 'followed', 'colors' and 'labels' are never one.
+          if (k === 'followed') {
+            if (typeof v === 'string') this.followedLane = v;
+          } else if (k === 'colors') {
+            if (v && typeof v === 'object') for (const [ck, slot] of Object.entries(v)) if (Number.isInteger(slot)) this.colors.set(ck, slot as number);
+          } else if (typeof v === 'string') this.choices.set(k, v);
+          else if (Array.isArray(v)) {
+            const paths = v.filter((p): p is string => typeof p === 'string');
+            if (paths.length > 0) this.choices.set(k, paths);
+          }
+          // Older files have no labels.
           else if (k === 'labels' && v && typeof v === 'object') {
             for (const [folderKey, given] of Object.entries(v as Record<string, unknown>)) {
               if (!given || typeof given !== 'object') continue;
@@ -424,17 +441,54 @@ export class CheckoutChoiceFile {
     }
   }
 
+  /** The single checkout chosen in place of the folder's own, from before lanes, if that is how the choice is stored. */
   get(folderKey: string): string | undefined {
-    return this.choices.get(folderKey);
+    const v = this.choices.get(folderKey);
+    return typeof v === 'string' ? v : undefined;
   }
 
   /**
-   * Remembers the choice for the rest of the session, and on disk when it can.
+   * Remembers a single checkout in place of the folder's own (undefined: the
+   * folder's own), for the rest of the session, and on disk when it can.
    * Returns the error when saving it failed, instead of throwing.
    */
   set(folderKey: string, worktreePath: string | undefined): Error | undefined {
     if (worktreePath === undefined) this.choices.delete(folderKey);
     else this.choices.set(folderKey, worktreePath);
+    return this.save();
+  }
+
+  /** Every checkout chosen for the folder, or undefined when nothing was chosen (its own checkout records). */
+  getSet(folderKey: string): string[] | undefined {
+    const v = this.choices.get(folderKey);
+    return v === undefined ? undefined : typeof v === 'string' ? [v] : [...v];
+  }
+
+  /** Remembers every checkout recorded for the folder, like `set`; undefined goes back to its own. */
+  setSet(folderKey: string, paths: readonly string[] | undefined): Error | undefined {
+    if (paths === undefined || paths.length === 0) this.choices.delete(folderKey);
+    else this.choices.set(folderKey, [...paths]);
+    return this.save();
+  }
+
+  get followed(): string | undefined {
+    return this.followedLane;
+  }
+
+  setFollowed(lane: string | undefined): Error | undefined {
+    if (lane === this.followedLane) return undefined;
+    this.followedLane = lane;
+    return this.save();
+  }
+
+  /** The color slot a checkout's lane had, by the checkout's `pathKey`. */
+  colorOf(checkoutKey: string): number | undefined {
+    return this.colors.get(checkoutKey);
+  }
+
+  setColor(checkoutKey: string, slot: number): Error | undefined {
+    if (this.colors.get(checkoutKey) === slot) return undefined;
+    this.colors.set(checkoutKey, slot);
     return this.save();
   }
 
@@ -453,6 +507,8 @@ export class CheckoutChoiceFile {
 
   private save(): Error | undefined {
     const data: Record<string, unknown> = Object.fromEntries(this.choices);
+    if (this.followedLane !== undefined) data.followed = this.followedLane;
+    if (this.colors.size > 0) data.colors = Object.fromEntries(this.colors);
     if (this.labels.size > 0) data.labels = Object.fromEntries([...this.labels].map(([k, m]) => [k, Object.fromEntries(m)]));
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });

@@ -464,3 +464,40 @@ test('at-l3q.11.7 CheckoutChoiceFile: labels survive a reload; an old file witho
   assert.equal(b.get('labels'), undefined, 'the labels entry is no folder');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('CheckoutChoiceFile: an old single-path entry reads as that one checkout', () => {
+  const dir = tempDir('choices-');
+  const file = path.join(dir, 'checkouts.json');
+  fs.writeFileSync(file, JSON.stringify({ 'file:///ws': P('repo-sibling') }));
+  const a = new CheckoutChoiceFile(file);
+  assert.deepEqual(a.getSet('file:///ws'), [P('repo-sibling')]);
+  assert.equal(a.getSet('file:///other'), undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CheckoutChoiceFile: sets, the followed lane and colors survive a reload', () => {
+  const dir = tempDir('choices-');
+  const file = path.join(dir, 'checkouts.json');
+  const a = new CheckoutChoiceFile(file);
+  assert.equal(a.setSet('file:///ws', [P('repo'), P('repo-feature')]), undefined);
+  a.setSet('file:///other', [P('x')]);
+  a.setSet('file:///other', undefined);
+  a.setFollowed('lane-1');
+  a.setColor('key-a', 3);
+  a.setLabel('file:///ws', 'key-a', 'feature');
+  const b = new CheckoutChoiceFile(file);
+  assert.deepEqual(b.getSet('file:///ws'), [P('repo'), P('repo-feature')]);
+  assert.equal(b.get('file:///ws'), undefined, 'a set is not a single choice');
+  assert.equal(b.getSet('file:///other'), undefined);
+  assert.equal(b.followed, 'lane-1');
+  assert.equal(b.colorOf('key-a'), 3);
+  assert.equal(b.colorOf('key-b'), undefined);
+  assert.deepEqual([...b.labelsOf('file:///ws')], [['key-a', 'feature']]);
+  assert.equal(b.getSet('followed'), undefined, 'the followed entry is no folder');
+  assert.equal(b.getSet('colors'), undefined, 'the colors entry is no folder');
+  fs.writeFileSync(file, '{ broken');
+  const c = new CheckoutChoiceFile(file);
+  assert.equal(c.getSet('file:///ws'), undefined);
+  assert.equal(c.followed, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

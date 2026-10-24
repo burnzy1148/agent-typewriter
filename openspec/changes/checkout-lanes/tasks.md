@@ -16,7 +16,7 @@
 
 ## 4. Choices file
 
-- [ ] 4.1 Extend `CheckoutChoiceFile` and `CheckoutChoices` with sets per folder (reading the old single-path string), `followed` and color slots, keeping `get`/`set` as single-path shims. Verify with `test/worktrees.test.ts` cases: old file reads as one checkout, set round trip, followed and colors round trip, an unreadable file means nothing chosen
+- [x] 4.1 Extend `CheckoutChoiceFile` and `CheckoutChoices` with sets per folder (reading the old single-path string), `followed` and color slots, keeping `get`/`set` as single-path shims. Verify with `test/worktrees.test.ts` cases: old file reads as one checkout, set round trip, followed and colors round trip, an unreadable file means nothing chosen
 
 ## 5. Recorder: a scope per checkout
 
