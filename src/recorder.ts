@@ -10,7 +10,7 @@ import {
   carriedProvisional,
   checkoutDisplayPath,
   checkoutName,
-  commonDirKey,
+  commonDirOf,
   folderCheckoutChoice,
   folderLabels,
   innermostRoot,
@@ -774,6 +774,7 @@ export class Recorder implements vscode.Disposable {
       container: false,
       prunable: false,
       commonKey: undefined,
+      commonDir: undefined,
       listedAt: this.provisionalSeq,
       watcher: [],
     };
@@ -868,16 +869,18 @@ export class Recorder implements vscode.Disposable {
       const unsaved = await this.saveChoiceSet(key, ownOnly ? undefined : kept);
       if (unsaved) this.log.appendLine(`Could not save that ${gone.join(', ')} is no longer chosen: ${unsaved.message}`);
     }
-    let commonKey: string | undefined;
+    let commonDir: string | undefined;
     for (const wt of [own, ...r.worktrees]) {
-      commonKey = wt && commonDirKey(wt.path);
-      if (commonKey !== undefined) break;
+      commonDir = wt && commonDirOf(wt.path);
+      if (commonDir !== undefined) break;
     }
+    const commonKey = commonDir === undefined ? undefined : pathKey(commonDir);
     for (const s of scopes) {
       // Every worktree git lists, prunable ones too: one being removed still has files.
       s.nestedDirs = nestedUnder(s.root.fsPath, r.worktrees);
       s.nested = new IgnoredPaths(s.nestedDirs);
       s.commonKey = commonKey;
+      s.commonDir = commonDir;
     }
     return scopes;
   }
@@ -960,16 +963,16 @@ export class Recorder implements vscode.Disposable {
    * new worktree, including ones outside the workspace.
    */
   private watchCommonDirs(): void {
-    const want = new Set<string>();
-    if (this.settings().autoRecordWorktrees !== 'off') for (const s of this.scopes.values()) if (s.commonKey) want.add(s.commonKey);
+    const want = new Map<string, string>();
+    if (this.settings().autoRecordWorktrees !== 'off') for (const s of this.scopes.values()) if (s.commonKey && s.commonDir) want.set(s.commonKey, s.commonDir);
     for (const [key, subs] of this.commonWatchers) {
       if (want.has(key)) continue;
       for (const d of subs) d.dispose();
       this.commonWatchers.delete(key);
     }
-    for (const key of want) {
+    for (const [key, dir] of want) {
       if (this.commonWatchers.has(key)) continue;
-      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(key), 'worktrees/*'));
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), 'worktrees/*'));
       const subs: vscode.Disposable[] = [watcher];
       watcher.onDidCreate(() => this.scheduleWorktreeRefresh(), null, subs);
       watcher.onDidDelete(() => this.scheduleWorktreeRefresh(), null, subs);
@@ -2244,6 +2247,8 @@ interface Scope {
   prunable: boolean;
   /** `pathKey` of the repository's common git directory, which a linked worktree's `.git` file points into. */
   commonKey: string | undefined;
+  /** That common git directory as it is on disk, for watching: VS Code reports paths in their real case. */
+  commonDir: string | undefined;
   /** `provisionalSeq` when the worktree listing this scope came from started. */
   listedAt: number;
   watcher: vscode.Disposable[];

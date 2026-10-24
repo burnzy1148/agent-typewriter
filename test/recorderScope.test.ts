@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Recorder, type CheckoutChoices } from '../src/recorder';
 import { Timeline } from '../src/timeline';
-import { listWorktrees, type WorktreeListResult } from '../src/worktrees';
+import { laneKey, listWorktrees, pathKey, type WorktreeListResult } from '../src/worktrees';
 import type { Settings } from '../src/config';
 import { mock } from './vscode-mock';
 import { git, noGit, tempDir, tempRepo, write } from './gitFixture';
@@ -800,7 +800,7 @@ test('a removed worktree stops only its lane; the main checkout keeps recording'
 
 test('the first lane recorded is followed, and a remembered followed lane wins', { skip: noGit }, async () => {
   const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
-  const sideLane = `${vscode.Uri.file(repo).toString()}\0${fs.realpathSync.native(side)}`;
+  const sideLane = laneKey(vscode.Uri.file(repo).toString(), false, side);
   const choices: CheckoutChoices = {
     get: () => undefined,
     set: () => undefined,
@@ -872,7 +872,7 @@ test('auto-record rotate: the idlest lane stops for a new worktree, unless every
   await until('skip logged', () => t.logs.some((l) => l.includes('every lane but the followed one changed')));
   assert.equal(t.checkout()?.lanes, 5);
   // Make the side lane look idle for long.
-  const sideLane = t.timeline.laneList().find((l) => l.root === fs.realpathSync.native(side))!;
+  const sideLane = t.timeline.laneList().find((l) => pathKey(l.root) === pathKey(side))!;
   t.timeline.defineLane({ ...sideLane, since: Date.now() - 10 * 60_000 });
   for (const l of t.timeline.laneList()) if (l.id !== sideLane.id) t.timeline.defineLane({ ...l, since: Date.now() });
   addWorktree(t, repo, 'next');

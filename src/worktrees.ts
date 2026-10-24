@@ -131,11 +131,11 @@ function gitDirOf(checkout: string): string | undefined {
 }
 
 /**
- * The common git directory of the repository a checkout belongs to, as a
- * `pathKey`: every worktree of one repository has the same. Undefined when the
- * checkout's `.git` can't be read.
+ * The common git directory of the repository a checkout belongs to, as it is
+ * on disk (real case kept): every worktree of one repository has the same.
+ * Undefined when the checkout's `.git` can't be read.
  */
-export function commonDirKey(checkout: string): string | undefined {
+export function commonDirOf(checkout: string): string | undefined {
   const gitDir = gitDirOf(checkout);
   if (gitDir === undefined) return undefined;
   let common = gitDir;
@@ -145,7 +145,13 @@ export function commonDirKey(checkout: string): string | undefined {
   } catch {
     // No commondir file: this is the common directory.
   }
-  return pathKey(common);
+  return realPath(common);
+}
+
+/** `commonDirOf` as a `pathKey`, for comparing. */
+export function commonDirKey(checkout: string): string | undefined {
+  const dir = commonDirOf(checkout);
+  return dir === undefined ? undefined : pathKey(dir);
 }
 
 /**
