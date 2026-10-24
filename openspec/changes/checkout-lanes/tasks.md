@@ -31,18 +31,18 @@
 
 ## 7. Views and UI
 
-- [ ] 7.1 Add the Activity Bar container and icon, move the Changes and Playback views into it, and contribute the five `agentTypewriter.lane*` colors. Verify `npm run package` includes the icon, and the integration suite finds the views by id
+- [x] 7.1 Add the Activity Bar container and icon, move the Changes and Playback views into it, and contribute the five `agentTypewriter.lane*` colors. Verify `npm run package` includes the icon, and the integration suite finds the views by id
 - [x] 7.2 Group the Changes view by lane when more than one lane is in the buffer (followed lane first and expanded, colored node with its queued count, "stopped" label), unchanged with one lane. Verify with a new `test/timelineView.test.ts` against the vscode mock: one lane is flat, two lanes give ordered lane nodes
 - [x] 7.3 Add `CheckoutsView` with checkboxes, lane color icons, followed/queued/stopped descriptions, a Follow inline action, a "Not recording" node for buffer-only lanes, and title actions for auto-follow on/off and refresh. Register `agentTypewriter.followLane`, `autoFollowOn`/`autoFollowOff` and the `agentTypewriter.autoFollow` setting (package.json, config, schema, README). Verify with `test/checkoutsView.test.ts` against the mock: rows per checkout, a refused sixth tick resets its box, buffer-only lanes listed
 - [x] 7.4 Make the scrubber and its seek messages use the followed lane's changes and show its label, and prefix the mirror status row with the lane label when there are several lanes. Verify with `test/scrubberState.test.ts` two-lane cases (index, queued, label) and the existing webview test
 - [x] 7.5 Add the mirror `FileDecorationProvider` (lane color and badge, only with more than one lane) and show the followed lane in `statusPresentation`. Verify with `test/statusText.test.ts` cases and a unit test of the URI→lane mapping
-- [ ] 7.6 Make `chooseCheckout` a multi-select with the cap and the empty refusal, keeping the test arguments and adding `string[]`. Verify with an integration check that the array argument records two checkouts
-- [ ] 7.7 Add the auto-follow controller (3 s idle timer, never mid-change, re-checked on fire). Verify with a unit test using fake timers through an exported pure step function, plus the integration check in 8.1
+- [x] 7.6 Make `chooseCheckout` a multi-select with the cap and the empty refusal, keeping the test arguments and adding `string[]`. Verify with an integration check that the array argument records two checkouts
+- [x] 7.7 Add the auto-follow controller (3 s idle timer, never mid-change, re-checked on fire). Verify with a unit test using fake timers through an exported pure step function, plus the integration check in 8.1
 
 ## 8. Integration
 
-- [ ] 8.1 Add an integration section (`it/lanes.ts`, wired into `npm run it`): main and a nested worktree recorded at once, each typed into its own mirror only when followed; follow switches and resumes; auto-follow tours both lanes; auto-record `fill` picks up `git worktree add`; reload restores lanes, cursors and the followed lane; no real file is written. Verify `npm run it` passes locally
-- [ ] 8.2 Run `npm test`, `npm run it` and `npm run package`, and update the README's checkout section and screenshots text for lanes, the container and both settings. Verify all three commands succeed
+- [x] 8.1 Add an integration section (`it/lanes.ts`, wired into `npm run it`): main and a nested worktree recorded at once, each typed into its own mirror only when followed; follow switches and resumes; auto-follow tours both lanes; auto-record `fill` picks up `git worktree add`; reload restores lanes, cursors and the followed lane; no real file is written. Verify `npm run it` passes locally
+- [x] 8.2 Run `npm test`, `npm run it` and `npm run package`, and update the README's checkout section and screenshots text for lanes, the container and both settings. Verify all three commands succeed
 
 ## Workflow follow-up
 
