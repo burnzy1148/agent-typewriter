@@ -129,18 +129,24 @@ export async function run(): Promise<void> {
   assert.equal(timeline.all().length, 0);
   await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(file));
   assert.deepEqual(timeline.all().map(persisted), recorded, 'loaded changes differ from the saved ones');
-  assert.equal(timeline.pendingCount(), recorded.length, 'loaded changes are not all pending');
+  // suite.ts recorded from more than one checkout, so the session holds more than one lane.
+  const pendingAll = () => timeline.lanesInBuffer().reduce((n, lane) => n + timeline.pendingCount(lane), 0);
+  assert.equal(pendingAll(), recorded.length, 'loaded changes are not all pending');
   assert.ok(player.isPaused, 'playback is not paused after loading');
 
   // A file that is not a session is refused and leaves the buffer alone.
   const bogus = path.join(path.dirname(file), 'not-a-session.json');
   fs.writeFileSync(bogus, '{"name":"package"}');
   await vscode.commands.executeCommand('agentTypewriter.loadSession', vscode.Uri.file(bogus));
-  assert.equal(timeline.pendingCount(), recorded.length, 'a bad file changed the buffer');
+  assert.equal(pendingAll(), recorded.length, 'a bad file changed the buffer');
 
   await vscode.commands.executeCommand('agentTypewriter.togglePause');
-  // Replays every change suite.ts recorded, so allow time per change; Windows runners are the slowest.
-  await until('loaded session to play', idle, Math.max(60000, recorded.length * 1500));
+  // Replays every change suite.ts recorded, lane by lane, so allow time per change; Windows runners are the slowest.
+  for (const lane of timeline.lanesInBuffer()) {
+    await vscode.commands.executeCommand('agentTypewriter.followLane', lane);
+    await until(`loaded lane ${lane || '(default)'} to play`, idle, Math.max(60000, timeline.pendingCount(lane) * 1500));
+  }
+  assert.equal(pendingAll(), 0, 'a lane was left unplayed');
   const last = new Map(recorded.map((e) => [e.relPath, e]));
   for (const [rel, e] of last) {
     assert.equal(mirrorText(rel)?.replace(/\r\n/g, '\n'), e.after, `mirror for ${rel} does not end at its last recorded text`);
