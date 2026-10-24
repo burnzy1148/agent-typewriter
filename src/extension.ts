@@ -18,8 +18,9 @@ import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
-import { Timeline, laneOf, sessionClears, sessionLanes, toSession } from './timeline';
-import { ChangeItem, TimelineView } from './timelineView';
+import { Timeline, laneOf, sessionClears, sessionLanes, toSession, type LaneInfo } from './timeline';
+import { ChangeItem, laneName, TimelineView } from './timelineView';
+import { CheckoutRow, CheckoutsView, type FolderCheckoutsModel } from './checkoutsView';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
 export interface AgentTypewriterApi {
@@ -59,6 +60,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const highlights = new HighlightView(timeline, player, readHighlightSettings, context.extensionUri);
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
+  /** Every checkout of each folder, its own first, and the ones it records (or will once started). */
+  const loadCheckouts = async (): Promise<FolderCheckoutsModel[]> => {
+    const out: FolderCheckoutsModel[] = [];
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const c = await recorder.checkoutsOf(folder);
+      const live = recorder.recordedLanes().filter((l) => l.folder.uri.toString() === folder.uri.toString());
+      const checkouts = c
+        ? [
+            { path: c.own?.path ?? folder.uri.fsPath, name: c.own ? checkoutName(c.own) : '', own: true },
+            ...c.worktrees.filter((w) => w !== c.own).map((w) => ({ path: w.path, name: checkoutName(w), own: false })),
+          ]
+        : [{ path: folder.uri.fsPath, name: '', own: true }];
+      out.push({ folder, checkouts, recorded: recorder.isRunning ? live.map((l) => l.checkout) : (c?.recorded ?? [folder.uri.fsPath]) });
+    }
+    return out;
+  };
+  const checkoutsView = new CheckoutsView(timeline, loadCheckouts, {
+    add: (folder, p) => recorder.addCheckout(folder, p),
+    remove: (folder, p) => recorder.removeCheckout(folder, p),
+    error: (message) => void vscode.window.showErrorMessage(`Agent Typewriter: ${message}`),
+  });
+  const checkoutsTree = vscode.window.createTreeView('agentTypewriter.checkouts', { treeDataProvider: checkoutsView, manageCheckboxStateManually: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
   const playbackState = () =>
@@ -77,6 +100,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     highlights,
     view,
     tree,
+    checkoutsView,
+    checkoutsTree,
+    checkoutsTree.onDidChangeCheckboxState(async (e) => {
+      for (const [item, state] of e.items) {
+        if (item instanceof CheckoutRow) await checkoutsView.setChecked(item, state === vscode.TreeItemCheckboxState.Checked);
+      }
+    }),
     status,
     checkoutStatus,
     scrubber,
@@ -121,6 +151,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     checkouts.clear();
     for (const [k, v] of next) checkouts.set(k, v);
     refreshStatus();
+    await checkoutsView.reload();
     return next;
   };
 
@@ -162,8 +193,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       tree.message = undefined;
     }
   };
+  // The followed lane is remembered, so a reload follows it again once it records.
+  let followedSaved = timeline.followed;
+  const saveFollowed = () => {
+    if (timeline.followed === followedSaved || timeline.lanesInBuffer().length === 0) return;
+    followedSaved = timeline.followed;
+    void Promise.resolve(choices.setFollowed?.(followedSaved)).catch(() => {});
+  };
   context.subscriptions.push(
     timeline.onDidChange(refreshStatus),
+    timeline.onDidChange(saveFollowed),
     highlights.onDidChangeHighlighted(refreshStatus),
     recorder.onDidChangeScope(() => void refreshCheckouts()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshCheckouts()),
@@ -174,6 +213,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   void refreshCheckouts();
 
   const setWatching = (on: boolean) => vscode.commands.executeCommand('setContext', 'agentTypewriter.watching', on);
+  const setAutoFollowKey = () => vscode.commands.executeCommand('setContext', 'agentTypewriter.autoFollow', readSettings().autoFollow);
+  void setAutoFollowKey();
 
   // ------------------------------------------------------------ commands
 
@@ -720,6 +761,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     await recorder.setCheckout(folder, pick.path);
   });
 
+  // From a view row (its lane, or the lane id) or the palette, which asks.
+  register('agentTypewriter.followLane', async (arg?: string | { lane: string | LaneInfo }) => {
+    let lane = typeof arg === 'string' ? arg : typeof arg?.lane === 'string' ? arg.lane : arg?.lane?.id;
+    const lanes = timeline.laneList();
+    if (lane === undefined) {
+      if (lanes.length < 2) {
+        vscode.window.showInformationMessage('Agent Typewriter: there is only one lane to follow.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        lanes.map((l) => ({
+          label: laneName(l),
+          description: [`${timeline.pendingCount(l.id)} queued`, l.id === timeline.followed ? 'following' : '', l.recording ? '' : 'stopped']
+            .filter(Boolean)
+            .join(' · '),
+          detail: l.root || undefined,
+          lane: l.id,
+        })),
+        { title: 'Agent Typewriter: follow which lane?' },
+      );
+      if (!pick) return;
+      lane = pick.lane;
+    }
+    if (!lanes.some((l) => l.id === lane)) {
+      vscode.window.showWarningMessage('Agent Typewriter: that checkout has no lane yet. Record it first.');
+      return;
+    }
+    if (lane === timeline.followed) return;
+    timeline.follow(lane);
+    await player.interrupt();
+  });
+  register('agentTypewriter.autoFollowOn', () => updateSetting('autoFollow', true));
+  register('agentTypewriter.autoFollowOff', () => updateSetting('autoFollow', false));
+  register('agentTypewriter.refreshCheckouts', () => refreshCheckouts());
+
   register('agentTypewriter.setSpeed', async (multiplier?: number) => {
     if (typeof multiplier === 'number' && Number.isFinite(multiplier) && multiplier > 0) {
       player.setSpeed(multiplier);
@@ -783,6 +859,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
     if (affects('highlightAdditions') || affects('markDeletions')) highlights.refresh();
+    if (affects('autoFollow')) await setAutoFollowKey();
     refreshStatus();
   };
 

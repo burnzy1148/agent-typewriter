@@ -198,6 +198,15 @@ function realPath(p: string): string {
 
 const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
 
+/**
+ * The lane id of a checkout a workspace folder records: the folder URI for
+ * its own checkout (or the folder itself outside git), and the folder URI
+ * with the checkout's `pathKey` for another worktree.
+ */
+export function laneKey(folderKey: string, own: boolean, checkoutPath: string): string {
+  return own ? folderKey : `${folderKey}\0${pathKey(checkoutPath)}`;
+}
+
 /** A path in a form two spellings of the same directory share: symlinks resolved, case folded on Windows. */
 export function pathKey(p: string): string {
   return fold(realPath(p));

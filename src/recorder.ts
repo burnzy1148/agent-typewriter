@@ -15,6 +15,7 @@ import {
   folderLabels,
   innermostRoot,
   isWorktreeOf,
+  laneKey,
   listWorktrees,
   liveWorktrees,
   nestedUnder,
@@ -837,14 +838,14 @@ export class Recorder implements vscode.Disposable {
         gone.push(wanted);
         continue;
       }
-      if (scopes.some((s) => s.key === `${key}\0${pathKey(chosen.path)}`)) continue;
+      if (scopes.some((s) => s.key === laneKey(key, false, chosen.path))) continue;
       // Inside the folder, the root is spelled as the folder is (git
       // resolves symlinks), so watcher events, baselines and editor
       // documents of its files all use one spelling.
       const inside = relativeInside(folder.uri.fsPath, root);
       scopes.push({
         ...scope,
-        key: `${key}\0${pathKey(chosen.path)}`,
+        key: laneKey(key, false, chosen.path),
         root: inside ? vscode.Uri.joinPath(folder.uri, ...inside.split('/')) : vscode.Uri.file(root),
         checkout: vscode.Uri.file(chosen.path),
         own: false,
@@ -938,7 +939,7 @@ export class Recorder implements vscode.Disposable {
         this.log.appendLine(`Recording the new worktree ${name} in its own lane.`);
       }
       const key = folder.uri.toString();
-      lanes.push({ key: `${key}\0${pathKey(worktree.path)}`, folderKey: key, checkout: worktree.path, name: checkoutName(worktree) });
+      lanes.push({ key: laneKey(key, false, worktree.path), folderKey: key, checkout: worktree.path, name: checkoutName(worktree) });
       touched.add(key);
     }
     for (const folderKey of touched) {
