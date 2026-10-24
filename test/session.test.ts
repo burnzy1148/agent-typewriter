@@ -4,6 +4,7 @@ import {
   Timeline,
   parseSession,
   toSession,
+  sessionClears,
   SessionFormatError,
   SESSION_FORMAT,
   SESSION_VERSION,
@@ -58,7 +59,9 @@ test('parseSession refuses bad shapes', () => {
     ['version', (s) => ({ ...s, version: 'one' })],
     ['cursor', (s) => ({ ...s, cursor: undefined })],
     ['events', (s) => ({ ...s, events: {} })],
-    ['unknown kind', (s) => (s.events[0].kind = 'rename', s)],
+    ['unknown kind', (s) => (s.events[0].kind = 'copy', s)],
+    ['unknown kind', (s) => ((s.events[0].kind = 'rename'), (s.events[0].fromUri = 'file:///w/x'), (s.events[0].fromRelPath = 'x'), (s.version = 1), s)],
+    ['rename with no fromRelPath', (s) => ((s.events[0].kind = 'rename'), (s.events[0].fromUri = 'file:///w/x'), s)],
     ['eol', (s) => (s.events[0].eol = '\r', s)],
     ['no before', (s) => (delete s.events[1].before, s)],
     ['no time', (s) => (s.events[0].time = '1', s)],
@@ -72,6 +75,23 @@ test('parseSession refuses bad shapes', () => {
       `expected "${why}"`,
     );
   }
+});
+
+test('a rename survives the round trip with its old path', () => {
+  const t = filled(1);
+  t.push({ ...ev('b.ts', 'x', 'y'), kind: 'rename', fromUri: 'file:///w/a.ts', fromRelPath: 'a.ts' });
+  const s = viaJson(t);
+  assert.deepEqual(s.events, t.all());
+  assert.equal(s.events[1].fromRelPath, 'a.ts');
+  assert.equal(s.events[1].fromUri, 'file:///w/a.ts');
+  assert.equal('fromRelPath' in s.events[0], false);
+});
+
+test('a version 1 session still loads', () => {
+  const raw = JSON.parse(JSON.stringify({ ...toSession(filled(2)).session, version: 1 }));
+  const s = parseSession(raw);
+  assert.equal(s.version, SESSION_VERSION);
+  assert.deepEqual(s.events.map((e) => e.relPath), ['f0.ts', 'f1.ts']);
 });
 
 test('restore renumbers after earlier pushes and keeps played state', () => {
@@ -131,4 +151,46 @@ test('a playback token from before restore is stale after it', () => {
   t.complete(1, token);
   assert.equal(t.pendingCount(), 3);
   assert.equal(t.peek()?.after, '1');
+});
+
+test('highlight clears round trip and restore to the same points', () => {
+  const t = filled(3);
+  t.seekToEnd();
+  t.clearHighlights('f1.ts');
+  t.push(ev('f0.ts', '1', '2'));
+  t.seekToEnd();
+  t.clearHighlights('f0.ts');
+  const s = viaJson(t);
+  assert.deepEqual(s.highlightsFrom, [{ seq: 4, relPath: 'f1.ts' }, { seq: 5, relPath: 'f0.ts' }]);
+  const r = new Timeline(100);
+  r.restore(s.events, s.cursor, sessionClears(s));
+  assert.deepEqual(r.highlightClears, [{ seq: 4, relPath: 'f1.ts' }, { seq: 5, relPath: 'f0.ts' }]);
+});
+
+test('a session without clears has no highlightsFrom field', () => {
+  const s = toSession(filled(2)).session;
+  assert.equal('highlightsFrom' in s, false);
+  assert.deepEqual(sessionClears(s), []);
+});
+
+test('a malformed highlightsFrom is ignored, keeping its well-formed entries', () => {
+  const raw = JSON.parse(JSON.stringify(toSession(filled(2)).session));
+  assert.equal(parseSession({ ...raw, highlightsFrom: 'x' }).highlightsFrom, undefined);
+  assert.equal(parseSession({ ...raw, highlightsFrom: { all: 2 } }).highlightsFrom, undefined);
+  assert.equal(parseSession({ ...raw, highlightsFrom: [{ seq: 1.5 }, 'x', null] }).highlightsFrom, undefined);
+  assert.deepEqual(parseSession({ ...raw, highlightsFrom: [{ seq: 2 }, { seq: 3, relPath: 7 }, { seq: 4, relPath: 'b.ts', extra: 1 }] }).highlightsFrom, [
+    { seq: 2 },
+    { seq: 4, relPath: 'b.ts' },
+  ]);
+});
+
+test('loading a session file starts with no clears', () => {
+  const t = filled(2);
+  t.seekToEnd();
+  t.clearHighlights();
+  const s = viaJson(t);
+  const loaded = new Timeline(100);
+  // Load Session restores at the first change with no clears.
+  loaded.restore(s.events, s.events[0].seq);
+  assert.deepEqual(loaded.highlightClears, []);
 });

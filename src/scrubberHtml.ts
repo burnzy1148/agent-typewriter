@@ -10,6 +10,10 @@ const ICONS = {
   finish: icon('<polygon points="9,1 3,9 7.5,9 6,15 13,6 8.5,6 10,1"/>'),
   next: icon('<polygon points="3,3 10,8 3,13"/><rect x="11" y="3" width="2" height="10"/>'),
   latest: icon('<polygon points="1,3 7,8 1,13"/><polygon points="7,3 13,8 7,13"/><rect x="13" y="3" width="2" height="10"/>'),
+  clear: icon(
+    '<rect x="1" y="3" width="9" height="1.5"/><rect x="1" y="7" width="7" height="1.5"/><rect x="1" y="11" width="5" height="1.5"/>' +
+      '<path d="M9.5 9.5l5 5M14.5 9.5l-5 5" stroke="currentColor" stroke-width="1.5"/>',
+  ),
 };
 
 export function renderHtml(nonce: string): string {
@@ -51,6 +55,7 @@ export function renderHtml(nonce: string): string {
     <button id="next" data-cmd="skipToNext" title="Skip to next change" aria-label="Skip to next change">${ICONS.next}</button>
     <button id="latest" data-cmd="catchUp" title="Skip to latest" aria-label="Skip to latest">${ICONS.latest}</button>
     <span class="spacer"></span>
+    <button id="clear" data-cmd="clearHighlights" title="Clear highlights" aria-label="Clear highlights">${ICONS.clear}</button>
     <select id="speed" title="Playback speed" aria-label="Playback speed">${options}</select>
   </div>
   <input id="slider" type="range" min="0" max="0" value="0" step="1" aria-label="Playback position">
@@ -63,7 +68,7 @@ export function renderHtml(nonce: string): string {
   let state;
   let held = false;
 
-  const describe = (c) => '#' + c.seq + ' ' + c.relPath;
+  const describe = (c) => '#' + c.seq + ' ' + (c.fromRelPath !== undefined ? c.fromRelPath + ' \u2192 ' : '') + c.relPath;
 
   function seekText(i) {
     const n = state.changes.length;
@@ -77,6 +82,7 @@ export function renderHtml(nonce: string): string {
     slider.disabled = n === 0;
     if (!held) slider.value = String(state.index);
     for (const id of ['start', 'finish', 'next', 'latest']) $(id).disabled = n === 0;
+    $('clear').disabled = !state.hasHighlights;
     play.classList.toggle('paused', state.paused);
     play.title = state.paused ? 'Play' : 'Pause';
     play.setAttribute('aria-label', play.title);

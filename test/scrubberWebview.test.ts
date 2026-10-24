@@ -40,16 +40,17 @@ function loadPanel() {
   const html = renderHtml('abc');
   const script = /<script nonce="abc">([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(script, 'panel has an inline script');
-  const ids = ['slider', 'label', 'position', 'play', 'speed', 'start', 'finish', 'next', 'latest'];
+  const ids = ['slider', 'label', 'position', 'play', 'speed', 'start', 'finish', 'next', 'latest', 'clear'];
   const el = Object.fromEntries(ids.map((id) => [id, new FakeElement(id)]));
   for (const id of ['start', 'play', 'finish', 'next', 'latest']) el[id].dataset.cmd = id;
+  el.clear.dataset.cmd = 'clearHighlights';
   el.speed.options = [0.5, 1, 2].map((s) => Object.assign(new FakeElement(), { value: String(s) }));
   const body = new FakeElement('body');
   const doc = Object.assign(new FakeElement('document'), {
     body,
     activeElement: body as FakeElement,
     getElementById: (id: string) => el[id],
-    querySelectorAll: () => ['start', 'play', 'finish', 'next', 'latest'].map((id) => el[id]),
+    querySelectorAll: () => ['start', 'play', 'finish', 'next', 'latest', 'clear'].map((id) => el[id]),
     createElement: () => new FakeElement(),
   });
   const win = new FakeElement('window');
@@ -84,6 +85,7 @@ const STATE: ScrubberState = {
   paused: false,
   speed: 1,
   watching: true,
+  hasHighlights: false,
   label: 'Typing #2 f2.ts \u00b7 3 queued',
   position: '2 / 5',
 };
@@ -126,4 +128,19 @@ test('dragging the slider seeks once to the released position', () => {
   p.state({ index: 4, playingSeq: undefined, queued: 1 });
   assert.equal(p.el.slider.value, '4');
   assert.equal(p.el.label.textContent, 'Next: #5 f5.ts · 1 queued');
+});
+
+test('the clear highlights button is enabled only while there are highlights, and posts its command', () => {
+  const p = loadPanel();
+  p.state({});
+  assert.equal(p.el.clear.disabled, true);
+  p.state({ hasHighlights: true });
+  assert.equal(p.el.clear.disabled, false);
+  p.el.clear.dispatch('click');
+  assert.equal(JSON.stringify(p.posted.at(-1)), JSON.stringify({ type: 'clearHighlights' }));
+});
+
+test('the panel keeps its locked-down Content Security Policy', () => {
+  const html = renderHtml('abc');
+  assert.match(html, /content="default-src 'none'; style-src 'nonce-abc'; script-src 'nonce-abc';"/);
 });

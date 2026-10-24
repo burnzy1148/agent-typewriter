@@ -23,6 +23,11 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   maxSpeedup: 'number',
   maxAnimatedChars: 'number',
   fileSwitchDelayMs: 'number',
+  smoothScroll: 'boolean',
+  scrollPauseMs: 'number',
+  scrollLinesPerSecond: 'number',
+  arrowNavigation: 'boolean',
+  arrowKeysPerSecond: 'number',
   debounceMs: 'number',
   reorderWindowMs: 'stringOrNumber',
   maxFileSizeKB: 'number',
@@ -33,6 +38,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   ignoreOwnSaves: 'boolean',
   viewColumn: { enum: ['beside', 'active'] },
   mirrorStatusRow: 'boolean',
+  highlightAdditions: 'boolean',
+  markDeletions: 'boolean',
 };
 
 export type RepoValues = Readonly<Record<string, unknown>>;

@@ -4,6 +4,8 @@
 
 Watch Claude Code (or any agent, script, or teammate) write code as if a person were typing it.
 
+![Agent Typewriter replays an agent's edits as typing: new lines highlighted green, deleted words and lines shown red before they go, a red marker where lines were removed, and a smooth scroll to the next edit](images/demo.gif)
+
 Agent Typewriter ignores *how* a file was edited. It watches the workspace for changes on disk, records every change in order with its full before and after text, and replays each one into a side-by-side replay editor at human speed. When the agent touched three files, playback flips between those three tabs in the same order.
 
 Your real files are never modified by the extension. Replay happens in mirror documents (`agent-typewriter:/src/foo.ts`) that get proper syntax highlighting from the file extension.
@@ -38,22 +40,44 @@ disk write ──► watcher ──► debounce ──► diff vs snapshot ─�
 - **Write order.** Each change is ordered by its file's modification time and held for a short reorder window (`reorderWindowMs`), so a watcher that reports writes late or out of order, as on Windows, still produces the true order.
 - **Timeline buffer.** Events are kept in order (default 500, `historyLimit`). The playback cursor moves through them independently of recording, so you can replay the whole buffer or start from any event.
 - **History across reloads.** The buffer and the playback position are saved to VS Code's per-workspace extension storage (not the workspace) every couple of seconds while they change, and restored when the workspace opens again. If changes were still queued, playback comes back paused so nothing starts typing on its own. Up to 64 MB of change text is kept, newest first. `persistHistory: false` turns this off and deletes the saved history.
+- **Renames.** A file deleted and another created with the same content (or at least half its lines unchanged, as git judges renames) while the first is still held for reordering are one rename. Replay shows the old name, moves the mirror to the new one, and types any edit. A move between a path the filters record and one they leave out stays a create or a delete. With `reorderWindowMs` at `0`, renames show up as a delete and a create.
 - **Diff planning.** Changes are planned line by line, then refined word by word, so renaming one variable retypes only that token. Whole new lines are typed as lines. Leading indentation appears instantly the way an editor auto-indents. Short deletions are backspaced; longer ones are selected and then deleted.
 - **Catch-up.** Agents write far faster than people type. Speed is `base x (1 + catchUpFactor x queued)` capped at `maxSpeedup`, so playback accelerates when it falls behind and relaxes when it catches up. Changes larger than `maxAnimatedChars` are applied instantly.
 - **Mirror editors.** Each file gets one mirror tab, saved quietly after every change so closing a tab never prompts.
+
+## Highlights
+
+Replay marks what changed in each mirror the way a git diff does, compared with the file before its first replayed change (or since you last cleared highlights):
+
+- Lines with added text get a soft green background, a bar in the gutter, and a mark in the scrollbar. On a line that keeps some older text, the new characters get a slightly stronger green. Text appears highlighted as it is typed and stays highlighted.
+- Just before replay deletes text, the text turns red with a strikethrough. Where text was removed, a small red marker sits in the gutter; hover the line to see the removed text.
+- Highlights follow the playback position: seeking back removes highlights for changes not yet replayed, and skip to latest highlights everything that jumped in. Text added and later removed again leaves no mark.
+- **Clear Highlights** (in the Playback panel and the Command Palette) starts over from what every mirror shows now. **Clear Highlights in This File** (in the replay editor's title bar and the Command Palette) does the same for one file. Replaying from before a clear brings its highlights back.
+
+Turn `highlightAdditions` off to get only a brief flash on each typed edit, and `markDeletions` off to drop the red preview and removal markers. The colors follow your theme and can be changed with `workbench.colorCustomizations`:
+
+```jsonc
+"workbench.colorCustomizations": {
+  "agentTypewriter.addedLineBackground": "#2ea04326",
+  "agentTypewriter.addedTextBackground": "#2ea0434d",
+  "agentTypewriter.addedOverviewRuler": "#2ea04399",
+  "agentTypewriter.removedOverviewRuler": "#f8514999",
+  "agentTypewriter.deletingTextBackground": "#f8514940"
+}
+```
 
 ## The panels
 
 **Explorer > Playback** controls replay like a media player:
 
-- Replay from the start, play/pause, finish the current change instantly, skip to the next change, and skip to latest.
+- Replay from the start, play/pause, finish the current change instantly, skip to the next change, skip to latest, and clear highlights.
 - Drag the slider to any recorded change and let go to seek there. Seeking keeps playback paused or playing as it was; the far end of the slider skips to latest.
 - The speed picker sets a multiplier (0.5x to 5x) on top of the base speed.
 - The line under the slider shows what is typing or next, and how many changes are queued.
 
 **The replay editor** has controls too, on the tab of the file being typed (or played last):
 
-- Its title bar has the same buttons: replay from the start, play/pause, finish current, skip to next, and skip to latest. Right-click the title bar to hide any of them.
+- Its title bar has the same buttons: replay from the start, play/pause, finish current, skip to next, and skip to latest, plus clear highlights in this file while it has any. Right-click the title bar to hide any of them.
 - A row above the first line has play/pause, finish, next, latest, the speed (click to change it), and what is typing or next with the position in the buffer (click to open the Playback panel). The row is not part of the text. Set `mirrorStatusRow` to `false` to hide it, for example for screen recordings.
 
 **Explorer > Agent Typewriter** lists recorded changes, newest first, with their state (pending, typing, played) and line counts.
@@ -79,7 +103,7 @@ Work that was never watched, such as a branch an agent pushed overnight or a pul
 - **A branch...**: another local or remote-tracking branch's commits that are not on the default branch. A pull request you fetched but did not check out is replayed this way.
 - **Last commit**, or **Enter a commit or range...** in git's syntax: `main..feature`, `HEAD~5..HEAD`, or a single commit.
 
-Each change's before and after text come from the commits, not from the files on disk, so uncommitted edits do not show up. Merge commits are skipped, as `git log -p` does, and so are files the watch filters leave out, binary files, files over `maxFileSizeKB`, Git LFS files, symbolic links and submodules. A rename replays as a delete and a create. Nothing is downloaded: in a partial clone, file versions git does not have locally are skipped (this needs git 2.44 or later; older git fetches them), and in a shallow clone the oldest commit, whose parent is missing, is skipped.
+Each change's before and after text come from the commits, not from the files on disk, so uncommitted edits do not show up. Merge commits are skipped, as `git log -p` does, and so are files the watch filters leave out, binary files, files over `maxFileSizeKB`, Git LFS files, symbolic links and submodules. Renames git detects replay as renames. Nothing is downloaded: in a partial clone, file versions git does not have locally are skipped (this needs git 2.44 or later; older git fetches them), and in a shallow clone the oldest commit, whose parent is missing, is skipped.
 
 The replay replaces the buffer (after asking) and starts playing at the first change; pause it from the panel or the replay editor. It also stops watching, so live edits do not mix into the history; start watching again when you are done. The repository is only read: nothing is checked out or fetched, and HEAD, the index and your files stay as they are.
 
@@ -168,6 +192,11 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 | `maxSpeedup` | 8 | Cap on automatic catch-up |
 | `maxAnimatedChars` | 6000 | Bigger changes are applied instantly |
 | `fileSwitchDelayMs` | 600 | Pause when flipping to another file |
+| `smoothScroll` | true | Scroll to the next edit in the same file instead of jumping there. Edits already in view only move the caret |
+| `scrollPauseMs` | 400 | Pause before that scroll, to read the last lines typed |
+| `scrollLinesPerSecond` | 60 | Scroll speed. A scroll takes at most one second at 1x; far edits jump most of the way first |
+| `arrowNavigation` | true | Walk the caret to a nearby edit in view with arrow keys (a line at a time, then by words) instead of clicking there |
+| `arrowKeysPerSecond` | 15 | Arrow key presses per second for that walk |
 | `debounceMs` | 200 | Writes to one file inside this window merge into one change |
 | `reorderWindowMs` | `"auto"` | Hold each change this long so changes enter the timeline in write order even when the watcher reports them late. `"auto"` is 2500 ms on Windows, 250 ms elsewhere; `0` disables |
 | `maxFileSizeKB` | 512 | Larger files are ignored |
@@ -178,6 +207,8 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 | `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor (matched by content, so an outside write right after your save is still replayed) |
 | `viewColumn` | beside | Replay in a column beside you, or in the active column |
 | `mirrorStatusRow` | true | Show the playback controls and status row above the first line of the replay editor. Also hidden when `editor.codeLens` is off |
+| `highlightAdditions` | true | Keep added text highlighted, like a git diff, until highlights are cleared. Off: each typed edit only flashes briefly |
+| `markDeletions` | true | Show text in red with a strikethrough just before it is deleted, and mark where text was removed with a gutter marker that shows the removed text on hover |
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 
@@ -192,7 +223,7 @@ Claude Code in a terminal writes straight to disk, which is what this extension 
 - Text files only. Binary files and files over `maxFileSizeKB` are skipped.
 - The replay is a reconstruction, not a recording. It shows each change as a person would plausibly type it, not the agent's literal edit sequence (which is always an atomic write anyway).
 - Every matching file needs a baseline for its first change to replay. In a git repository with git installed, clean tracked files use git as their baseline and cost no memory (`gitBaselines`). Other files are kept in memory up to `baselineBudgetMB`, newest first. A file left out starts recording from its second change, and the **Agent Typewriter** output channel says how many files that is.
-- A rename shows up as a delete plus a create.
+- A rename is only detected while its first half is still held for reordering; a delete and a create further apart replay separately.
 
 ## Develop
 

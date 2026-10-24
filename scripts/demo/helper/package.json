@@ -1,0 +1,11 @@
+{
+  "name": "agent-typewriter-demo-helper",
+  "displayName": "Agent Typewriter demo helper",
+  "description": "Lays out the window for the README demo recording. Not published.",
+  "version": "0.0.1",
+  "publisher": "demo",
+  "private": true,
+  "engines": { "vscode": "^1.85.0" },
+  "main": "extension.js",
+  "activationEvents": ["onStartupFinished"]
+}

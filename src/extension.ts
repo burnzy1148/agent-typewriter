@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
+import { readHighlightSettings, readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
 import { buildReplay, countCommits, currentBranch, defaultBase, isRepository, listBranches, resolveRange } from './gitReplay';
+import { HighlightView } from './highlightView';
 import { MirrorControls } from './mirrorControls';
 import { MirrorFileSystem, MIRROR_SCHEME, mirrorBytes, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
 import { sessionFromBytes, sessionToBytes, TimelineStore } from './persistence';
@@ -17,7 +18,7 @@ import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
-import { Timeline, toSession } from './timeline';
+import { Timeline, sessionClears, toSession } from './timeline';
 import { ChangeItem, TimelineView } from './timelineView';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
@@ -27,6 +28,7 @@ export interface AgentTypewriterApi {
   recorder: Recorder;
   scrubber: ScrubberView;
   mirrorControls: MirrorControls;
+  highlights: HighlightView;
   /** Undefined when no folder is open (no workspace storage). */
   store: TimelineStore | undefined;
   /** Re-reads each folder's checkouts, as a window focus does, and returns them by folder URI. For tests. */
@@ -54,12 +56,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     : new Map<string, string>();
   const recorder = new Recorder(timeline, readSettings, log, choices);
   const player = new Player(timeline, mirror, readSettings, log);
+  const highlights = new HighlightView(timeline, player, readHighlightSettings, context.extensionUri);
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
   const playbackState = () =>
-    scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning });
+    scrubberState(timeline, { paused: player.isPaused, speed: player.speed, watching: recorder.isRunning, hasHighlights: highlights.hasHighlights });
   const scrubber = new ScrubberView(playbackState);
   const mirrorControls = new MirrorControls(player, playbackState, readMirrorStatusRow, () => timeline.all().length > 0);
   const store = context.storageUri
@@ -71,6 +74,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     repoFile,
     recorder,
     player,
+    highlights,
     view,
     tree,
     status,
@@ -79,6 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     mirrorControls,
     vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
     vscode.languages.registerCodeLensProvider({ scheme: MIRROR_SCHEME }, mirrorControls),
+    vscode.languages.registerHoverProvider({ scheme: MIRROR_SCHEME }, highlights),
     { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
@@ -159,6 +164,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   };
   context.subscriptions.push(
     timeline.onDidChange(refreshStatus),
+    highlights.onDidChangeHighlighted(refreshStatus),
     recorder.onDidChangeScope(() => void refreshCheckouts()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshCheckouts()),
     // Worktrees made elsewhere (a sibling directory, or while stopped) send no event here.
@@ -264,11 +270,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const e = arg.event;
     await vscode.commands.executeCommand(
       'vscode.diff',
-      SnapshotProvider.uriFor(e.seq, 'before', e.relPath),
+      SnapshotProvider.uriFor(e.seq, 'before', e.fromRelPath ?? e.relPath),
       SnapshotProvider.uriFor(e.seq, 'after', e.relPath),
-      `${e.relPath} (#${e.seq} ${e.kind})`,
+      `${e.fromRelPath !== undefined ? `${e.fromRelPath} \u2192 ` : ''}${e.relPath} (#${e.seq} ${e.kind})`,
       { preview: true },
     );
+  });
+
+  register('agentTypewriter.clearHighlights', () => timeline.clearHighlights());
+  register('agentTypewriter.clearHighlightsInFile', (uri?: vscode.Uri) => {
+    // From the title bar the button passes its editor's URI; from the palette, the active editor counts.
+    const target = uri instanceof vscode.Uri ? uri : vscode.window.activeTextEditor?.document.uri;
+    if (target?.scheme === MIRROR_SCHEME) timeline.clearHighlights(target.path.replace(/^\/+/, ''));
   });
 
   register('agentTypewriter.clear', async () => {
@@ -763,6 +776,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
+    if (affects('highlightAdditions') || affects('markDeletions')) highlights.refresh();
     refreshStatus();
   };
 
@@ -806,7 +820,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       if (saved && saved.events.length > 0) {
         const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
         if (pending > 0) player.setPaused(true);
-        timeline.restore(saved.events, saved.cursor);
+        timeline.restore(saved.events, saved.cursor, sessionClears(saved));
         const queued = timeline.pendingCount();
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
         refreshStatus();
@@ -876,7 +890,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }
-  return { timeline, player, recorder, store, scrubber, refreshCheckouts, mirrorControls, closeOrphanMirrorTabs, mirrorRestore };
+  return { timeline, player, recorder, store, scrubber, refreshCheckouts, mirrorControls, highlights, closeOrphanMirrorTabs, mirrorRestore };
 }
 
 /** Local time as yyyy-mm-dd-hhmm, for default session file names. */

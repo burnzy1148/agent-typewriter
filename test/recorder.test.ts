@@ -30,6 +30,11 @@ function settings(over: Partial<Settings> = {}): Settings {
     maxSpeedup: 1,
     maxAnimatedChars: 6000,
     fileSwitchDelayMs: 0,
+    smoothScroll: false,
+    scrollPauseMs: 0,
+    scrollLinesPerSecond: 60,
+    arrowNavigation: false,
+    arrowKeysPerSecond: 15,
     debounceMs: 50,
     reorderWindowMs: 0,
     maxFileSizeKB: 512,
@@ -40,6 +45,8 @@ function settings(over: Partial<Settings> = {}): Settings {
     ignoreOwnSaves: true,
     viewColumn: 'beside',
     mirrorStatusRow: true,
+    highlightAdditions: true,
+    markDeletions: true,
     ...over,
   };
 }
@@ -68,7 +75,7 @@ function recorderOn(s: Settings, ...dirs: string[]) {
   /** Waits for every debounce and read to finish, then hands held changes to the timeline. */
   const settle = async () => {
     await sleep(s.debounceMs + 150);
-    for (let i = 0; i < 100 && recorder.describeActivity().includes('debouncing: ') && !recorder.describeActivity().includes('debouncing: none'); i++) await sleep(20);
+    for (let i = 0; i < 250 && !recorder.describeActivity().includes('debouncing: none; reading: 0;'); i++) await sleep(20);
     await sleep(50);
     recorder.drainHeld();
   };
@@ -230,8 +237,9 @@ test('a new file a filter refresh reads before its create event arrives is recor
 });
 
 test('a refresh leaves a file with a change in its debounce to that change', async () => {
+  // The debounce outlasts the refresh, which runs git and can be slow.
   const dir = tempDir('at-rec-race2-');
-  const t = recorderOn(settings({ gitBaselines: false, debounceMs: 300 }), dir);
+  const t = recorderOn(settings({ gitBaselines: false, debounceMs: 2000 }), dir);
   await t.recorder.start();
   write(dir, 'src/new.ts', 'brand new\n');
   mock.fire('create', path.join(dir, 'src/new.ts'));
@@ -593,4 +601,139 @@ test('tracked files over maxFileSizeKB get no git baseline and are never read', 
   await t.settle();
   assert.deepEqual(t.events(), []);
   assert.deepEqual(t.logs.filter((l) => l.startsWith('Could not read the git baseline')), [], 'a binary blob was reported as unreadable');
+});
+
+// --- at-kbn.2: a delete and a create with matching content are one rename.
+
+/** Renames on disk and reports it as the watcher does: delete and create, in either order. */
+function renameOnDisk(from: string, to: string, createFirst = false) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  fs.renameSync(from, to);
+  if (createFirst) mock.fire('create', to);
+  mock.fire('delete', from);
+  if (!createFirst) mock.fire('create', to);
+}
+
+const renames = (t: { timeline: Timeline }) =>
+  t.timeline.all().map((e) => (e.kind === 'rename' ? `rename ${e.fromRelPath} -> ${e.relPath}` : `${e.kind} ${e.relPath}`));
+
+for (const createFirst of [false, true]) {
+  test(`a renamed file is one rename (${createFirst ? 'create' : 'delete'} reported first)`, async () => {
+    const dir = tempDir('at-rec-ren-');
+    write(dir, 'src/a.ts', 'export const a = 1;\n');
+    const t = recorderOn(settings({ reorderWindowMs: 300 }), dir);
+    await t.recorder.start();
+    renameOnDisk(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'), createFirst);
+    await t.settle();
+    assert.deepEqual(renames(t), ['rename src/a.ts -> src/b.ts']);
+    const e = t.timeline.all()[0];
+    assert.equal(e.fromUri, t.uri(path.join(dir, 'src/a.ts')).toString());
+    assert.equal(e.uri, t.uri(path.join(dir, 'src/b.ts')).toString());
+    assert.deepEqual([e.before, e.after, e.linesAdded, e.linesRemoved], ['export const a = 1;\n', 'export const a = 1;\n', 0, 0]);
+    // The new path has the baseline now, so its next change is a modify from the moved text.
+    t.change(path.join(dir, 'src/b.ts'), 'export const a = 2;\n');
+    await t.settle();
+    assert.deepEqual(t.events()[1], { kind: 'modify', relPath: 'src/b.ts', before: 'export const a = 1;\n', after: 'export const a = 2;\n' });
+  });
+}
+
+test('a rename with an edit is one rename from the old text to the new', async () => {
+  const dir = tempDir('at-rec-ren-');
+  const text = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');
+  write(dir, 'src/a.ts', text);
+  const t = recorderOn(settings({ reorderWindowMs: 300 }), dir);
+  await t.recorder.start();
+  fs.mkdirSync(path.join(dir, 'lib'));
+  fs.writeFileSync(path.join(dir, 'lib/a.ts'), text.replace('line 3\n', 'line three\n'));
+  fs.unlinkSync(path.join(dir, 'src/a.ts'));
+  mock.fire('create', path.join(dir, 'lib/a.ts'));
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t), ['rename src/a.ts -> lib/a.ts']);
+  const e = t.timeline.all()[0];
+  assert.deepEqual([e.before, e.after, e.linesAdded, e.linesRemoved], [text, text.replace('line 3\n', 'line three\n'), 1, 1]);
+});
+
+test('an unrelated delete and create stay a delete and a create', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'export const a = 1;\n');
+  const t = recorderOn(settings({ reorderWindowMs: 300 }), dir);
+  await t.recorder.start();
+  fs.unlinkSync(path.join(dir, 'src/a.ts'));
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  t.change(path.join(dir, 'src/c.ts'), 'something else entirely\n', 'create');
+  await t.settle();
+  assert.deepEqual(renames(t).sort(), ['create src/c.ts', 'delete src/a.ts']);
+});
+
+test('a moved directory pairs each file with its namesake, empty files too', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/util/x.ts', 'export const x = 1;\n');
+  write(dir, 'src/util/index.ts', '');
+  const t = recorderOn(settings({ reorderWindowMs: 300 }), dir);
+  await t.recorder.start();
+  fs.renameSync(path.join(dir, 'src/util'), path.join(dir, 'src/lib'));
+  write(dir, 'src/new.ts', '');
+  mock.fire('delete', path.join(dir, 'src/util'));
+  mock.fire('create', path.join(dir, 'src/new.ts'));
+  mock.fire('create', path.join(dir, 'src/lib'));
+  await t.settle();
+  assert.deepEqual(renames(t).sort(), ['create src/new.ts', 'rename src/util/index.ts -> src/lib/index.ts', 'rename src/util/x.ts -> src/lib/x.ts']);
+});
+
+test('a rename across the filters is a create moving in and a delete moving out', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'notes.txt', 'notes\n');
+  const t = recorderOn(settings({ reorderWindowMs: 300, extensions: ['ts'] }), dir);
+  await t.recorder.start();
+  renameOnDisk(path.join(dir, 'notes.txt'), path.join(dir, 'notes.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t), ['create notes.ts']);
+  renameOnDisk(path.join(dir, 'notes.ts'), path.join(dir, 'notes.txt'));
+  await t.settle();
+  assert.deepEqual(renames(t), ['create notes.ts', 'delete notes.ts']);
+});
+
+test('a rename released apart, with no reorder window, stays a delete and a create', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'export const a = 1;\n');
+  const t = recorderOn(settings({ reorderWindowMs: 0 }), dir);
+  await t.recorder.start();
+  renameOnDisk(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t).sort(), ['create src/b.ts', 'delete src/a.ts']);
+});
+
+test('a rename whose new file is edited before the delete arrives is not paired, so the edit stays last', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'X\n');
+  const t = recorderOn(settings({ reorderWindowMs: 3000 }), dir);
+  await t.recorder.start();
+  fs.renameSync(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'));
+  mock.fire('create', path.join(dir, 'src/b.ts'));
+  await sleep(300);
+  t.change(path.join(dir, 'src/b.ts'), 'Y\n');
+  await sleep(300);
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t), ['create src/b.ts', 'modify src/b.ts', 'delete src/a.ts']);
+  assert.equal(t.timeline.latestStates().get('src/b.ts')?.after, 'Y\n');
+});
+
+test('a rename whose old path is written again before the create arrives is not paired', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'X\n');
+  const t = recorderOn(settings({ reorderWindowMs: 3000 }), dir);
+  await t.recorder.start();
+  fs.renameSync(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'));
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  await sleep(300);
+  t.change(path.join(dir, 'src/a.ts'), 'Z\n', 'create');
+  await sleep(300);
+  mock.fire('create', path.join(dir, 'src/b.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t).sort(), ['create src/a.ts', 'create src/b.ts', 'delete src/a.ts']);
+  // The old path's own changes keep their order.
+  assert.deepEqual(renames(t).filter((e) => e.endsWith('src/a.ts')), ['delete src/a.ts', 'create src/a.ts']);
+  assert.deepEqual([...t.timeline.latestStates().keys()].sort(), ['src/a.ts', 'src/b.ts']);
 });

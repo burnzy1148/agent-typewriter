@@ -142,6 +142,35 @@
       "default": 600,
       "description": "Pause when playback flips to a different file, so the switch reads like a person changing tabs."
     },
+    "smoothScroll": {
+      "type": "boolean",
+      "default": true,
+      "description": "Scroll to the next edit in the same file, after a short pause, instead of jumping there. Edits already in view only move the caret."
+    },
+    "scrollPauseMs": {
+      "type": "number",
+      "default": 400,
+      "minimum": 0,
+      "maximum": 5000,
+      "description": "Pause before scrolling to the next edit in the same file, so the last lines typed can be read. Divided by the playback speed."
+    },
+    "scrollLinesPerSecond": {
+      "type": "number",
+      "default": 60,
+      "minimum": 1,
+      "description": "How fast the view scrolls to the next edit in the same file. A scroll takes at most one second at 1x; far edits jump most of the way first."
+    },
+    "arrowNavigation": {
+      "type": "boolean",
+      "default": true,
+      "description": "Walk the caret to the next edit with arrow keys (a line at a time, then by words) when it is close by and in view, instead of clicking there."
+    },
+    "arrowKeysPerSecond": {
+      "type": "number",
+      "default": 15,
+      "minimum": 1,
+      "description": "Arrow key presses per second when walking the caret to the next edit. Multiplied by the playback speed."
+    },
     "debounceMs": {
       "type": "number",
       "default": 200,
@@ -200,6 +229,16 @@
       "type": "boolean",
       "default": true,
       "description": "Show a row of playback controls and status above the first line of the replay editor. Turn off to keep it out of screen recordings. Hidden anyway when editor.codeLens is off."
+    },
+    "highlightAdditions": {
+      "type": "boolean",
+      "default": true,
+      "description": "Keep text that replay added highlighted, like a git diff, until highlights are cleared. When off, each typed edit only flashes briefly."
+    },
+    "markDeletions": {
+      "type": "boolean",
+      "default": true,
+      "description": "Show text in red with a strikethrough just before replay deletes it, and mark where text was removed with a gutter marker whose hover shows the removed text."
     }
   },
   "additionalProperties": false

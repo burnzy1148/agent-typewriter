@@ -340,3 +340,32 @@ test('resolveReorderWindow: invalid values fall back to auto', () => {
     assert.equal(resolveReorderWindow(v, 'win32'), 2500, String(v));
   }
 });
+
+test('reorder: take removes the chosen held item and returns its key', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  buf.add('a', 1000, 'a');
+  buf.add('b', 1010, 'b');
+  const seen: Array<[string, number]> = [];
+  const taken = buf.take((held) => {
+    for (const h of held) seen.push([h.item, h.key]);
+    return held.find((h) => h.item === 'a')?.item;
+  });
+  assert.deepEqual(seen, [['a', 1000], ['b', 1010]]);
+  assert.deepEqual(taken, { item: 'a', key: 1000 });
+  assert.equal(buf.size, 1);
+  buf.add('ab', 1010, 'b');
+  clock.advance(200);
+  assert.deepEqual(out, ['b', 'ab']);
+});
+
+test('reorder: take that picks nothing changes nothing', () => {
+  const { clock, out, buf } = setup();
+  clock.t = 1000;
+  buf.add('a', 1000, 'a');
+  assert.equal(buf.take(() => undefined), undefined);
+  assert.equal(buf.take(() => 'not held'), undefined);
+  assert.equal(buf.size, 1);
+  clock.advance(100);
+  assert.deepEqual(out, ['a']);
+});

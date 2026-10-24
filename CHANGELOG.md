@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-24)
 
+- The caret walks to a nearby edit with arrow keys, a line at a time and then by words, instead of appearing there (`arrowNavigation`, `arrowKeysPerSecond`). Far edits are still scrolled to and clicked.
+- The next edit in the same file is scrolled to instead of jumped to: a short pause to read the last lines typed (`scrollPauseMs`), then an eased scroll (`scrollLinesPerSecond`) that follows the playback speed, pause, and skip. `smoothScroll: false` brings back the jump.
 - Typing speed is set in characters per minute: `charsPerMinute` replaces `charsPerSecond`, and the default is 350 per minute (was 35 per second, 2100 per minute). **Set Playback Speed... > Base speed...** reads and writes it.
 - `charsPerSecond` is deprecated but still honored, times 60, wherever `charsPerMinute` is not set. The output channel says when it is in effect.
 - **BREAKING**: `languageSpeeds` values are characters per minute. Multiply existing values by 60 to keep the same speed.
+- Renamed and moved files are recorded as one rename, not a delete and a create, when the content matches (or at least half the lines are unchanged). Replay moves the mirror to the new name and types any edit. Git replay maps git's renames the same way. Saved sessions are now version 2; version 1 files still load.
 - Mirror tabs left open across a reload or restart reopen with their text at the playback position, instead of "file not found". Mirror tabs for files with no recorded history are closed.
 
 ## 0.2.0 (2026-10-21)

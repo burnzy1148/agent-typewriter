@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import type { AgentTypewriterApi } from '../src/extension';
+import { baselines } from '../src/highlights';
+import type { Timeline } from '../src/timeline';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -124,6 +126,29 @@ export async function run(): Promise<void> {
   await until('delete playback', idle);
   assert.equal(mirrorText('src/b.ts'), '');
   console.log('[it] delete ok');
+
+  // --- 4b. A rename is one change and moves the mirror (at-kbn.2).
+  const mirrorTabOpen = (rel: string) =>
+    vscode.window.tabGroups.all.flatMap((g) => g.tabs).some((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === 'agent-typewriter' && t.input.uri.path === '/' + rel);
+  write('src/moveme.ts', 'export const moved = true;\n');
+  await until('moveme create', () => timeline.all().some((e) => e.relPath === 'src/moveme.ts'));
+  await sleep(300);
+  await until('moveme playback', idle);
+  assert.ok(mirrorTabOpen('src/moveme.ts'), 'the created file has no mirror tab');
+  const beforeRename = timeline.all().length;
+  fs.renameSync(path.join(root, 'src/moveme.ts'), path.join(root, 'src/moved.ts'));
+  await until('rename recorded', () => timeline.all().slice(beforeRename).some((e) => e.relPath === 'src/moved.ts'));
+  // A stray half would arrive within the reorder window (2.5 s on Windows).
+  await sleep(3000);
+  await until('rename playback', idle);
+  assert.deepEqual(
+    timeline.all().slice(beforeRename).map((e) => `${e.kind} ${e.fromRelPath ?? ''} ${e.relPath}`),
+    ['rename src/moveme.ts src/moved.ts'],
+  );
+  assert.equal(mirrorText('src/moved.ts'), disk('src/moved.ts'));
+  assert.ok(mirrorTabOpen('src/moved.ts'), 'no mirror tab for the new name');
+  assert.ok(!mirrorTabOpen('src/moveme.ts'), 'the old name\'s mirror tab is still open');
+  console.log('[it] rename ok');
 
   // --- 5. Own saves from a VS Code editor are ignored.
   const before = timeline.all().length;
@@ -903,6 +928,376 @@ export async function run(): Promise<void> {
     };
     await revertMidChange(r0, r1, 'const a = 10;', 'workbench.action.revertAndCloseActiveEditor');
     await revertMidChange(r1, r2, 'const a = 100;', 'workbench.action.files.revert');
+
+    // The next edit in the same file is scrolled to, not jumped to. Pause holds
+    // the scroll; finish current and skip to latest end it; smoothScroll off jumps.
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await setting('agentTypewriter', 'maxAnimatedChars', 6000);
+    await setting('agentTypewriter', 'scrollPauseMs', 0);
+    await setting('agentTypewriter', 'scrollLinesPerSecond', 60);
+    const tallLines = Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`);
+    /** The mirror's current text with `edits` applied, so each step's change holds only its own hunks. */
+    const tall = (edits: Record<number, string>) => (tallText ?? tallLines.join('\n') + '\n').split('\n').map((l, i) => edits[i] ?? l).join('\n');
+    /** Top lines the mirror of `rel` shows, in order, until disposed. */
+    const tops = (rel: string) => {
+      const seen: number[] = [];
+      const sub = vscode.window.onDidChangeTextEditorVisibleRanges((ev) => {
+        if (isMirror(ev.textEditor.document, rel) && ev.visibleRanges.length > 0) seen.push(ev.visibleRanges[0].start.line);
+      });
+      return { seen, dispose: () => sub.dispose() };
+    };
+    const inView = (rel: string, line: number) =>
+      mirrorEditor(rel)!.visibleRanges.some((r) => r.start.line <= line && line <= r.end.line);
+    const toTop = async (rel: string) => {
+      const ed = mirrorEditor(rel)!;
+      ed.revealRange(new vscode.Range(0, 0, 0, 0), vscode.TextEditorRevealType.AtTop);
+      await until(`${rel} scrolled to the top`, () => ed.visibleRanges[0]?.start.line === 0);
+    };
+    let tallText: string | undefined;
+    tallText = (await play('play/scroll.ts', '', tall({}))).after;
+    const scrollStep = async (label: string, edits: Record<number, string>, line: number) => {
+      await toTop('play/scroll.ts');
+      const seen = tops('play/scroll.ts');
+      const e = push('play/scroll.ts', tallText!, tall(edits));
+      return {
+        e,
+        seen,
+        done: async () => {
+          await until(`${label} playback`, playedNow(e.seq));
+          seen.dispose();
+          assert.equal(mirrorText('play/scroll.ts'), e.after, `${label}: the mirror does not hold the after text`);
+          assert.ok(inView('play/scroll.ts', line), `${label}: line ${line} is not in view`);
+          tallText = e.after;
+        },
+      };
+    };
+
+    const smooth = await scrollStep('smooth scroll', { 3: 'const line3 = 30;', 350: 'const line350 = 3500;' }, 350);
+    await smooth.done();
+    const distinct = [...new Set(smooth.seen.seen)];
+    assert.ok(distinct.length >= 5, `expected a scroll through several positions, saw tops ${distinct.join(',')}`);
+    assert.ok(distinct.every((t, i) => i === 0 || t >= distinct[i - 1]), `the scroll went back up: ${distinct.join(',')}`);
+
+    const paused = await scrollStep('paused scroll', { 360: 'const line360 = 3600;' }, 360);
+    await until('the scroll to start', () => paused.seen.seen.some((t) => t > 0));
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(300);
+    const heldAt = paused.seen.seen.length;
+    await sleep(600);
+    assert.equal(paused.seen.seen.length, heldAt, 'the view kept scrolling while paused');
+    assert.equal(timeline.stateOf(paused.e.seq), 'playing', 'the change finished while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await paused.done();
+
+    const finished = await scrollStep('finish mid-scroll', { 370: 'const line370 = 3700;' }, 370);
+    await until('the scroll to start', () => finished.seen.seen.some((t) => t > 0));
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await finished.done();
+
+    const snapped = await scrollStep('skip to latest mid-scroll', { 380: 'const line380 = 3800;' }, 0);
+    await until('the scroll to start', () => snapped.seen.seen.some((t) => t > 0));
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorText('play/scroll.ts'), snapped.e.after, 'skip to latest mid-scroll did not snap the mirror');
+    const afterSnap = snapped.seen.seen.length;
+    await sleep(300);
+    assert.equal(snapped.seen.seen.length, afterSnap, 'the view kept scrolling after skip to latest');
+    snapped.seen.dispose();
+    tallText = snapped.e.after;
+
+    await setting('agentTypewriter', 'smoothScroll', false);
+    const jumped = await scrollStep('jump with smoothScroll off', { 390: 'const line390 = 3900;' }, 390);
+    await jumped.done();
+    assert.ok(new Set(jumped.seen.seen).size <= 2, `smoothScroll off still scrolled: ${jumped.seen.seen.join(',')}`);
+    console.log('[it] smooth scroll to the next edit ok');
+
+    // A nearby edit in view is reached with arrow keys, a line at a time.
+    // Pause holds the walk; arrowNavigation off puts the caret there at once.
+    await setting('agentTypewriter', 'arrowNavigation', true);
+    await setting('agentTypewriter', 'arrowKeysPerSecond', 15);
+    const shortLines = Array.from({ length: 24 }, (_, i) => `let v${i} = ${i};`);
+    /** The mirror's current text with `edits` applied, so each step's change holds only its own hunks. */
+    const short = (edits: Record<number, string>) => (shortText ?? shortLines.join('\n') + '\n').split('\n').map((l, i) => edits[i] ?? l).join('\n');
+    let shortText: string | undefined;
+    shortText = (await play('play/arrows.ts', '', short({}))).after;
+    /** Caret lines the mirror of `rel` shows, in order, until disposed. */
+    const caretLines = (rel: string) => {
+      const seen: number[] = [];
+      const sub = vscode.window.onDidChangeTextEditorSelection((ev) => {
+        if (isMirror(ev.textEditor.document, rel)) seen.push(ev.selections[0].active.line);
+      });
+      return { seen, dispose: () => sub.dispose() };
+    };
+    const arrowStep = async (label: string, edits: Record<number, string>, lines: number[]) => {
+      await toTop('play/arrows.ts');
+      for (const line of lines) assert.ok(inView('play/arrows.ts', line), `${label}: line ${line} is not in view; the window is too small`);
+      const seen = caretLines('play/arrows.ts');
+      const e = push('play/arrows.ts', shortText!, short(edits));
+      return {
+        e,
+        seen,
+        done: async () => {
+          await until(`${label} playback`, playedNow(e.seq));
+          seen.dispose();
+          assert.equal(mirrorText('play/arrows.ts'), e.after, `${label}: the mirror does not hold the after text`);
+          shortText = e.after;
+        },
+      };
+    };
+    const visited = (seen: number[], from: number, to: number) => Array.from({ length: to - from - 1 }, (_, i) => from + 1 + i).filter((l) => !seen.includes(l));
+
+    const walked = await arrowStep('arrow walk', { 1: 'let v1 = 10;', 9: 'let v9 = 90;' }, [1, 9]);
+    await walked.done();
+    assert.deepEqual(visited(walked.seen.seen, 1, 9), [], `the caret skipped lines between edits: ${walked.seen.seen.join(',')}`);
+
+    // Slow keys, so the pause lands mid-walk even on a slow runner.
+    await setting('agentTypewriter', 'arrowKeysPerSecond', 5);
+    const held = await arrowStep('paused arrow walk', { 16: 'let v16 = 160;' }, [9, 16]);
+    await until('the arrow walk to start', () => held.seen.seen.some((l) => l > 9 && l < 16));
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(300);
+    const heldAtKeys = held.seen.seen.length;
+    await sleep(600);
+    assert.equal(held.seen.seen.length, heldAtKeys, 'the caret kept moving while paused');
+    assert.equal(timeline.stateOf(held.e.seq), 'playing', 'the change finished while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await held.done();
+
+    const finishedWalk = await arrowStep('finish mid-walk', { 8: 'let v8 = 80;' }, [8, 16]);
+    await until('the arrow walk to start', () => finishedWalk.seen.seen.some((l) => l > 8 && l < 16));
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await finishedWalk.done();
+    assert.equal(mirrorEditor('play/arrows.ts')!.selection.active.line, 8, 'finish current mid-walk left the caret away from the edit');
+
+    const snappedWalk = await arrowStep('skip to latest mid-walk', { 16: 'let v16 = 1600;' }, [8, 16]);
+    await until('the arrow walk to start', () => snappedWalk.seen.seen.some((l) => l > 8 && l < 16));
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(mirrorText('play/arrows.ts'), snappedWalk.e.after, 'skip to latest mid-walk did not snap the mirror');
+    const afterWalkSnap = snappedWalk.seen.seen.length;
+    await sleep(500);
+    assert.equal(snappedWalk.seen.seen.length, afterWalkSnap, 'the caret kept walking after skip to latest');
+    snappedWalk.seen.dispose();
+    shortText = snappedWalk.e.after;
+
+    await setting('agentTypewriter', 'arrowNavigation', false);
+    const clicked = await arrowStep('arrowNavigation off', { 22: 'let v22 = 220;' }, [16, 22]);
+    await clicked.done();
+    assert.deepEqual(visited(clicked.seen.seen, 16, 22), [17, 18, 19, 20, 21], `arrowNavigation off still walked: ${clicked.seen.seen.join(',')}`);
+    console.log('[it] arrow keys to nearby edits ok');
+
+    // A rename shows the old name, moves the mirror, then types the edit (at-kbn.2).
+    await setting('agentTypewriter', 'charsPerMinute', 3600);
+    const mirrorTabs = (rel: string) =>
+      vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.input instanceof vscode.TabInputText && isMirror({ uri: t.input.uri } as vscode.TextDocument, rel));
+    const mirrorGone = async (rel: string) => {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel }));
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const moved0 = 'const a = 1;\nconst b = 2;\n';
+    const moved1 = moved0 + 'const c = 3;\n';
+    const pushRename = (from: string, to: string, before: string, after: string) =>
+      timeline.push({
+        uri: vscode.Uri.file(path.join(root, to)).toString(),
+        relPath: to,
+        fromUri: vscode.Uri.file(path.join(root, from)).toString(),
+        fromRelPath: from,
+        time: Date.now(),
+        kind: 'rename',
+        before,
+        after,
+        eol: '\n',
+        linesAdded: 1,
+        linesRemoved: 0,
+      });
+    await play('play/old-name.ts', '', moved0);
+    const typedAfterMove = record('play/new-name.ts');
+    const ren = pushRename('play/old-name.ts', 'play/new-name.ts', moved0, moved1);
+    await until('rename playback', playedNow(ren.seq));
+    typedAfterMove.dispose();
+    assert.equal(mirrorText('play/new-name.ts'), moved1);
+    assert.equal(mirrorTabs('play/old-name.ts').length, 0, 'the old name still has a tab');
+    assert.equal(mirrorTabs('play/new-name.ts').length, 1, 'the new name has no tab');
+    assert.ok(await mirrorGone('play/old-name.ts'), 'the old mirror document is still there');
+    assert.ok(typedAfterMove.changes.length > 0 && typedAfterMove.texts.every((t) => t.startsWith(moved0)), 'the edit was not typed onto the moved text');
+
+    // Skip to latest past a queued rename leaves no old mirror either.
+    await play('play/snap-old.ts', '', moved0);
+    await vscode.commands.executeCommand('agentTypewriter.pause');
+    const snapRen = pushRename('play/snap-old.ts', 'play/snap-new.ts', moved0, moved1);
+    await vscode.commands.executeCommand('agentTypewriter.catchUp');
+    assert.equal(timeline.stateOf(snapRen.seq), 'played');
+    assert.ok(await mirrorGone('play/snap-old.ts'), 'skip to latest left the old mirror');
+    assert.equal(mirrorTabs('play/snap-old.ts').length, 0, 'skip to latest left the old tab');
+    assert.equal(new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.from({ scheme: 'agent-typewriter', path: '/play/snap-new.ts' }))), moved1);
+    await vscode.commands.executeCommand('agentTypewriter.resume');
+
+    // Highlights: marks against the baseline as a net diff, growing while typing,
+    // cleared per file and for all, brought back by replaying from before a clear.
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    const hlUri = (rel: string) => vscode.Uri.from({ scheme: 'agent-typewriter', path: '/' + rel });
+    const drawn = (rel: string) => api.highlights.drawn.get(hlUri(rel).toString());
+    const drawnIs = (rel: string, want: unknown) => () => JSON.stringify(drawn(rel) ?? null) === JSON.stringify(want);
+    const hl0 = 'one\nlet two = 2;\nthree\nfour\n';
+    const hl1 = 'one\nlet TWO = 2;\nthree\nfour\nfive\n';
+    const hl2 = 'one\nlet TWO = 2;\nfour\nfive\n';
+    const firstHl = await play('play/hl-a.ts', hl0, hl1);
+    assert.equal(mirrorText('play/hl-a.ts'), hl1, 'highlighting changed the mirror text');
+    await until('word change and new line highlighted', drawnIs('play/hl-a.ts', {
+      lines: [1, 4],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }],
+    }), 5000);
+    await play('play/hl-a.ts', hl1, hl2);
+    await until('removed line marked', drawnIs('play/hl-a.ts', {
+      lines: [1, 3],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }, { line: 2, texts: ['three\n'] }],
+    }), 5000);
+    assert.equal(mirrorText('play/hl-a.ts'), hl2);
+    // Added and then removed again: nothing to show.
+    await play('play/hl-c.ts', 'p\n', 'p\nq\n');
+    await until('hl-c highlighted', drawnIs('play/hl-c.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    await play('play/hl-c.ts', 'p\nq\n', 'p\n');
+    await until('added then removed leaves no mark', drawnIs('play/hl-c.ts', null), 5000);
+    assert.ok(api.highlights.hasHighlights, 'hl-a has highlights but none are reported');
+    // Typed text is highlighted before the change finishes.
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const slow = push('play/hl-e.ts', 'a\n', 'a\nhello there, typed slowly\n');
+    await until('typed text highlighted mid-change', () => timeline.stateOf(slow.seq) === 'playing' && (drawn('play/hl-e.ts')?.lines ?? []).includes(1), 15000);
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('slow change played', playedNow(slow.seq));
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await until('finished change stays highlighted', drawnIs('play/hl-e.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    // Clear one file: it starts over from its current text; other files keep theirs.
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-e.ts'));
+    await until('hl-e cleared', drawnIs('play/hl-e.ts', null), 5000);
+    assert.ok(api.highlights.hasHighlights, 'clearing hl-e cleared hl-a too');
+    await play('play/hl-a.ts', hl2, hl2 + 'six\n');
+    await until('hl-a still highlighted against its old baseline', drawnIs('play/hl-a.ts', {
+      lines: [1, 3, 4],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }, { line: 2, texts: ['three\n'] }],
+    }), 5000);
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-a.ts'));
+    await until('hl-a cleared', drawnIs('play/hl-a.ts', null), 5000);
+    await play('play/hl-a.ts', hl2 + 'six\n', hl2 + 'six\nseven\n');
+    await until('later change highlighted against the new baseline', drawnIs('play/hl-a.ts', { lines: [5], chars: [], removals: [] }), 5000);
+    // Clear all, then replay from before the clear: the highlights come back.
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
+    await until('all cleared', () => drawn('play/hl-a.ts') === undefined && !api.highlights.hasHighlights, 5000);
+    // A line break added at the end draws nothing, so the clear buttons stay off.
+    await play('play/hl-k.ts', 'ab', 'ab\n');
+    await sleep(400);
+    assert.equal(drawn('play/hl-k.ts'), undefined, 'a final line break was drawn');
+    assert.ok(!api.highlights.hasHighlights, 'clear buttons on with nothing drawn');
+    // Typing into a cleared buffer: the clear buttons see the highlights before the change finishes.
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const lagged = push('play/hl-h.ts', 'a\n', 'a\nthe clear button sees this before it is done\n');
+    await until('highlights reported mid-change', () => timeline.stateOf(lagged.seq) === 'playing' && api.highlights.hasHighlights, 15000);
+    // The title bar button's context key names the mirror being typed into.
+    assert.ok(api.highlights.highlightedPaths.includes('/play/hl-h.ts'), `context key lacks the typing mirror: ${api.highlights.highlightedPaths.join(', ')}`);
+    // Skipping it: its half-typed text stops counting as live at once, before the player lets go.
+    assert.ok(api.player.liveText('play/hl-h.ts') !== undefined, 'no live text while typing');
+    timeline.seek(lagged.seq + 1);
+    const stopping = api.player.interrupt();
+    assert.equal(api.player.liveText('play/hl-h.ts'), undefined, 'an interrupted change still reports live text');
+    await stopping;
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await vscode.commands.executeCommand('agentTypewriter.seek', firstHl.seq);
+    await until('replay after clear', idle, 20000);
+    await vscode.commands.executeCommand('vscode.open', hlUri('play/hl-a.ts'), { preview: false });
+    await until('replay brings the cleared highlights back', drawnIs('play/hl-a.ts', {
+      lines: [1, 3, 4, 5],
+      chars: [{ line: 1, start: 4, end: 7 }],
+      removals: [{ line: 1, texts: ['two'] }, { line: 2, texts: ['three\n'] }],
+    }), 5000);
+    // Text about to be deleted is previewed before it goes, and not with markDeletions off.
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const delText = 'first\nsecond\nthird\n';
+    const previews = (want: string) => {
+      const seen = { hit: false, stop: () => clearInterval(timer) };
+      const timer = setInterval(() => {
+        if (api.player.deletionPreview === want) seen.hit = true;
+      }, 10);
+      return seen;
+    };
+    const longDel = previews('second\nthird\n');
+    await play('play/hl-g.ts', delText, 'first\n');
+    longDel.stop();
+    assert.ok(longDel.hit, 'a multi-line deletion was not previewed');
+    // "total" -> "t" backspaces the word, then types the "t".
+    const shortDel = previews('total');
+    await play('play/hl-g.ts', 'first\n', 'first\nlet total = 1;\n');
+    await play('play/hl-g.ts', 'first\nlet total = 1;\n', 'first\nlet t = 1;\n');
+    shortDel.stop();
+    assert.ok(shortDel.hit, 'a backspaced word was not previewed');
+    assert.equal(api.player.deletionPreview, undefined, 'the preview stayed up after the deletion');
+    await setting('agentTypewriter', 'markDeletions', false);
+    const offDel = previews('first\nlet t = 1;\n');
+    await play('play/hl-g.ts', 'first\nlet t = 1;\n', '');
+    offDel.stop();
+    assert.ok(!offDel.hit, 'a deletion was previewed with markDeletions off');
+    await setting('agentTypewriter', 'markDeletions', true);
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+
+    // A seek takes marks that no longer fit down at once, not after the redraw throttle.
+    await play('play/hl-j.ts', 'a\n', 'a\nb\n');
+    await until('hl-j highlighted', drawnIs('play/hl-j.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    await vscode.commands.executeCommand('agentTypewriter.pause');
+    const hlj = timeline.all().filter((e) => e.relPath === 'play/hl-j.ts').pop()!;
+    api.highlights.refresh();
+    await sleep(30);
+    // A redraw just ran, so the throttle holds the next one back; only the jump check can clear in time.
+    timeline.seek(hlj.seq);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(drawn('play/hl-j.ts'), undefined, 'stale marks stayed up after a seek');
+    await vscode.commands.executeCommand('agentTypewriter.resume');
+    await until('hl-j replayed', idle, 10000);
+    // Hovering a line with a removal marker shows the removed text; other lines show none.
+    const hoverText = async (rel: string, line: number) => {
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', hlUri(rel), new vscode.Position(line, 1));
+      return hovers.flatMap((h) => h.contents.map((c) => (typeof c === 'string' ? c : c.value))).join('\n');
+    };
+    // hl-a is no longer the tab in front; hovering works on its document all the same.
+    assert.match(await hoverText('play/hl-a.ts', 2), /Removed[\s\S]*three/, 'no hover with the removed line');
+    assert.doesNotMatch(await hoverText('play/hl-a.ts', 0), /Removed/, 'a hover on a line with nothing removed');
+    // During a rename's move pause the old mirror keeps its highlights, and a clear there follows the file.
+    await play('play/hl-r-old.ts', 'r0\n', 'r0\nr1\n');
+    const renHl = pushRename('play/hl-r-old.ts', 'play/hl-r-new.ts', 'r0\nr1\n', 'r0\nr1\nr2\n');
+    await until(
+      'old mirror highlighted during the move',
+      () => timeline.stateOf(renHl.seq) === 'playing' && api.player.playbackRelPath === 'play/hl-r-old.ts' && (drawn('play/hl-r-old.ts')?.lines ?? []).includes(1),
+      5000,
+    );
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-r-old.ts'));
+    await until('rename with a clear played', playedNow(renHl.seq));
+    await until('the clear followed the file to its new path', drawnIs('play/hl-r-new.ts', null), 5000);
+    // A deleted file shows one removal marker at line 1, with its text on hover.
+    await play('play/hl-d.ts', 'gone\nfile\n', '', 'delete');
+    await until('deleted file marked', drawnIs('play/hl-d.ts', { lines: [], chars: [], removals: [{ line: 0, texts: ['gone\nfile\n'] }] }), 5000);
+    assert.match(await hoverText('play/hl-d.ts', 0), /gone/, 'no hover on the deleted file');
+    // Both settings off: nothing is drawn.
+    await setting('agentTypewriter', 'markDeletions', false);
+    await until('markDeletions off', drawnIs('play/hl-d.ts', null), 5000);
+    await setting('agentTypewriter', 'highlightAdditions', false);
+    await until('highlights off everywhere', () => !api.highlights.hasHighlights, 5000);
+    await play('play/hl-f.ts', 'x\n', 'x\ny\n');
+    await sleep(300);
+    assert.equal(drawn('play/hl-f.ts'), undefined, 'drawn with both settings off');
+    assert.equal(mirrorText('play/hl-f.ts'), 'x\ny\n');
+    // Turned back on, the highlights of every played change since the baseline return.
+    await setting('agentTypewriter', 'highlightAdditions', true);
+    await setting('agentTypewriter', 'markDeletions', true);
+    await until('highlights back after turning them on', drawnIs('play/hl-f.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    // A real file open beside the mirrors is never decorated.
+    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
+    await sleep(300);
+    assert.ok([...api.highlights.drawn.keys()].every((k) => k.startsWith('agent-typewriter:')), 'a real file got highlights');
+    console.log('[it] highlights ok');
 
     for (const restore of undo.reverse()) await restore();
     await vscode.commands.executeCommand('agentTypewriter.start');
@@ -1877,6 +2272,8 @@ export async function run(): Promise<void> {
   // tabs stay open across it: an LF file played to the end, and a CRLF file
   // played once with a second change queued behind it.
   await until('idle before reload setup', idle);
+  // restore.ts checks the clear survives: only files changed after it are highlighted.
+  await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
   write('src/tabPlayed.ts', 'export const tabPlayed = 1;\n');
   await sleep(300);
   write('src/tabQueued.ts', 'export const tabQueued = 1;\r\n');
@@ -1898,16 +2295,28 @@ export async function run(): Promise<void> {
   const mirrorTabs = Object.fromEntries(['src/tabPlayed.ts', 'src/tabQueued.ts'].map((rel) => [rel, shown(rel)]));
   assert.deepEqual(mirrorTabs['src/tabPlayed.ts'], { text: 'export const tabPlayed = 1;\n', eol: '\n' });
   assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'the queued change was typed while paused');
+  const highlighted = highlightedFiles(timeline);
+  for (const rel of ['src/tabPlayed.ts', 'src/tabQueued.ts']) assert.ok(highlighted.includes(rel), `${rel} is not highlighted after the clear`);
+  assert.ok(!highlighted.includes('src/a.ts'), 'a file changed before the clear is still highlighted');
   assert.ok(api.store, 'no timeline store');
   await api.store.flush();
   fs.writeFileSync(
     process.env.IT_EXPECT!,
-    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount(), mirrorTabs }),
+    JSON.stringify({ events: timeline.all().map(persisted), pending: timeline.pendingCount(), mirrorTabs, highlighted }),
   );
   console.log(`[it] left ${timeline.all().length} changes (3 queued) for the reload check`);
   // Stop first, so choosing only stores the choice; restore.ts checks it survives the reload.
   await vscode.commands.executeCommand('agentTypewriter.stop');
   await choose(nestedDir);
+}
+
+/** Files whose mirror text differs from their highlight baseline, sorted. */
+export function highlightedFiles(t: Timeline): string[] {
+  const texts = t.mirrorStates();
+  return [...baselines(t.all(), t.cursor, t.highlightClears)]
+    .filter(([relPath, base]) => texts.has(relPath) && texts.get(relPath)!.text !== base)
+    .map(([relPath]) => relPath)
+    .sort();
 }
 
 /** The recorded fields a restored change must keep. */

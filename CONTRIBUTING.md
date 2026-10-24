@@ -26,6 +26,10 @@ npm run package   # typecheck, test, bundle, produce the .vsix
 
 Run `npm run build` (or keep `npm run watch` running), then press F5 with the folder open to launch an Extension Development Host with your build loaded.
 
+To try replay by hand, run `npm run tour`. It builds the extension, makes a throwaway git repository, and opens it in a VS Code window running your build in a throwaway profile. Then it acts as an agent, one scenario per Enter: new files, word changes, short and long deletions, far edits, file switching, a burst of changes, a big paste, a CRLF file, a rename and a deleted file. Each step says what to watch for. It ends with a checklist of things to try by hand: seeking, clearing highlights, settings, reload, sessions, and Replay Git Commits on the repository's `main..feature`. `--auto` runs the steps without waiting; the header of `scripts/replay-tour.mjs` lists the other options.
+
+The README demo (`images/demo.gif`) is recorded by `npm run demo` on macOS with ffmpeg installed. It plays a few of the tour's steps (defined once in `scripts/tour-scenarios.mjs`) into the tour's repository in a throwaway VS Code profile and screen-records the window. The header of `scripts/demo/record.mjs` lists options for choosing the display, and its `shot` list picks the steps. Re-record it when the UI in the shot changes.
+
 ## How the code fits together
 
 [CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
@@ -41,16 +45,22 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 
 ## Pull requests
 
-- Branch from `main` and open the PR against `main`.
+- Branch from `develop` and open the PR against `develop`, the default branch. `main` only receives releases.
 - Add or update tests for the behavior you change. Integration tests live in `it/`, unit tests in `test/`.
 - CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows, then packages the `.vsix`. It must be green before merge.
 - If the PR implements an OpenSpec change, archive the change on the branch once its tasks are done, so the updated specs land with the code.
-- Add a line to the top section of [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
+- Add a line under `## Unreleased` at the top of [CHANGELOG.md](CHANGELOG.md) for user-visible changes. Add that heading if the top section is already a released version.
+- Feature PRs are squash-merged into `develop`.
 
 ## Releasing (maintainers)
 
-1. In a PR, set `version` in `package.json` and replace the CHANGELOG's `(unreleased)` heading with that version and the date.
-2. After it merges, tag the merge commit `v<version>` and push the tag. CI checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release.
+1. Run the **Release** workflow from the Actions tab, or `gh workflow run release.yml -f bump=patch` (or `minor`, `major`). It cuts `release/v<version>` from `develop`, bumps the version in `package.json` and `package-lock.json`, dates the CHANGELOG's `## Unreleased` heading, and opens a PR into `main`.
+2. When CI is green, merge that PR with **Create a merge commit**. Don't squash, or `develop` and `main` stop sharing history.
+3. The merge tags `main` `v<version>` and runs CI on the tag, which checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release. It also opens a PR syncing `main` back into `develop`. Merge that one with a merge commit too.
+
+Without the workflow, do the same by hand: a `release/v<version>` PR from `develop` into `main` with the version bump, a merge commit, `git tag v<version>` on the merge and `git push origin v<version>`, then merge `main` into `develop`.
+
+`scripts/apply-branch-rules.sh` sets the rulesets on `main` and `develop`: PRs only, CI green before merge, no force pushes or deletion, merge commits only on `main`. Repository admins can bypass them.
 
 ## License
 
