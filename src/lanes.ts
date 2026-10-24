@@ -59,6 +59,27 @@ export function autoFollowTarget(lanes: readonly LaneActivity[], followed: strin
   return target?.id;
 }
 
+/**
+ * What auto-follow does now: follow another lane once the followed one has
+ * nothing queued, nothing is being typed, and it has been quiet since
+ * `quietSince` for AUTO_FOLLOW_IDLE_MS; or check again in `checkIn` ms.
+ */
+export function autoFollowDecision(s: {
+  enabled: boolean;
+  playing: boolean;
+  followed: string;
+  lanes: readonly LaneActivity[];
+  quietSince: number;
+  now: number;
+}): { follow?: string; checkIn?: number } {
+  if (!s.enabled || s.playing) return {};
+  if (s.lanes.find((l) => l.id === s.followed)?.firstPendingSeq !== undefined) return {};
+  const target = autoFollowTarget(s.lanes, s.followed);
+  if (target === undefined) return {};
+  const wait = s.quietSince + AUTO_FOLLOW_IDLE_MS - s.now;
+  return wait > 0 ? { checkIn: wait } : { follow: target };
+}
+
 /** A lane's label: its branch or short commit, or the folder name outside git, with the folder name added in a multi-root workspace. */
 export function laneLabel(checkoutName: string, folderName: string, multiRoot: boolean): string {
   if (!checkoutName) return folderName;

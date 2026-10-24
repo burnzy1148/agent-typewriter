@@ -22,6 +22,8 @@ import { Timeline, laneOf, sessionClears, sessionLanes, toSession, type LaneInfo
 import { ChangeItem, laneName, TimelineView } from './timelineView';
 import { CheckoutRow, CheckoutsView, type FolderCheckoutsModel } from './checkoutsView';
 import { LaneDecorations } from './laneDecorations';
+import { AutoFollow } from './autoFollow';
+import { MAX_LANES } from './lanes';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
 export interface AgentTypewriterApi {
@@ -83,6 +85,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     error: (message) => void vscode.window.showErrorMessage(`Agent Typewriter: ${message}`),
   });
   const laneDecorations = new LaneDecorations(timeline);
+  const autoFollow = new AutoFollow(timeline, () => readSettings().autoFollow);
   const checkoutsTree = vscode.window.createTreeView('agentTypewriter.checkouts', { treeDataProvider: checkoutsView, manageCheckboxStateManually: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
@@ -105,6 +108,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     checkoutsView,
     checkoutsTree,
     laneDecorations,
+    autoFollow,
     checkoutsTree.onDidChangeCheckboxState(async (e) => {
       for (const [item, state] of e.items) {
         if (item instanceof CheckoutRow) await checkoutsView.setChecked(item, state === vscode.TreeItemCheckboxState.Checked);
@@ -718,8 +722,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
   });
 
-  // Tests pass (folder, worktree path); an empty or null path means the folder's own checkout.
-  register('agentTypewriter.chooseCheckout', async (folderArg?: vscode.Uri | string, pathArg?: string | null) => {
+  // Tests pass (folder, worktree path); an empty or null path means the folder's own checkout, and a list of paths records each.
+  register('agentTypewriter.chooseCheckout', async (folderArg?: vscode.Uri | string, pathArg?: string | null | string[]) => {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) throw new Error('Open a folder or workspace first.');
     const only = folderArg ? vscode.workspace.getWorkspaceFolder(typeof folderArg === 'string' ? vscode.Uri.file(folderArg) : folderArg) : undefined;
@@ -740,34 +744,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (candidates.length > 1) {
       const pick = await vscode.window.showQuickPick(
         candidates.map(([folder, c]) => ({ label: folder.name, detail: `${folderCheckoutChoice(folder.name, c.own, c.worktrees).choices} checkouts`, entry: [folder, c] as const })),
-        { title: 'Agent Typewriter: choose a checkout for which folder?' },
+        { title: 'Agent Typewriter: choose checkouts for which folder?' },
       );
       if (!pick) return;
       target = [pick.entry[0], pick.entry[1]];
     }
     const [folder, c] = target;
+    if (Array.isArray(pathArg)) {
+      await recorder.setCheckouts(folder, pathArg);
+      return;
+    }
     if (pathArg !== undefined) {
       await recorder.setCheckout(folder, pathArg || undefined);
       return;
     }
-    const current = pathKey(c.chosen ?? c.own?.path ?? folder.uri.fsPath);
-    const mark = (p: string) => (pathKey(p) === current ? 'current' : undefined);
+    const ownPath = c.own?.path ?? folder.uri.fsPath;
+    const recorded = new Set((recorder.isRunning ? recorder.recordedLanes().filter((l) => l.folder === folder).map((l) => l.checkout) : c.recorded).map(pathKey));
     const others = c.worktrees.filter((w) => w !== c.own);
     const self = folderCheckoutChoice(folder.name, c.own, c.worktrees);
-    const pick = await vscode.window.showQuickPick(
-      [
-        {
-          label: self.label,
-          description: [self.description, mark(c.own?.path ?? folder.uri.fsPath)].filter(Boolean).join(' · '),
-          detail: c.own?.path ?? folder.uri.fsPath,
-          path: undefined as string | undefined,
-        },
-        ...others.map((w) => ({ label: checkoutName(w), description: mark(w.path), detail: w.path, path: w.path as string | undefined })),
-      ],
-      { title: `Agent Typewriter: record which checkout of ${folder.name}?` },
-    );
-    if (!pick) return;
-    await recorder.setCheckout(folder, pick.path);
+    const items = [
+      { label: self.label, description: self.description, detail: ownPath, path: ownPath },
+      ...others.map((w) => ({ label: checkoutName(w), description: undefined as string | undefined, detail: w.path, path: w.path })),
+    ].map((item) => ({ ...item, picked: recorded.has(pathKey(item.path)) }));
+    const picks = await vscode.window.showQuickPick(items, {
+      title: `Agent Typewriter: record which checkouts of ${folder.name}? Each gets its own lane, up to ${MAX_LANES} in all.`,
+      canPickMany: true,
+    });
+    if (!picks) return;
+    if (picks.length === 0) {
+      vscode.window.showInformationMessage('Agent Typewriter: at least one checkout must record; nothing changed.');
+      return;
+    }
+    try {
+      await recorder.setCheckouts(folder, picks.map((p) => p.path));
+    } catch (err) {
+      vscode.window.showErrorMessage(`Agent Typewriter: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
 
   // From a view row (its lane, or the lane id) or the palette, which asks.
@@ -868,7 +880,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
     if (affects('highlightAdditions') || affects('markDeletions')) highlights.refresh();
-    if (affects('autoFollow')) await setAutoFollowKey();
+    if (affects('autoFollow')) {
+      await setAutoFollowKey();
+      autoFollow.check();
+    }
     refreshStatus();
   };
 
