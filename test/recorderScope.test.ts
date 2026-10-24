@@ -53,6 +53,8 @@ function settings(over: Partial<Settings> = {}): Settings {
     mirrorStatusRow: true,
     highlightAdditions: true,
     markDeletions: true,
+    autoRecordWorktrees: 'off',
+    autoFollow: false,
     ...over,
   };
 }
@@ -810,4 +812,73 @@ test('the first lane recorded is followed, and a remembered followed lane wins',
   await t.recorder.start();
   assert.equal(t.timeline.laneList().length, 2);
   assert.equal(t.timeline.followed, t.timeline.laneList()[1].id);
+});
+
+// --- at-2i9.4: auto-record gives new worktrees their own lane.
+
+/** Adds a sibling worktree and reports it the way git's common directory watcher would. */
+function addWorktree(t: ReturnType<typeof recorderOn>, repo: string, name: string): string {
+  const dir = `${repo}-${name}`;
+  git(repo, 'worktree', 'add', '-q', '-b', name, dir);
+  t.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(dir)));
+  return dir;
+}
+
+test('auto-record off: a new worktree is not recorded', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  const dir = addWorktree(t, repo, 'fix');
+  await sleep(600);
+  t.change(path.join(dir, 'src', 'a.ts'), 'fix\n');
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  assert.equal(t.checkout()?.lanes, 1);
+});
+
+test('auto-record fill: a new worktree gets its own lane and its writes are recorded', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
+  await t.recorder.start();
+  const dir = addWorktree(t, repo, 'fix');
+  await until('lane added', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
+  assert.equal(t.checkout()?.lanes, 2);
+  assert.ok(t.logs.some((l) => l.startsWith('Recording the new worktree fix')), t.logs.join('\n'));
+  t.change(path.join(dir, 'src', 'a.ts'), 'fix\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [`modify ${path.basename(dir)}/src/a.ts`]);
+  assert.equal(t.timeline.all()[0].before, 'a\n');
+});
+
+test('auto-record fill at the cap logs and skips the new worktree', { skip: noGit }, async () => {
+  const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
+  addWorktree(t, repo, 'extra');
+  await until('skip logged', () => t.logs.some((l) => l.includes('is not recorded: at most 5')));
+  assert.equal(t.checkout()?.lanes, 5);
+});
+
+test('auto-record rotate: the idlest lane stops for a new worktree, unless every lane is busy', { skip: noGit }, async () => {
+  const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
+  const t = recorderOn(settings({ autoRecordWorktrees: 'rotate' }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
+  // Every lane started recording just now: none has been idle for long.
+  addWorktree(t, repo, 'busy');
+  await until('skip logged', () => t.logs.some((l) => l.includes('every lane but the followed one changed')));
+  assert.equal(t.checkout()?.lanes, 5);
+  // Make the side lane look idle for long.
+  const sideLane = t.timeline.laneList().find((l) => l.root === fs.realpathSync.native(side))!;
+  t.timeline.defineLane({ ...sideLane, since: Date.now() - 10 * 60_000 });
+  for (const l of t.timeline.laneList()) if (l.id !== sideLane.id) t.timeline.defineLane({ ...l, since: Date.now() });
+  addWorktree(t, repo, 'next');
+  await until('rotated', () => t.logs.some((l) => l.includes('idle longest, to record the new worktree next')));
+  // A stopped lane with no changes is forgotten.
+  await until('lanes refreshed', () => t.timeline.laneInfo(sideLane.id)?.recording !== true);
+  assert.ok(t.recorder.recordedLanes().some((l) => l.name === 'next'));
+  assert.equal(t.checkout()?.lanes, 5);
 });

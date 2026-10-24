@@ -239,6 +239,17 @@
       "type": "boolean",
       "default": true,
       "description": "Show text in red with a strikethrough just before replay deletes it, and mark where text was removed with a gutter marker whose hover shows the removed text."
+    },
+    "autoRecordWorktrees": {
+      "type": "string",
+      "enum": ["off", "fill", "rotate"],
+      "default": "off",
+      "markdownDescription": "Give each worktree added while recording to a recorded repository its own lane. `fill` adds one while fewer than 5 checkouts record. `rotate` also makes room when all 5 are taken, by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). `off` records a new worktree only when you add it."
+    },
+    "autoFollow": {
+      "type": "boolean",
+      "default": false,
+      "description": "Once the followed lane is caught up and nothing has been typed for 3 seconds, follow the lane whose oldest queued change was recorded first. It never switches lanes in the middle of a change."
     }
   },
   "additionalProperties": false

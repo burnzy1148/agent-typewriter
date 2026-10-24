@@ -33,7 +33,7 @@ import { KeyedSerial } from './keyedSerial';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import { pickRenamePartner } from './renames';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
-import { colorSlot, laneLabel, MAX_LANES } from './lanes';
+import { colorSlot, laneLabel, MAX_LANES, ROTATE_IDLE_MS, rotationVictim } from './lanes';
 import type { Settings } from './config';
 
 /** Where display prefixes of workspace folders are remembered among labels; folder keys are URIs, so never this. */
@@ -141,6 +141,12 @@ export class Recorder implements vscode.Disposable {
   private capNoted = '';
   /** Set by start until the first scope refresh has picked the lane to follow. */
   private followPending = false;
+  /** Per folder URI, the worktrees its repository had at the last listing. */
+  private readonly listings = new Map<string, Worktree[]>();
+  /** Per folder URI, `pathKey`s of the worktrees auto-record has already seen since start. */
+  private readonly knownWorktrees = new Map<string, Set<string>>();
+  /** While auto-record is on, a watcher per recorded repository's common git directory, by its key. */
+  private readonly commonWatchers = new Map<string, vscode.Disposable[]>();
   /** Chosen worktree labels per folder URI, by worktree `pathKey`, and folder prefixes, when `choices` cannot keep them. */
   private readonly labels = new Map<string, Map<string, string>>();
   /** Remembered worktree labels checked this session against the folder's top-level entries, as `folder\0worktree` keys. */
@@ -551,6 +557,10 @@ export class Recorder implements vscode.Disposable {
     this.scopes.clear();
     this.capNoted = '';
     for (const lane of lanes) this.timeline.setLaneRecording(lane, false);
+    this.listings.clear();
+    this.knownWorktrees.clear();
+    for (const subs of this.commonWatchers.values()) for (const d of subs) d.dispose();
+    this.commonWatchers.clear();
     for (const burst of this.timers.values()) {
       clearTimeout(burst.timer);
       burst.done();
@@ -640,9 +650,15 @@ export class Recorder implements vscode.Disposable {
    */
   private refreshScopes(): Promise<void> {
     const work = this.scopeWork.then(async () => {
-      const all: Scope[] = [];
-      for (const folder of vscode.workspace.workspaceFolders ?? []) all.push(...(await this.resolveScopes(folder)));
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      let all: Scope[] = [];
+      for (const folder of folders) all.push(...(await this.resolveScopes(folder)));
       if (!this.running) return;
+      if (await this.autoRecord(all)) {
+        all = [];
+        for (const folder of folders) all.push(...(await this.resolveScopes(folder)));
+        if (!this.running) return;
+      }
       // Only by default can more than MAX_LANES come up: one per folder in a large multi-root workspace.
       const left = all.slice(MAX_LANES).map((s) => (s.own ? s.folder.name : `${s.folder.name} (${s.name})`));
       if (left.join('\0') !== this.capNoted && left.length > 0) {
@@ -682,6 +698,7 @@ export class Recorder implements vscode.Disposable {
       for (const lane of gone) this.timeline.setLaneRecording(lane, false);
       for (const scope of next.values()) this.defineLane(scope);
       this.followFirstLane();
+      this.watchCommonDirs();
       // A chosen worktree git calls prunable is being removed: fall back once its root is gone.
       // Any other is checked now and then too, in case its watcher says nothing as it goes.
       for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS, true);
@@ -788,7 +805,11 @@ export class Recorder implements vscode.Disposable {
       return [scope];
     }
     this.listFailing.delete(key);
-    if (r.kind !== 'ok') return [scope];
+    if (r.kind !== 'ok') {
+      this.listings.delete(key);
+      return [scope];
+    }
+    this.listings.set(key, r.worktrees);
     const own = ownCheckout(folder.uri.fsPath, r.worktrees);
     const live = liveWorktrees(r.worktrees);
     scope.repo = true;
@@ -858,6 +879,101 @@ export class Recorder implements vscode.Disposable {
       s.commonKey = commonKey;
     }
     return scopes;
+  }
+
+  /**
+   * Gives worktrees that appeared since the last listing their own lane, as
+   * `autoRecordWorktrees` allows: while there is room, or (rotate) in place of
+   * the lane idle longest. Worktrees there at the first listing after start
+   * are not new. True when a folder's chosen checkouts changed.
+   */
+  private async autoRecord(scopes: Scope[]): Promise<boolean> {
+    const mode = this.settings().autoRecordWorktrees;
+    const fresh: Array<{ folder: vscode.WorkspaceFolder; worktree: Worktree }> = [];
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const key = folder.uri.toString();
+      const listed = this.listings.get(key);
+      if (!listed) continue;
+      const known = this.knownWorktrees.get(key);
+      this.knownWorktrees.set(key, new Set(listed.map((w) => pathKey(w.path))));
+      if (!known || mode === 'off') continue;
+      for (const w of listed) {
+        if (w.prunable || known.has(pathKey(w.path)) || scopes.some((s) => pathKey(s.checkout.fsPath) === pathKey(w.path))) continue;
+        fresh.push({ folder, worktree: w });
+      }
+    }
+    if (fresh.length === 0) return false;
+    // What records once each decision is applied.
+    let lanes = scopes.slice(0, MAX_LANES).map((s) => ({ key: s.key, folderKey: s.folder.uri.toString(), checkout: s.checkout.fsPath, name: s.name || s.folder.name }));
+    const pathsOf = (folderKey: string) => lanes.filter((l) => l.folderKey === folderKey).map((l) => l.checkout);
+    const touched = new Set<string>();
+    for (const { folder, worktree } of fresh) {
+      const name = `${checkoutName(worktree)} (${worktree.path})`;
+      if (lanes.length >= MAX_LANES) {
+        if (mode !== 'rotate') {
+          this.log.appendLine(`The new worktree ${name} is not recorded: at most ${MAX_LANES} checkouts record at once.`);
+          continue;
+        }
+        // A folder's last lane never goes: a folder always records something.
+        const candidates = lanes.filter((l) => pathsOf(l.folderKey).length > 1);
+        const victim = lanes.find(
+          (l) =>
+            l.key ===
+            rotationVictim(
+              candidates.map((c) => ({ id: c.key, recording: true, lastActivity: this.lastActivity(c.key) })),
+              this.timeline.followed,
+              Date.now(),
+            ),
+        );
+        if (!victim) {
+          this.log.appendLine(
+            `The new worktree ${name} is not recorded: every lane but the followed one changed in the last ${ROTATE_IDLE_MS / 60_000} minutes.`,
+          );
+          continue;
+        }
+        lanes = lanes.filter((l) => l !== victim);
+        touched.add(victim.folderKey);
+        this.log.appendLine(`Stopped recording ${victim.name}, idle longest, to record the new worktree ${name}.`);
+      } else {
+        this.log.appendLine(`Recording the new worktree ${name} in its own lane.`);
+      }
+      const key = folder.uri.toString();
+      lanes.push({ key: `${key}\0${pathKey(worktree.path)}`, folderKey: key, checkout: worktree.path, name: checkoutName(worktree) });
+      touched.add(key);
+    }
+    for (const folderKey of touched) {
+      const unsaved = await this.saveChoiceSet(folderKey, pathsOf(folderKey));
+      if (unsaved) this.log.appendLine(`Could not save the checkouts recorded: ${unsaved.message}`);
+    }
+    return touched.size > 0;
+  }
+
+  /** When a lane last recorded a change, or started recording if it has none. */
+  private lastActivity(lane: string): number {
+    return this.timeline.laneEvents(lane).at(-1)?.time ?? this.timeline.laneInfo(lane)?.since ?? 0;
+  }
+
+  /**
+   * While auto-record is on, watches each recorded repository's common git
+   * directory, where `git worktree add` creates `worktrees/<name>/` for every
+   * new worktree, including ones outside the workspace.
+   */
+  private watchCommonDirs(): void {
+    const want = new Set<string>();
+    if (this.settings().autoRecordWorktrees !== 'off') for (const s of this.scopes.values()) if (s.commonKey) want.add(s.commonKey);
+    for (const [key, subs] of this.commonWatchers) {
+      if (want.has(key)) continue;
+      for (const d of subs) d.dispose();
+      this.commonWatchers.delete(key);
+    }
+    for (const key of want) {
+      if (this.commonWatchers.has(key)) continue;
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(key), 'worktrees/*'));
+      const subs: vscode.Disposable[] = [watcher];
+      watcher.onDidCreate(() => this.scheduleWorktreeRefresh(), null, subs);
+      watcher.onDidDelete(() => this.scheduleWorktreeRefresh(), null, subs);
+      this.commonWatchers.set(key, subs);
+    }
   }
 
   /** Tells the timeline about a recording lane: its label, root and color, the color kept per checkout. */

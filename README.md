@@ -211,6 +211,8 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 | `mirrorStatusRow` | true | Show the playback controls and status row above the first line of the replay editor. Also hidden when `editor.codeLens` is off |
 | `highlightAdditions` | true | Keep added text highlighted, like a git diff, until highlights are cleared. Off: each typed edit only flashes briefly |
 | `markDeletions` | true | Show text in red with a strikethrough just before it is deleted, and mark where text was removed with a gutter marker that shows the removed text on hover |
+| `autoRecordWorktrees` | off | Give each worktree added while recording its own lane: `fill` while fewer than 5 checkouts record, `rotate` also by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). See [Lanes](#lanes) |
+| `autoFollow` | false | Once the followed lane is caught up and quiet for 3 seconds, follow the lane whose oldest queued change came first |
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 

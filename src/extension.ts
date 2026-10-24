@@ -774,6 +774,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (affects('charsPerMinute') || affects('charsPerSecond')) noteDeprecatedSpeed();
     if (['include', 'exclude', 'extensions', 'respectGitignore', 'profiles', 'activeProfile'].some(affects)) {
       await recorder.refreshFilter();
+    } else if (affects('autoRecordWorktrees')) {
+      await recorder.refreshFilter('autoRecordWorktrees changed');
     }
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
