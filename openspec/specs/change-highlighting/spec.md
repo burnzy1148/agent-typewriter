@@ -1,7 +1,6 @@
 # change-highlighting Specification
 
 ## Purpose
-
 Marks what replay changed in each mirror document, in the style of a git diff, so a viewer can see which text was added and where text was removed without opening a separate diff.
 
 ## Requirements
