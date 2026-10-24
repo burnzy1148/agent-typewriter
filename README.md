@@ -95,6 +95,8 @@ Recorded changes are kept across reloads automatically (`persistHistory`). To ta
 
 Both are in the panel's `...` menu. Loaded changes replay into mirror documents like any other; your real files are never written. A file saved by a newer version of the extension is refused with a message instead of being misread.
 
+A session keeps each change's lane (see [Lanes](#lanes)), so a run recorded from several checkouts loads with the same lanes, colors and followed lane, every change pending. Sessions are saved in format version 3; files from earlier versions load as a single lane. Versions of the extension before lanes refuse version 3 files, and a saved timeline written by this version is set aside if you downgrade.
+
 ## Replaying git history
 
 Work that was never watched, such as a branch an agent pushed overnight or a pull request, can still be typed out from git. **Replay Git Commits...** (in the panel's `...` menu) builds the buffer from a range of commits, one change per file per commit, oldest first. Pick one of:

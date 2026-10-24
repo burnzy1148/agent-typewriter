@@ -18,7 +18,7 @@ import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
-import { Timeline, sessionClears, toSession } from './timeline';
+import { Timeline, laneOf, sessionClears, sessionLanes, toSession } from './timeline';
 import { ChangeItem, TimelineView } from './timelineView';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
@@ -364,7 +364,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     player.setPaused(true);
     // Changes recorded while the prompts were open are replaced too.
     recorder.drainHeld();
-    timeline.restore(session.events, session.events[0].seq);
+    // Every lane starts at its first change; the lane followed when it was saved is followed again.
+    timeline.restore(session.events, session.events[0].seq, undefined, { ...sessionLanes(session), cursors: undefined });
     await player.interrupt();
     player.forgetPlaybackMirror();
     log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
@@ -818,9 +819,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (store && readSettings().persistHistory) {
       const saved = store.load();
       if (saved && saved.events.length > 0) {
-        const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
+        const pending = saved.events.filter((e) => e.seq >= (saved.cursors?.[laneOf(e)] ?? saved.cursor)).length;
         if (pending > 0) player.setPaused(true);
-        timeline.restore(saved.events, saved.cursor, sessionClears(saved));
+        timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved));
         const queued = timeline.pendingCount();
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
         refreshStatus();

@@ -251,6 +251,8 @@ function removedRows(text: string): Array<{ text: string; lines: number }> {
 export interface HighlightClear {
   seq: number;
   relPath?: string;
+  /** The lane it applies to; absent for the default lane ''. */
+  lane?: string;
 }
 
 /** Every clear still in effect, oldest first. */
