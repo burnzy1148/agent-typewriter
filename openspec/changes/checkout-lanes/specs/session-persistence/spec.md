@@ -42,7 +42,7 @@ Version 2 of the session format SHALL add the `rename` change kind, whose change
 - **THEN** the loaded rename has the same old and new paths and text
 
 ### Requirement: Load a session file into the buffer
-The Load Session from File command SHALL read a session file, as written by Save Session to File or gzip-compressed, and replace the buffer with its changes and lanes. When the buffer is not empty, it SHALL ask before replacing it. After loading, every loaded change SHALL be pending, the lane followed when the session was saved SHALL be followed, and playback SHALL be paused at its first change, so resuming plays the session from the start.
+The Load Session from File command SHALL read a session file, as written by Save Session to File or gzip-compressed, and replace the buffer with its changes and lanes. When the buffer is not empty, or when watching, it SHALL ask first. When watching, loading SHALL stop watching, so live edits do not replay into the loaded session's mirrors, and the confirmation SHALL say so. After loading, every loaded change SHALL be pending, the lane followed when the session was saved (or, for a session without lanes, its one lane) SHALL be followed, and playback SHALL be paused at its first change, so resuming plays the session from the start.
 
 #### Scenario: Load and play a saved run
 - **WHEN** the user loads a session file saved earlier and resumes playback
@@ -52,6 +52,10 @@ The Load Session from File command SHALL read a session file, as written by Save
 #### Scenario: Buffer not empty
 - **WHEN** the buffer holds changes and the user picks a session file
 - **THEN** the user is asked to confirm replacing the buffer, and declining leaves the buffer unchanged
+
+#### Scenario: Load while watching
+- **WHEN** watching is on and the user loads a session saved before lanes
+- **THEN** the confirmation says watching stops, watching stops, and resuming types the loaded changes from the first
 
 #### Scenario: Load a session with lanes
 - **WHEN** the user loads a session saved with the `main` and `feature` lanes while `feature` was followed

@@ -110,8 +110,14 @@ A lane's last activity is its newest change's `time` in the timeline. With no ch
 
 - The first lane registered is followed when the followed lane does not exist.
 - On the first scope refresh after start, the recorder follows the remembered lane if it records, else keeps the followed lane if it records, else the first recorded lane; unless the followed lane still has changes queued (a restored timeline), which keeps it.
-- When the followed lane is not recording and has nothing queued, a new change in any other lane makes that lane followed (`Timeline.push`). Without this, a timeline restored from before lanes (lane `''`, all played) would leave new recordings unplayed, and so would changes added after recording stops.
-- `extension.ts` saves the followed lane in the choices file whenever it changes.
+- When the followed lane is not recording and has nothing queued, a new change in any other lane makes that lane followed (`Timeline.push`). The same check runs when a change completes and when a lane stops recording, then choosing the recording lane whose oldest queued change came first. Without this, a timeline restored from before lanes (lane `''`) would leave live recordings unplayed once it played out, and so would changes added after recording stops. It never moves between stopped lanes on its own: a loaded multi-lane session is followed by hand or by auto-follow.
+- At start, the remembered followed lane wins when it records, even over a restored lane with queued changes; otherwise a restored lane with queued changes keeps playing. Nothing switches while a change is being typed.
+- `extension.ts` saves the followed lane in the choices file whenever it changes, except while activation restores the saved timeline, whose fallback lane is no choice of the user's.
+- Restoring a buffer (Load Session, a saved timeline without a followed lane) follows the lane of its first change, not a lane recording beside it.
+
+### Loading a session stops watching
+
+A session saved before lanes, or from another workspace, uses the same display paths as the folder's own checkout. Recording beside it would replay two lanes into one mirror with two cursors. Load Session therefore stops watching, as git replay already does, and its confirmation says so.
 
 ### Auto-follow controller
 
@@ -123,7 +129,7 @@ Two detectors exist today:
 - The recorder notices a new linked worktree under a recorded root through its `.git` file (`noteWorktreeEvent` → `hideNewWorktree`) and refreshes scopes.
 - Sibling worktrees outside the folder are noticed only on a later refresh.
 
-To catch both, each recorded repository's `<common dir>/worktrees/` directory gets a non-recursive watcher. `git worktree add` creates `<name>/` there, which triggers `scheduleWorktreeRefresh()`. On refresh, a worktree listed now that wasn't in the previous listing for that repository is offered to the auto-record policy. A listing that fails changes nothing.
+To catch both, each recorded repository's `<common dir>/worktrees/` directory gets a watcher for `worktrees/*` and `worktrees/*/locked`. `git worktree add` holds that lock until the files are checked out, and its reason is translated, so a new worktree with any lock waits, re-listed every second for at most a minute. Auto-record saves its additions and rotations on top of the folder's latest choice, so a box cleared while git was listing stays cleared. `git worktree add` creates `<name>/` there, which triggers `scheduleWorktreeRefresh()`. On refresh, a worktree listed now that wasn't in the previous listing for that repository is offered to the auto-record policy. A listing that fails changes nothing.
 
 Baselines for an auto-recorded worktree come from the usual capture, which uses git blobs for clean tracked files. An agent write that lands before the capture finishes is captured as a baseline only, as today for files with no baseline.
 

@@ -507,5 +507,6 @@ test('parseWorktreeList: a locked worktree keeps its reason; initializing means 
   const out = ['worktree /r', 'HEAD abc', 'branch refs/heads/main', '', 'worktree /r-new', 'HEAD def', 'branch refs/heads/new', 'locked initializing', '', 'worktree /r-kept', 'HEAD fed', 'locked', ''].join('\n');
   const list = parseWorktreeList(out, '\n');
   assert.deepEqual(list.map((w) => w.locked), [undefined, 'initializing', '']);
-  assert.deepEqual(list.map(initializing), [false, true, false]);
+  // The reason is translated, so any lock may be git worktree add at work.
+  assert.deepEqual(list.map(initializing), [false, true, true]);
 });

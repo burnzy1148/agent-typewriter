@@ -940,7 +940,8 @@ test('auto-record waits until git worktree add has checked the worktree out', { 
   const lister = async (folder: string): Promise<WorktreeListResult> => {
     const r = await listWorktrees(folder);
     if (r.kind !== 'ok' || !initializingNow) return r;
-    return { kind: 'ok', worktrees: r.worktrees.map((w) => (pathKey(w.path) === pathKey(initializingNow) ? { ...w, locked: 'initializing' } : w)) };
+    // In German, say: the reason git writes is translated.
+    return { kind: 'ok', worktrees: r.worktrees.map((w) => (pathKey(w.path) === pathKey(initializingNow) ? { ...w, locked: 'initialisiere' } : w)) };
   };
   const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), { lister }, repo);
   await t.recorder.start();
@@ -1023,4 +1024,39 @@ test('a checkout cleared while auto-record lists worktrees stays cleared', { ski
   const names = recorder.recordedLanes().map((l) => l.name);
   assert.ok(!names.includes('side'), `side came back: ${names.join(', ')}`);
   assert.ok(names.includes('fresh'));
+});
+
+test('the remembered lane is followed at start even when a restored lane has changes queued, but never mid-change', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const sideLane = laneKey(vscode.Uri.file(repo).toString(), false, side);
+  const choices: CheckoutChoices = { get: () => undefined, set: () => undefined, getSet: () => [repo, side], setSet: () => undefined, followed: sideLane };
+  const restored = { uri: 'file:///w/old.ts', relPath: 'old.ts', time: 1, kind: 'modify' as const, before: 'a', after: 'b', eol: '\n' as const, linesAdded: 1, linesRemoved: 1 };
+  const t = recorderOn(settings(), { choices }, repo);
+  t.timeline.push(restored);
+  t.timeline.push(restored);
+  await t.recorder.start();
+  assert.equal(t.timeline.followed, sideLane);
+  assert.equal(t.timeline.pendingCount(''), 2, 'the restored changes stay queued in their lane');
+  t.recorder.stop();
+  // A change being typed when recording starts keeps its lane followed.
+  t.timeline.follow('');
+  const typing = t.timeline.peek()!;
+  t.timeline.begin(typing.seq);
+  await t.recorder.start();
+  assert.equal(t.timeline.followed, '');
+  assert.equal(t.timeline.playing, typing.seq);
+});
+
+test('rotate in a workspace where every folder has one lane says no lane can make room', { skip: noGit }, async () => {
+  const repos = [1, 2, 3, 4, 5].map(() => committedRepo({ 'src/a.ts': 'a\n' }));
+  mock.open(...repos);
+  const logs: string[] = [];
+  const recorder = new Recorder(new Timeline(100), () => settings({ autoRecordWorktrees: 'rotate' }), { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel);
+  current = recorder;
+  await recorder.start();
+  assert.equal(recorder.recordedLanes().length, 5);
+  git(repos[1], 'worktree', 'add', '-q', '-b', 'extra', `${repos[1]}-extra`);
+  mock.fire('create', path.join(fs.realpathSync.native(repos[1]), '.git', 'worktrees', path.basename(`${repos[1]}-extra`)));
+  await until('skip logged', () => logs.some((l) => l.includes('is not recorded')));
+  assert.ok(logs.some((l) => l.includes("every lane is its folder's only one")), logs.join('\n'));
 });

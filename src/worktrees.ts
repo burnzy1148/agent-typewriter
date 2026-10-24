@@ -24,15 +24,20 @@ export interface Worktree {
   prunable?: boolean;
   /**
    * Git calls it locked, with this reason ('' when none was given).
-   * `git worktree add` holds the lock with the reason `initializing` until it
-   * has checked out the files.
+   * `git worktree add` holds the lock until it has checked out the files, with
+   * a reason ("initializing") written in the language of the git that ran it.
    */
   locked?: string;
 }
 
-/** True while `git worktree add` is still checking the worktree out. */
+/**
+ * True when the worktree may still be being checked out by `git worktree add`:
+ * any lock counts, since the reason git gives is translated. A worktree locked
+ * on purpose (`git worktree lock`, `add --lock`) looks the same, so callers
+ * wait only a bounded time.
+ */
 export function initializing(wt: Worktree): boolean {
-  return wt.locked === 'initializing';
+  return wt.locked !== undefined;
 }
 
 export type WorktreeListResult =

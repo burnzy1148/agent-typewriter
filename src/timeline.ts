@@ -397,6 +397,13 @@ export class Timeline {
     return n;
   }
 
+  /** Pending changes in every lane, as `pendingCount` counts them. */
+  pendingTotal(): number {
+    let n = 0;
+    for (const lane of this.lanesInBuffer()) n += this.pendingCount(lane);
+    return n;
+  }
+
   /** Seq of the lane's oldest pending change, if any. */
   firstPending(lane: string): number | undefined {
     const cursor = this.cursorOf(lane);

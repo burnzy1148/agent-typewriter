@@ -973,7 +973,9 @@ export class Recorder implements vscode.Disposable {
         );
         if (!victim) {
           this.log.appendLine(
-            `The new worktree ${name} is not recorded: every lane but the followed one changed in the last ${ROTATE_IDLE_MS / 60_000} minutes.`,
+            candidates.length === 0
+              ? `The new worktree ${name} is not recorded: every lane is its folder's only one, and a folder always records one.`
+              : `The new worktree ${name} is not recorded: every lane but the followed one changed in the last ${ROTATE_IDLE_MS / 60_000} minutes.`,
           );
           continue;
         }
@@ -1056,11 +1058,18 @@ export class Recorder implements vscode.Disposable {
   private followFirstLane(): void {
     if (!this.followPending) return;
     this.followPending = false;
+    // Never in the middle of a change: following would overtake it.
+    if (this.timeline.playing !== undefined) return;
+    // The lane last followed, when it records again, is followed again.
+    const remembered = this.choices.followed;
+    if (remembered !== undefined && this.scopes.has(remembered)) {
+      this.timeline.follow(remembered);
+      return;
+    }
     // Queued changes in the followed lane, such as a restored timeline's, keep it followed.
     if (this.timeline.pendingCount() > 0) return;
-    const remembered = this.choices.followed;
     const followed = this.timeline.followed;
-    const lane = remembered !== undefined && this.scopes.has(remembered) ? remembered : this.scopes.has(followed) ? followed : this.scopes.keys().next().value;
+    const lane = this.scopes.has(followed) ? followed : this.scopes.keys().next().value;
     if (lane !== undefined) this.timeline.follow(lane);
   }
 

@@ -174,7 +174,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const shown = statusPresentation({
       watching,
       paused: player.isPaused,
-      pending: timeline.pendingCount(),
+      // Every lane's queue: changes waiting in a lane not followed still keep playback paused.
+      pending: timeline.pendingTotal(),
       speed: player.speed,
       watchedCount: recorder.watchedCount,
       filter: recorder.describeFilter(),
@@ -206,7 +207,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   };
   // The followed lane is remembered, so a reload follows it again once it records.
   let followedSaved = timeline.followed;
+  /** Set while activation restores the saved timeline: the lane it falls back to is no choice of the user's. */
+  let restoringHistory = false;
   const saveFollowed = () => {
+    if (restoringHistory) followedSaved = timeline.followed;
     if (timeline.followed === followedSaved || timeline.lanesInBuffer().length === 0) return;
     followedSaved = timeline.followed;
     void Promise.resolve(choices.setFollowed?.(followedSaved)).catch(() => {});
@@ -316,7 +320,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     await player.interrupt();
   };
   register('agentTypewriter.seek', async (seq?: number) => {
-    if (typeof seq === 'number') await seekTo(seq);
+    if (typeof seq !== 'number') return;
+    // The panel seeks within the lane it showed; if another lane was followed since, go back to that one.
+    const target = timeline.get(seq);
+    if (target && laneOf(target) !== timeline.followed) timeline.follow(laneOf(target));
+    await seekTo(seq);
   });
 
   // Drops the change being typed (or the next queued one) and moves on to the one after it.
@@ -940,9 +948,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       if (saved && saved.events.length > 0) {
         const pending = saved.events.filter((e) => e.seq >= (saved.cursors?.[laneOf(e)] ?? saved.cursor)).length;
         if (pending > 0) player.setPaused(true);
-        timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved));
+        restoringHistory = true;
+        try {
+          timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved));
+        } finally {
+          restoringHistory = false;
+        }
         // Queued in every lane: any of them pauses playback.
-        const queued = timeline.lanesInBuffer().reduce((n, l) => n + timeline.pendingCount(l), 0);
+        const queued = timeline.pendingTotal();
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
         refreshStatus();
       }

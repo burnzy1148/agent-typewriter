@@ -35,6 +35,10 @@ Exactly one lane SHALL be followed whenever the buffer holds a change. Only the 
 - **WHEN** the followed lane is not recording and has nothing queued, and a change is added to another lane
 - **THEN** that lane is followed and its change is typed
 
+#### Scenario: A stopped lane plays out while a recording lane waits
+- **WHEN** the followed lane is not recording, its last queued change finishes, and a recording lane has changes queued
+- **THEN** that recording lane is followed and its changes are typed
+
 ### Requirement: Following another lane
 The user SHALL be able to follow any lane in the buffer from the Checkouts view, the Changes view or a Follow Lane command. Following a lane SHALL stop the change being typed, which stays pending in its lane, and resume the newly followed lane at its own position. Following SHALL NOT change whether playback is paused.
 

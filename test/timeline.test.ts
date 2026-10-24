@@ -654,3 +654,12 @@ test('a lane that is gone hands over to one with changes queued', () => {
   t.push(lev('b', 'y', '', '1'));
   assert.equal(t.followed, 'b');
 });
+
+test('pendingTotal counts the queue of every lane', () => {
+  const t = new Timeline(100);
+  t.push(lev('a', 'x', '', '1'));
+  t.push(lev('b', 'y', '', '1'));
+  t.push(lev('b', 'y', '1', '2'));
+  assert.equal(t.pendingCount(), 1);
+  assert.equal(t.pendingTotal(), 3);
+});
