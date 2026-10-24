@@ -27,7 +27,7 @@
 
 ## 6. Highlights per lane
 
-- [ ] 6.1 Have `HighlightView` compute baselines per lane (lane events, lane `through`, lane clears) and merge them, and make Clear Highlights write per-lane clears. Verify with `test/highlightView.test.ts` cases: two lanes at different positions highlight independently, clear all clears both, seek back in one lane restores only its highlights
+- [x] 6.1 Have `HighlightView` compute baselines per lane (lane events, lane `through`, lane clears) and merge them, and make Clear Highlights write per-lane clears. Verify with `test/highlightView.test.ts` cases: two lanes at different positions highlight independently, clear all clears both, seek back in one lane restores only its highlights
 
 ## 7. Views and UI
 

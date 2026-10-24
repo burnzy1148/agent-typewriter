@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HighlightView } from '../src/highlightView';
+import { HighlightView, highlightState } from '../src/highlightView';
+import { highlightPair } from '../src/highlights';
 import type { Player } from '../src/player';
 import { Timeline } from '../src/timeline';
 import * as vscode from 'vscode';
@@ -39,4 +40,52 @@ test('a file slow to diff while typed does not keep later files from the clear b
   } finally {
     view.dispose();
   }
+});
+
+// ------------------------------------------------------------------ lanes
+
+
+function laneEv(lane: string, relPath: string, before: string, after: string) {
+  return { uri: 'file:///w/' + relPath, relPath, time: 1, kind: 'modify' as const, before, after, eol: '\n' as const, linesAdded: 1, linesRemoved: 0, lane };
+}
+
+/** Baseline and text a file's highlights compare, or undefined when it shows none. */
+const pairOf = (t: Timeline, relPath: string) => highlightPair(highlightState(t, () => false), relPath);
+
+function playAll(t: Timeline) {
+  for (let e = t.peek(); e; e = t.peek()) {
+    t.begin(e.seq);
+    t.complete(e.seq);
+  }
+}
+
+test('two lanes at different positions highlight on their own', () => {
+  const t = new Timeline(100);
+  t.push(laneEv('main', 'a', 'a0', 'a1'));
+  t.push(laneEv('feat', 'feat/b', 'b0', 'b1'));
+  t.push(laneEv('main', 'a', 'a1', 'a2'));
+  playAll(t);
+  assert.deepEqual(pairOf(t, 'a'), { baseline: 'a0', text: 'a2', live: false });
+  assert.equal(pairOf(t, 'feat/b'), undefined, 'nothing of feat has played');
+  t.follow('feat');
+  playAll(t);
+  assert.deepEqual(pairOf(t, 'feat/b'), { baseline: 'b0', text: 'b1', live: false });
+  assert.deepEqual(pairOf(t, 'a'), { baseline: 'a0', text: 'a2', live: false });
+});
+
+test('clear all clears every lane; seeking back in one lane restores only its highlights', () => {
+  const t = new Timeline(100);
+  const a1 = t.push(laneEv('main', 'a', 'a0', 'a1'));
+  t.push(laneEv('feat', 'feat/b', 'b0', 'b1'));
+  playAll(t);
+  t.follow('feat');
+  playAll(t);
+  t.clearHighlights();
+  assert.deepEqual(pairOf(t, 'a'), { baseline: 'a1', text: 'a1', live: false });
+  assert.deepEqual(pairOf(t, 'feat/b'), { baseline: 'b1', text: 'b1', live: false });
+  t.follow('main');
+  t.seek(a1.seq);
+  playAll(t);
+  assert.deepEqual(pairOf(t, 'a'), { baseline: 'a0', text: 'a1', live: false }, 'main was replayed past its undone clear');
+  assert.deepEqual(pairOf(t, 'feat/b'), { baseline: 'b1', text: 'b1', live: false }, 'feat keeps its clear');
 });
