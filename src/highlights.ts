@@ -1,3 +1,4 @@
+import { diffWordsWithSpace } from 'diff';
 import { planHunks, type Hunk } from './planner';
 import type { ChangeEvent } from './timeline';
 
@@ -14,7 +15,7 @@ export function diffMarks(baseline: string, current: string): Marks {
   const marks: Marks = { added: [], removed: [] };
   // Hunk offsets are in the text after earlier hunks, and later hunks come after
   // earlier ones, so each offset is also a position in `current`.
-  for (const h of netHunks(baseline, current)) {
+  for (const h of netHunks(baseline, current).flatMap(exactHunks)) {
     if (h.deleteText.length > 0) {
       const last = marks.removed[marks.removed.length - 1];
       if (last?.offset === h.offset) last.text += h.deleteText;
@@ -23,6 +24,40 @@ export function diffMarks(baseline: string, current: string): Marks {
     if (h.insertText.length > 0) marks.added.push({ start: h.offset, end: h.offset + h.insertText.length });
   }
   return marks;
+}
+
+/** Longest replaced text, on one line, that exactHunks splits further. */
+const EXACT_MAX_CHARS = 2000;
+
+/**
+ * A hunk split so unchanged text inside it is left out. To read naturally the
+ * planner retypes short unchanged gaps along with the words around them, as in
+ * "foo(bar)" -> "baz(qux)"; marking the "(" as added and removed would be wrong.
+ * Hunks spanning lines are left whole.
+ */
+function exactHunks(h: Hunk): Hunk[] {
+  const { deleteText: del, insertText: ins } = h;
+  if (!del || !ins || del.includes('\n') || ins.includes('\n') || del.length > EXACT_MAX_CHARS || ins.length > EXACT_MAX_CHARS) return [h];
+  const parts = diffWordsWithSpace(del, ins, { maxEditLength: 200 });
+  if (!parts) return [h];
+  const out: Hunk[] = [];
+  let offset = h.offset;
+  for (const p of parts) {
+    if (!p.added && !p.removed) {
+      offset += p.value.length;
+      continue;
+    }
+    const last = out[out.length - 1];
+    const open = last && last.offset + last.insertText.length === offset ? last : undefined;
+    const hunk = open ?? { offset, deleteText: '', insertText: '' };
+    if (p.removed) hunk.deleteText += p.value;
+    else {
+      hunk.insertText += p.value;
+      offset += p.value.length;
+    }
+    if (!open) out.push(hunk);
+  }
+  return out;
 }
 
 /**
@@ -212,6 +247,8 @@ export interface HighlightState {
   clears: HighlightClears;
   /** The change being typed. */
   playing?: { seq: number; relPath: string; fromRelPath?: string };
+  /** With nothing typed, the next change to play. */
+  next?: { seq: number; relPath: string; fromRelPath?: string };
 }
 
 /** A file's baseline and the text its mirror should show, with `live` set when that text is the player's, mid-change. */
@@ -228,10 +265,11 @@ export interface HighlightPair {
 export function highlightPair(st: HighlightState, relPath: string, live?: string): HighlightPair | undefined {
   const baseline = (relPath === st.movingFrom ? st.basesBefore : st.bases)?.get(relPath);
   if (baseline === undefined) return undefined;
-  const p = st.playing;
   // A clear made while this file's change is typed takes effect when it
-  // finishes; until then the file shows nothing. A clear on a renamed file is
-  // kept under its new path, so check both.
+  // finishes; until then the file shows nothing. The same holds when that
+  // change is next after a reload. A clear on a renamed file is kept under its
+  // new path, so check both.
+  const p = st.playing ?? st.next;
   if (p && (relPath === p.relPath || relPath === p.fromRelPath) && Math.max(clearedAt(st.clears, relPath), clearedAt(st.clears, p.relPath)) > p.seq) {
     return undefined;
   }
@@ -258,18 +296,30 @@ export function renderAction(pair: HighlightPair | undefined, docText: string | 
  * its latest clear, else the before text of its earliest such change. A
  * rename carries its old path's baseline to the new path. Files without such
  * a change have no entry.
+ *
+ * `heldBack` names the change at `through` when it has not played, and the
+ * paths it touches. A clear made right after it (while it was typed, before a
+ * reload) already holds for every other file, whose text it does not change.
  */
-export function baselines(events: readonly ChangeEvent[], through: number, clears: HighlightClears): Map<string, string> {
+export function baselines(
+  events: readonly ChangeEvent[],
+  through: number,
+  clears: HighlightClears,
+  heldBack?: { seq: number; paths: readonly string[] },
+): Map<string, string> {
   const base = new Map<string, string>();
   const text = new Map<string, string>();
   // Clears in the order they take effect: before the first change at or after their seq.
-  const pending = clears.filter((c) => c.seq <= through).sort((a, b) => a.seq - b.seq);
+  const early = heldBack && heldBack.seq === through ? heldBack.seq + 1 : undefined;
+  const pending = clears.filter((c) => c.seq <= through || c.seq === early).sort((a, b) => a.seq - b.seq);
   let next = 0;
   const applyClears = (upTo: number) => {
     for (; next < pending.length && pending[next].seq <= upTo; next++) {
-      const { relPath } = pending[next];
-      if (relPath === undefined) for (const [p, t] of text) base.set(p, t);
-      else if (text.has(relPath)) base.set(relPath, text.get(relPath)!);
+      const { relPath, seq } = pending[next];
+      const skip = seq === early ? heldBack!.paths : [];
+      if (relPath === undefined) {
+        for (const [p, t] of text) if (!skip.includes(p)) base.set(p, t);
+      } else if (text.has(relPath) && !skip.includes(relPath)) base.set(relPath, text.get(relPath)!);
     }
   };
   for (const e of events) {

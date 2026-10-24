@@ -29,6 +29,7 @@ The extension targets VS Code `^1.85.0`. Decorations belong to an editor, are lo
 
 - `baselines(events, through, clears)`: each file's baseline for the events with seq below `through` (the cursor, or one past the change being typed). It is the file's text at its latest clear (global or its own), or the before text of its earliest such event. A clear at seq C takes effect before the first event with seq >= C. A rename (`fromRelPath`, added on `develop`) carries the old path's baseline to the new path, so highlights survive a rename. Files with no such event have no baseline and show no marks.
 - `diffMarks(baseline, current)`: runs `netHunks(baseline, current)` and returns `added` ranges (LF offsets into `current`) and `removed` points `{ offset, text }`, merging removals at the same offset. `netHunks` trims the shared first and last lines, anchors on lines both texts hold exactly once (the longest run of them in the same order, as a patience diff does), and runs `planHunks` on each stretch between anchors. Its output has `planHunks`' form, so applying it reproduces `current`. A net diff builds up over many changes. In the second review, one `planHunks` call over a heavily edited file passed its edit limit and marked everything from the first difference to the last. With anchors, only a stretch that really differs throughout can reach that limit.
+- Hunks within one line are split again by a word diff (`exactHunks`). To read naturally, the planner retypes short unchanged gaps along with the words around them ("foo(bar)" to "baz(qux)" as one edit), and marking the "(" as added and removed would be wrong. Hunks spanning lines are left whole.
 - `highlightPair(state, relPath, live)` and `renderAction(pair, docText, drawnToken, liveToken)`: the pure decisions behind drawing, below, so they are unit tested.
 
 The controller turns marks into line numbers: lines touched by an added range get the line decoration. Added characters get the text decoration only on lines that also hold baseline text. A removal goes on the line containing its offset, or on the last line when the offset is at the end of the text.
@@ -43,6 +44,7 @@ Alternative considered: carry each change's typed ranges forward through later c
 - `seek`/`seekToStart` drop every clear greater than the new cursor. Normal progress (`begin`/`complete`) and `seekToEnd` never drop one.
 - `clear()` drops all of them. `restore(events, cursor, clears?)` maps them by position like the cursor and drops any at or before the first kept event. It does not apply the seek rule, so a clear made while the saved cursor's change was typed (cursor + 1) survives the reload.
 - Load Session passes no clears, and its cursor is the first event, so a loaded session starts with none.
+- After a reload with nothing playing, a clear at cursor + 1 (made while that change was typed) already holds for every file the change does not touch, so `baselines` takes a `heldBack` argument naming that change and its paths. Its own file shows nothing until it plays, as it did while it was being typed.
 
 `toSession` writes an optional `highlightsFrom: Array<{ seq: number; relPath?: string }>`. `parseSession` reads it when well-formed and ignores it otherwise. `SESSION_VERSION` stays at 2 (bumped on `develop` for renames): older readers ignore the field, and losing clears on a downgrade only brings back older highlights. The comment above `SESSION_VERSION` is updated to say that optional, ignorable fields don't bump it.
 
@@ -98,6 +100,16 @@ These are about half the opacity of the diff editor's inserted colors. The remov
 
 - [Diff cost on large files during typing] → Anchored stretches keep each diff small. Redraws are throttled to 100 ms, and spaced out after an expensive run (capped at 2 s). The pass that works out which mirrors have highlights compares strings when both settings are on, and otherwise stops diffing after 30 ms and finishes on a later pass.
 - [Clears pile up] → A clear identical to one in effect is not added, and clears at or before the oldest change left in the buffer are dropped on trim.
+- [Marks lagging a seek] → Redraws are throttled, but a timeline jump (seek, skip to latest, restore, buffer clear) runs only the cheap text comparison right away and takes down marks that no longer fit, so they never wait out a long throttle.
+
+### Known limitations
+
+These came out of the third review and are accepted for now:
+
+- With exactly one of the two settings off, the pass that works out which mirrors have highlights diffs files in order within a 30 ms budget. If the file being typed is expensive to diff and comes early, later files can keep a stale answer for the clear buttons until typing stops.
+- "Same change" for keeping marks mid-change is the player's interrupt epoch, not a per-change counter, so marks drawn during one change count as current during the next change of an uninterrupted run. That only causes a momentary keep while the next change resyncs its mirror; nothing stale stays visible.
+- Removing only a line break (joining two lines) shows a removal marker whose hover is an empty row.
+- Large files with few unique lines (generated data) can still have a stretch between anchors past the planner's edit limit, which is then highlighted as one region.
 - [Net diff alignment differs from what was typed, e.g. a repeated line matched elsewhere] → Accepted: the marks describe the text, like `git diff`, and the planner's word-level refinement keeps typical edits tight.
 - [Gutter icons have fixed colors and share the glyph margin] → Light and dark variants. Mirrors are read-only, so breakpoint glyphs aren't expected. The ruler and backgrounds stay themeable.
 - [Mirror text briefly doesn't match after a seek back] → Highlights are hidden until it matches, rather than drawn on the wrong lines.

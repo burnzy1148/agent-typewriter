@@ -58,6 +58,14 @@
 - [x] 9.6 Read the settings once per pass, compare strings instead of diffing when both settings are on, spread an all-files pass over 30 ms slices otherwise, cap the backoff at 2 s, skip duplicate clears and drop clears on trim. Verified by unit tests for `renderWait`, duplicate clears and trimming
 - [x] 9.7 Cover the gaps: the title bar `when` clause (unit test on `package.json`), the context key naming the mirror being typed into, turning both settings back on, and no highlights on real files (integration checks)
 
+## 10. Third review fixes
+
+- [x] 10.1 Diff within the pass's budget instead of assuming any difference draws marks, so a final line break alone leaves the clear buttons off. Verified by a unit test that it draws nothing and an integration check on `hasHighlights`
+- [x] 10.2 Split hunks within one line by a word diff, so unchanged characters between changed words are not marked. Verified by a unit test
+- [x] 10.3 After a reload, apply a clear made while the next change was typed to every other file, and hide that change's file until it plays. Verified by a unit test through `Timeline.restore`, `baselines` and `highlightPair`
+- [x] 10.4 On a timeline jump, take stale marks down right away instead of after the throttle. Verified by an integration check right after a seek
+- [x] 10.5 Record the remaining review items as known limitations in design.md
+
 ## Workflow follow-up
 
 - Archive on the PR branch once tasks are done and CI is green, then merge.

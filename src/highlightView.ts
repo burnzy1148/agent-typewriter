@@ -43,6 +43,8 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   readonly onDidChangeHighlighted = this.changed.event;
   private readonly subscriptions: vscode.Disposable[];
   private disposed = false;
+  /** Timeline jumps seen so far; a new one takes stale marks down without waiting for the throttle. */
+  private jumps: number;
 
   constructor(
     private readonly timeline: Timeline,
@@ -50,6 +52,7 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     private readonly settings: () => HighlightSettings,
     extensionUri: vscode.Uri,
   ) {
+    this.jumps = timeline.jumps;
     const icon = (name: string) => vscode.Uri.joinPath(extensionUri, 'images', 'gutter', name);
     this.addedLine = vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
@@ -80,7 +83,14 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
         // Typed text can be the first highlight anywhere; the clear buttons follow it.
         this.schedule(ALL);
       }),
-      timeline.onDidChange(() => this.refresh()),
+      timeline.onDidChange(() => {
+        if (timeline.jumps !== this.jumps) {
+          this.jumps = timeline.jumps;
+          // After this turn, once the player has let go of the change it was typing.
+          setTimeout(() => this.clearStale(), 0);
+        }
+        this.refresh();
+      }),
     ];
     this.refresh();
   }
@@ -144,7 +154,12 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     const events = this.timeline.all();
     // The change being typed counts, so its file's baseline is ready for its live text.
     const through = playing ? playing.seq + 1 : this.timeline.cursor;
-    const st: HighlightState = { bases: baselines(events, through, clears), texts: this.timeline.mirrorStates(), clears };
+    // With nothing playing, the change at the cursor has not played; a clear made
+    // while it was typed (before a reload) already holds for every other file.
+    const next = playing ? undefined : this.timeline.peek();
+    const heldBack = next && { seq: next.seq, paths: [next.relPath, ...(next.fromRelPath !== undefined ? [next.fromRelPath] : [])] };
+    const st: HighlightState = { bases: baselines(events, through, clears, heldBack), texts: this.timeline.mirrorStates(), clears };
+    if (next) st.next = { seq: next.seq, relPath: next.relPath, fromRelPath: next.fromRelPath };
     if (playing) {
       st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
       if (playing.fromRelPath !== undefined && this.player.liveText(playing.fromRelPath) !== undefined) {
@@ -192,6 +207,25 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     else this.drawnToken.delete(key);
   }
 
+  /**
+   * Takes down marks that no longer describe their mirror's text, right away:
+   * only the cheap comparison, while the throttled redraw does the diffing.
+   */
+  private clearStale(): void {
+    if (this.disposed || this.drawn.size === 0) return;
+    const st = this.state();
+    for (const ed of vscode.window.visibleTextEditors) {
+      const key = ed.document.uri.toString();
+      if (!this.drawn.has(key)) continue;
+      const relPath = relPathOf(ed.document.uri);
+      const pair = highlightPair(st, relPath, this.player.liveText(relPath));
+      if (renderAction(pair, pair ? normalizeEol(ed.document.getText()) : undefined, this.drawnToken.get(key), this.player.liveToken(relPath)) !== 'clear') continue;
+      for (const other of vscode.window.visibleTextEditors) if (other.document.uri.toString() === key) this.draw(other, undefined);
+      this.drawn.delete(key);
+      this.drawnToken.delete(key);
+    }
+  }
+
   private draw(editor: vscode.TextEditor, marks: LineMarks | undefined): void {
     editor.setDecorations(this.addedLine, (marks?.lines ?? []).map((l) => new vscode.Range(l, 0, l, 0)));
     editor.setDecorations(this.addedText, (marks?.chars ?? []).map((c) => new vscode.Range(c.line, c.start, c.line, c.end)));
@@ -212,8 +246,7 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
       const hit = this.cache.get(relPath);
       let has: boolean;
       if (hit && hit.baseline === pair.baseline && hit.text === pair.text) has = filterMarks(hit.marks, s) !== undefined;
-      // With both settings on, any difference shows: no diff needed.
-      else if (s.highlightAdditions && s.markDeletions) has = true;
+      // A difference can still draw nothing (a newline added at the end), so diff, within the pass's budget.
       else if (Date.now() > deadline) {
         has = this.highlighted?.includes(path) ?? false;
         unfinished = true;

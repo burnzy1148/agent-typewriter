@@ -1188,6 +1188,11 @@ export async function run(): Promise<void> {
     // Clear all, then replay from before the clear: the highlights come back.
     await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
     await until('all cleared', () => drawn('play/hl-a.ts') === undefined && !api.highlights.hasHighlights, 5000);
+    // A line break added at the end draws nothing, so the clear buttons stay off.
+    await play('play/hl-k.ts', 'ab', 'ab\n');
+    await sleep(400);
+    assert.equal(drawn('play/hl-k.ts'), undefined, 'a final line break was drawn');
+    assert.ok(!api.highlights.hasHighlights, 'clear buttons on with nothing drawn');
     // Typing into a cleared buffer: the clear buttons see the highlights before the change finishes.
     await setting('agentTypewriter', 'charsPerMinute', 600);
     const lagged = push('play/hl-h.ts', 'a\n', 'a\nthe clear button sees this before it is done\n');
@@ -1238,6 +1243,20 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'markDeletions', true);
     await setting('agentTypewriter', 'charsPerMinute', 240000);
 
+    // A seek takes marks that no longer fit down at once, not after the redraw throttle.
+    await play('play/hl-j.ts', 'a\n', 'a\nb\n');
+    await until('hl-j highlighted', drawnIs('play/hl-j.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    await vscode.commands.executeCommand('agentTypewriter.pause');
+    const hlj = timeline.all().filter((e) => e.relPath === 'play/hl-j.ts').pop()!;
+    api.highlights.refresh();
+    await sleep(30);
+    // A redraw just ran, so the throttle holds the next one back; only the jump check can clear in time.
+    timeline.seek(hlj.seq);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(drawn('play/hl-j.ts'), undefined, 'stale marks stayed up after a seek');
+    await vscode.commands.executeCommand('agentTypewriter.resume');
+    await until('hl-j replayed', idle, 10000);
     // Hovering a line with a removal marker shows the removed text; other lines show none.
     const hoverText = async (rel: string, line: number) => {
       const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', hlUri(rel), new vscode.Position(line, 1));

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { baselines, clearedAt, diffMarks, highlightPair, lineMarks, netHunks, removedPreview, renderAction, renderWait, type HighlightState, type Marks } from '../src/highlights';
 import { applyHunks } from '../src/planner';
-import type { ChangeEvent, ChangeKind } from '../src/timeline';
+import { Timeline, type ChangeEvent, type ChangeKind } from '../src/timeline';
 
 /** The baseline text `marks` say `current` came from. */
 function rebuild(current: string, marks: Marks): string {
@@ -37,6 +37,18 @@ test('a word changed on a line marks the line and only the new characters', () =
   assert.deepEqual(lines.lines, [1]);
   assert.deepEqual(lines.chars, [{ line: 1, start: 4, end: 7 }]);
   assert.deepEqual(lines.removals, [{ line: 1, texts: ['foo'] }]);
+});
+
+test('unchanged characters between changed words are not marked', () => {
+  // The planner retypes "foo(bar" as one edit; the "(" stays unmarked.
+  const { lines } = marksOf('let x = foo(bar);\n', 'let x = baz(qux);\n');
+  assert.deepEqual(lines.chars, [{ line: 0, start: 8, end: 11 }, { line: 0, start: 12, end: 15 }]);
+  assert.deepEqual(lines.removals, [{ line: 0, texts: ['foo', 'bar'] }]);
+});
+
+test('a line break added at the end draws nothing', () => {
+  const { lines } = marksOf('ab', 'ab\n');
+  assert.deepEqual(lines, { lines: [], chars: [], removals: [] });
 });
 
 test('new lines are marked whole, with no character tint', () => {
@@ -233,6 +245,29 @@ test('the title bar clear button is scoped to the highlighted playback mirror', 
   for (const part of ['resourceScheme == agent-typewriter', 'resourcePath in agentTypewriter.playbackMirror', 'resourcePath in agentTypewriter.highlightedMirrors']) {
     assert.ok(entry.when.includes(part), `when clause lacks ${part}`);
   }
+});
+
+test('after a reload, a clear made while the next change was typed holds for every other file', () => {
+  // a@1, a@2, b@3: 1 and 2 played, 3 being typed when highlights were cleared, then a reload.
+  const t = new Timeline(100);
+  const push = (relPath: string, before: string, after: string) =>
+    t.push({ uri: 'file:///w/' + relPath, relPath, time: 0, kind: 'modify', before, after, eol: '\n', linesAdded: 0, linesRemoved: 0 });
+  push('a', '0', '1');
+  push('a', '1', '2');
+  const b = push('b', 'b0', 'b1');
+  t.seek(b.seq);
+  t.begin(b.seq);
+  t.clearHighlights();
+  const r = new Timeline(100);
+  r.restore(t.all(), t.cursor, t.highlightClears);
+  const next = r.peek()!;
+  const bases = baselines(r.all(), r.cursor, r.highlightClears, { seq: next.seq, paths: [next.relPath] });
+  // a.ts shows nothing, as before the reload; b.ts keeps its baseline until its change plays.
+  assert.equal(bases.get('a'), '2');
+  assert.equal(r.mirrorStates().get('a')?.text, '2');
+  const st: HighlightState = { bases, texts: r.mirrorStates(), clears: r.highlightClears, next: { seq: next.seq, relPath: 'b' } };
+  // b.ts showed nothing while typed with the clear made; it shows nothing until it plays again.
+  assert.equal(highlightPair(st, 'b'), undefined);
 });
 
 test('clearedAt is the latest clear for that file or for all files', () => {
