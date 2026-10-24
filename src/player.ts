@@ -62,6 +62,8 @@ export class Player implements vscode.Disposable {
   private previewedText: string | undefined;
   /** Path of the mirror the change in flight is typing into; `expected` is its text. */
   private liveRelPath: string | undefined;
+  /** The epoch that change started in; once interrupted, its text is no longer live. */
+  private liveEpoch = -1;
   private readonly edited = new vscode.EventEmitter<string>();
   /** Fires with a mirror's path after the player changed its text, once liveText has caught up. */
   readonly onDidEditMirror = this.edited.event;
@@ -87,7 +89,7 @@ export class Player implements vscode.Disposable {
 
   /** The text the player has put in `relPath`'s mirror so far, while a change is typed into it. */
   liveText(relPath: string): string | undefined {
-    return this.liveRelPath === relPath ? this.expected : undefined;
+    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.expected : undefined;
   }
 
   /** The text shown as about to be deleted right now, if any. For tests. */
@@ -235,6 +237,7 @@ export class Player implements vscode.Disposable {
     // seek, or a reverted mirror). ready() snaps it so the hunks line up.
     this.expected = e.before;
     this.liveRelPath = e.relPath;
+    this.liveEpoch = epoch;
     this.synced = undefined;
     if (switching && this.lastRelPath !== undefined) {
       await this.sleep(s.fileSwitchDelayMs / this.speedMultiplier(s));
@@ -294,6 +297,7 @@ export class Player implements vscode.Disposable {
     this.currentEol = e.eol;
     this.expected = e.before;
     this.liveRelPath = from;
+    this.liveEpoch = epoch;
     this.synced = undefined;
     let editor: vscode.TextEditor | undefined = await this.showMirror(from, e.before, e.eol);
     if (switching) await this.sleep(s.fileSwitchDelayMs / this.speedMultiplier(s));

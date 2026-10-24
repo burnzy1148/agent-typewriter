@@ -134,6 +134,10 @@ Clear Highlights SHALL remove every file's highlights and removal markers, makin
 - **WHEN** the user runs Clear Highlights while a change to `a.ts` is being typed
 - **THEN** `a.ts`'s highlights disappear, and the rest of that change types without highlights
 
+#### Scenario: Clear while a file is being renamed
+- **WHEN** the user runs Clear Highlights in This File on `a.ts` while a change renaming it to `c.ts` is played
+- **THEN** once the rename has played, `c.ts` shows no highlights
+
 #### Scenario: Not a mirror
 - **WHEN** the user runs Clear Highlights in This File while a real file is the active editor
 - **THEN** nothing is cleared
@@ -148,6 +152,10 @@ When a seek or replay moves playback to a change earlier than the one that was n
 #### Scenario: Seek forward after a clear
 - **WHEN** the user cleared highlights after change 5, then seeks to change 8
 - **THEN** the clear stays in effect, and only changes from 6 on are highlighted
+
+#### Scenario: Seek between two clears
+- **WHEN** the user cleared `a.ts` after change 2, cleared all files after change 5, and then seeks to change 4
+- **THEN** only the clear for all files is undone, and `a.ts` is still highlighted against its text after change 2
 
 ### Requirement: Highlighting settings
 `agentTypewriter.highlightAdditions` and `agentTypewriter.markDeletions` SHALL each default to `true`, SHALL take effect without a reload, and SHALL be accepted in the repository settings file like other settings. With `highlightAdditions` off, each typed hunk SHALL flash for 700 ms as it does today.

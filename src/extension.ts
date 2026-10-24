@@ -83,6 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     mirrorControls,
     vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
     vscode.languages.registerCodeLensProvider({ scheme: MIRROR_SCHEME }, mirrorControls),
+    vscode.languages.registerHoverProvider({ scheme: MIRROR_SCHEME }, highlights),
     { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),

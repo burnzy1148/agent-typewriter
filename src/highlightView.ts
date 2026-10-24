@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { Settings } from './config';
-import { baselines, diffMarks, lineMarks, removedPreview, type HighlightClears, type LineMarks } from './highlights';
+import { baselines, clearedAt, diffMarks, lineMarks, removedPreview, renderWait, type HighlightClears, type LineMarks } from './highlights';
 import { MirrorFileSystem, MIRROR_SCHEME } from './mirrorFs';
 import { normalizeEol } from './planner';
 import type { Player } from './player';
@@ -19,6 +19,9 @@ interface State {
   clears: HighlightClears;
   bases: Map<string, string>;
   texts: Map<string, { text: string }>;
+  /** While a rename is typed: its old path, and the baselines before it, which the old mirror still uses. */
+  movingFrom?: string;
+  basesBefore?: Map<string, string>;
 }
 
 /**
@@ -28,12 +31,14 @@ interface State {
  * seek, skip to latest, restore, a reopened tab or a toggled setting needs
  * nothing more than a redraw.
  */
-export class HighlightView implements vscode.Disposable {
+export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   private readonly addedLine: vscode.TextEditorDecorationType;
   private readonly addedText: vscode.TextEditorDecorationType;
   private readonly removed: vscode.TextEditorDecorationType;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly lastRun = new Map<string, number>();
+  /** How long each key's last run took, to space out runs that are expensive. */
+  private readonly lastCost = new Map<string, number>();
   /** Each file's last marks, reused while its baseline and text stay the same. */
   private readonly cache = new Map<string, { baseline: string; text: string; marks: LineMarks }>();
   /** Marks drawn per mirror URI, after the settings. For tests. */
@@ -71,12 +76,17 @@ export class HighlightView implements vscode.Disposable {
       light: { gutterIconPath: icon('removed-light.svg'), gutterIconSize: 'contain' },
       dark: { gutterIconPath: icon('removed-dark.svg'), gutterIconSize: 'contain' },
     });
+    // Removed text is shown by provideHover, so it appears anywhere on the line.
     this.subscriptions = [
       vscode.window.onDidChangeVisibleTextEditors(() => this.refresh()),
       vscode.workspace.onDidChangeTextDocument((e) => {
         if (e.document.uri.scheme === MIRROR_SCHEME) this.schedule(e.document.uri.toString());
       }),
-      player.onDidEditMirror((relPath) => this.schedule(MirrorFileSystem.uriFor(relPath).toString())),
+      player.onDidEditMirror((relPath) => {
+        this.schedule(MirrorFileSystem.uriFor(relPath).toString());
+        // Typed text can be the first highlight anywhere; the clear buttons follow it.
+        this.schedule(ALL);
+      }),
       timeline.onDidChange(() => this.refresh()),
     ];
     this.refresh();
@@ -98,6 +108,15 @@ export class HighlightView implements vscode.Disposable {
     this.schedule(ALL);
   }
 
+  /** The removed text when hovering a line with a removal marker. */
+  provideHover(doc: vscode.TextDocument, pos: vscode.Position): vscode.Hover | undefined {
+    const relPath = relPathOf(doc.uri);
+    const pair = this.pair(relPath, this.state());
+    if (!pair || normalizeEol(doc.getText()) !== pair.text) return undefined;
+    const removal = this.shown(relPath, pair.baseline, pair.text)?.removals.find((r) => r.line === pos.line);
+    return removal && new vscode.Hover(removedHover(removal.texts, doc.languageId), doc.lineAt(pos.line).range);
+  }
+
   dispose(): void {
     this.disposed = true;
     for (const t of this.timers.values()) clearTimeout(t);
@@ -111,15 +130,17 @@ export class HighlightView implements vscode.Disposable {
   private schedule(key: string): void {
     if (this.disposed || this.timers.has(key)) return;
     // Never synchronously: the player updates its text right after the edit that fired this.
-    const wait = Math.max(0, (this.lastRun.get(key) ?? 0) + RENDER_INTERVAL_MS - Date.now());
+    const wait = renderWait(Date.now(), this.lastRun.get(key) ?? 0, this.lastCost.get(key) ?? 0, RENDER_INTERVAL_MS);
     this.timers.set(
       key,
       setTimeout(() => {
         this.timers.delete(key);
-        this.lastRun.set(key, Date.now());
         if (this.disposed) return;
+        const started = Date.now();
         if (key === ALL) this.updateHighlighted();
         else this.render(key);
+        this.lastRun.set(key, Date.now());
+        this.lastCost.set(key, Date.now() - started);
       }, wait),
     );
   }
@@ -129,18 +150,24 @@ export class HighlightView implements vscode.Disposable {
     const clears = this.timeline.highlightClears;
     // The change being typed counts, so its file's baseline is ready for its live text.
     const through = playing !== undefined ? playing + 1 : this.timeline.cursor;
-    return { playing, clears, bases: baselines(this.timeline.all(), through, clears), texts: this.timeline.mirrorStates() };
+    const events = this.timeline.all();
+    const st: State = { playing, clears, bases: baselines(events, through, clears), texts: this.timeline.mirrorStates() };
+    const movingFrom = playing !== undefined ? this.timeline.get(playing)?.fromRelPath : undefined;
+    if (movingFrom !== undefined && this.player.liveText(movingFrom) !== undefined) {
+      st.movingFrom = movingFrom;
+      st.basesBefore = baselines(events, playing!, clears);
+    }
+    return st;
   }
 
   /** The file's baseline and the text its mirror should show, or undefined when it shows no highlights. */
   private pair(relPath: string, st: State): { baseline: string; text: string; live: boolean } | undefined {
-    const baseline = st.bases.get(relPath);
+    const baseline = (relPath === st.movingFrom ? st.basesBefore : st.bases)?.get(relPath);
     if (baseline === undefined) return undefined;
     const live = this.player.liveText(relPath);
     if (live !== undefined) {
       // A clear made while this change is typed takes effect when it finishes.
-      const cleared = Math.max(st.clears.all ?? 0, st.clears.files.get(relPath) ?? 0);
-      if (st.playing !== undefined && cleared > st.playing) return undefined;
+      if (st.playing !== undefined && clearedAt(st.clears, relPath) > st.playing) return undefined;
       return { baseline, text: live, live: true };
     }
     const text = st.texts.get(relPath)?.text;
@@ -184,24 +211,20 @@ export class HighlightView implements vscode.Disposable {
   }
 
   private draw(editor: vscode.TextEditor, marks: LineMarks | undefined): void {
-    const language = editor.document.languageId;
     editor.setDecorations(this.addedLine, (marks?.lines ?? []).map((l) => new vscode.Range(l, 0, l, 0)));
     editor.setDecorations(this.addedText, (marks?.chars ?? []).map((c) => new vscode.Range(c.line, c.start, c.line, c.end)));
-    editor.setDecorations(
-      this.removed,
-      (marks?.removals ?? []).map((r) => ({ range: new vscode.Range(r.line, 0, r.line, 0), hoverMessage: removedHover(r.texts, language) })),
-    );
+    editor.setDecorations(this.removed, (marks?.removals ?? []).map((r) => new vscode.Range(r.line, 0, r.line, 0)));
   }
 
   /** Works out which mirrors have highlights, for the title bar button and the Playback panel. */
   private updateHighlighted(): void {
     const st = this.state();
     const paths: string[] = [];
-    for (const relPath of st.bases.keys()) {
+    for (const relPath of [...st.bases.keys(), ...(st.movingFrom !== undefined ? [st.movingFrom] : [])]) {
       const pair = this.pair(relPath, st);
       if (pair && this.shown(relPath, pair.baseline, pair.text)) paths.push(MirrorFileSystem.uriFor(relPath).path);
     }
-    for (const relPath of this.cache.keys()) if (!st.bases.has(relPath)) this.cache.delete(relPath);
+    for (const relPath of this.cache.keys()) if (!st.bases.has(relPath) && relPath !== st.movingFrom) this.cache.delete(relPath);
     paths.sort();
     if (this.highlighted && paths.join('\n') === this.highlighted.join('\n')) return;
     const had = this.hasHighlights;

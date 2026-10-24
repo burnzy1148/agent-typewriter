@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { baselines, diffMarks, lineMarks, removedPreview, type Marks } from '../src/highlights';
+import { baselines, clearedAt, diffMarks, lineMarks, removedPreview, renderWait, type Marks } from '../src/highlights';
 import type { ChangeEvent, ChangeKind } from '../src/timeline';
 
 /** The baseline text `marks` say `current` came from. */
@@ -110,7 +110,7 @@ function ev(relPath: string, before: string, after: string, kind: ChangeKind = '
     linesRemoved: 0,
   };
 }
-const none = { files: new Map<string, number>() };
+const none: never[] = [];
 
 test('the baseline is the before text of the earliest played change', () => {
   const events = [ev('a', 'a0', 'a1'), ev('b', 'b0', 'b1'), ev('a', 'a1', 'a2')];
@@ -125,39 +125,58 @@ test('files whose changes are all unplayed have no baseline', () => {
 
 test('a clear for all files makes the text at that point the baseline', () => {
   const events = [ev('a', 'a0', 'a1'), ev('b', 'b0', 'b1'), ev('a', 'a1', 'a2')];
-  const clears = { all: events[2].seq, files: new Map<string, number>() };
-  assert.deepEqual(baselines(events, events[2].seq + 1, clears), new Map([['a', 'a1'], ['b', 'b1']]));
+  assert.deepEqual(baselines(events, events[2].seq + 1, [{ seq: events[2].seq }]), new Map([['a', 'a1'], ['b', 'b1']]));
 });
 
 test('a clear for one file leaves the others alone', () => {
   const events = [ev('a', 'a0', 'a1'), ev('b', 'b0', 'b1')];
-  const clears = { files: new Map([['a', events[1].seq + 1]]) };
-  assert.deepEqual(baselines(events, events[1].seq + 1, clears), new Map([['a', 'a1'], ['b', 'b0']]));
+  assert.deepEqual(baselines(events, events[1].seq + 1, [{ seq: events[1].seq + 1, relPath: 'a' }]), new Map([['a', 'a1'], ['b', 'b0']]));
 });
 
 test('the later of the global and the file clear wins', () => {
   const events = [ev('a', 'a0', 'a1'), ev('a', 'a1', 'a2'), ev('a', 'a2', 'a3')];
   const end = events[2].seq + 1;
-  assert.equal(baselines(events, end, { all: events[2].seq, files: new Map([['a', events[1].seq]]) }).get('a'), 'a2');
-  assert.equal(baselines(events, end, { all: events[1].seq, files: new Map([['a', events[2].seq]]) }).get('a'), 'a2');
+  assert.equal(baselines(events, end, [{ seq: events[1].seq, relPath: 'a' }, { seq: events[2].seq }]).get('a'), 'a2');
+  assert.equal(baselines(events, end, [{ seq: events[1].seq }, { seq: events[2].seq, relPath: 'a' }]).get('a'), 'a2');
 });
 
 test('a clear before a file was first changed keeps its first before text', () => {
   const events = [ev('a', 'a0', 'a1'), ev('b', 'b0', 'b1')];
-  const clears = { all: events[1].seq, files: new Map<string, number>() };
-  assert.deepEqual(baselines(events, events[1].seq + 1, clears), new Map([['a', 'a1'], ['b', 'b0']]));
+  assert.deepEqual(baselines(events, events[1].seq + 1, [{ seq: events[1].seq }]), new Map([['a', 'a1'], ['b', 'b0']]));
 });
 
 test('clears past the walked changes do not apply', () => {
   const events = [ev('a', 'a0', 'a1'), ev('a', 'a1', 'a2')];
-  const clears = { all: events[1].seq + 1, files: new Map<string, number>() };
-  assert.equal(baselines(events, events[1].seq, clears).get('a'), 'a0');
+  assert.equal(baselines(events, events[1].seq, [{ seq: events[1].seq + 1 }]).get('a'), 'a0');
 });
 
 test('a rename carries the old path baseline to the new path', () => {
   const events = [ev('a', 'a0', 'a1'), ev('b', 'a1', 'a1 renamed', 'rename', 'a')];
   const result = baselines(events, events[1].seq + 1, none);
   assert.deepEqual(result, new Map([['b', 'a0']]));
+});
+
+test('a clear made during a rename and keyed to the new path takes effect after it', () => {
+  const events = [ev('a', 'a0', 'a1'), ev('c', 'a1', 'a1 renamed', 'rename', 'a')];
+  const ren = events[1].seq;
+  assert.equal(baselines(events, ren + 1, [{ seq: ren + 1, relPath: 'c' }]).get('c'), 'a1 renamed');
+  // The old mirror, before the move, still uses the baseline it had.
+  assert.equal(baselines(events, ren, []).get('a'), 'a0');
+});
+
+test('clearedAt is the latest clear for that file or for all files', () => {
+  const clears = [{ seq: 3, relPath: 'a' }, { seq: 5 }, { seq: 7, relPath: 'b' }];
+  assert.equal(clearedAt(clears, 'a'), 5);
+  assert.equal(clearedAt(clears, 'b'), 7);
+  assert.equal(clearedAt([], 'a'), 0);
+});
+
+test('renderWait spaces runs by the interval, longer after an expensive run', () => {
+  assert.equal(renderWait(1000, 0, 0), 0);
+  assert.equal(renderWait(1050, 1000, 10), 50);
+  // A 100 ms diff waits 400 ms from its end, so it takes at most a fifth of the time.
+  assert.equal(renderWait(1050, 1000, 100), 350);
+  assert.equal(renderWait(2000, 1000, 100), 0);
 });
 
 test('a deleted then re-created file keeps its original baseline', () => {

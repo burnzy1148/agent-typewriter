@@ -89,10 +89,30 @@ export function removedPreview(texts: readonly string[], maxLines = 20, maxLineC
   return { code: shown.join('\n'), more: lines.length - shown.length };
 }
 
-/** Where highlights were last cleared: cursor-style seqs, the next change at the time of the clear. */
-export interface HighlightClears {
-  all?: number;
-  files: ReadonlyMap<string, number>;
+/**
+ * One Clear Highlights: for every file, or for `relPath`. `seq` is cursor
+ * style, the next change at the time of the clear.
+ */
+export interface HighlightClear {
+  seq: number;
+  relPath?: string;
+}
+
+/** Every clear still in effect, oldest first. */
+export type HighlightClears = readonly HighlightClear[];
+
+/** The seq of the latest clear that applies to `relPath`, or 0. */
+export function clearedAt(clears: HighlightClears, relPath: string): number {
+  return clears.reduce((at, c) => (c.relPath === undefined || c.relPath === relPath ? Math.max(at, c.seq) : at), 0);
+}
+
+/**
+ * How long to wait before redrawing: at least `intervalMs` after the last
+ * run, and longer after an expensive one, so a slow diff on a big file never
+ * takes more than about a fifth of the time.
+ */
+export function renderWait(now: number, lastRun: number, lastCostMs: number, intervalMs = 100): number {
+  return Math.max(0, lastRun + Math.max(intervalMs, lastCostMs * 4) - now);
 }
 
 /**
@@ -105,12 +125,7 @@ export function baselines(events: readonly ChangeEvent[], through: number, clear
   const base = new Map<string, string>();
   const text = new Map<string, string>();
   // Clears in the order they take effect: before the first change at or after their seq.
-  const pending = [
-    ...(clears.all !== undefined ? [{ seq: clears.all, relPath: undefined as string | undefined }] : []),
-    ...[...clears.files].map(([relPath, seq]) => ({ seq, relPath })),
-  ]
-    .filter((c) => c.seq <= through)
-    .sort((a, b) => a.seq - b.seq);
+  const pending = clears.filter((c) => c.seq <= through).sort((a, b) => a.seq - b.seq);
   let next = 0;
   const applyClears = (upTo: number) => {
     for (; next < pending.length && pending[next].seq <= upTo; next++) {

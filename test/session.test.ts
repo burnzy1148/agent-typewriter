@@ -161,23 +161,27 @@ test('highlight clears round trip and restore to the same points', () => {
   t.seekToEnd();
   t.clearHighlights('f0.ts');
   const s = viaJson(t);
-  assert.deepEqual(s.highlightsFrom, { files: { 'f1.ts': 4, 'f0.ts': 5 } });
+  assert.deepEqual(s.highlightsFrom, [{ seq: 4, relPath: 'f1.ts' }, { seq: 5, relPath: 'f0.ts' }]);
   const r = new Timeline(100);
   r.restore(s.events, s.cursor, sessionClears(s));
-  assert.deepEqual(r.highlightClears, { all: undefined, files: new Map([['f1.ts', 4], ['f0.ts', 5]]) });
+  assert.deepEqual(r.highlightClears, [{ seq: 4, relPath: 'f1.ts' }, { seq: 5, relPath: 'f0.ts' }]);
 });
 
 test('a session without clears has no highlightsFrom field', () => {
   const s = toSession(filled(2)).session;
   assert.equal('highlightsFrom' in s, false);
-  assert.deepEqual(sessionClears(s), { all: undefined, files: new Map() });
+  assert.deepEqual(sessionClears(s), []);
 });
 
-test('a malformed highlightsFrom is ignored, keeping its well-formed parts', () => {
+test('a malformed highlightsFrom is ignored, keeping its well-formed entries', () => {
   const raw = JSON.parse(JSON.stringify(toSession(filled(2)).session));
   assert.equal(parseSession({ ...raw, highlightsFrom: 'x' }).highlightsFrom, undefined);
-  assert.equal(parseSession({ ...raw, highlightsFrom: { all: 1.5, files: [] } }).highlightsFrom, undefined);
-  assert.deepEqual(parseSession({ ...raw, highlightsFrom: { all: 2, files: { 'a.ts': 'x', 'b.ts': 3 } } }).highlightsFrom, { all: 2, files: { 'b.ts': 3 } });
+  assert.equal(parseSession({ ...raw, highlightsFrom: { all: 2 } }).highlightsFrom, undefined);
+  assert.equal(parseSession({ ...raw, highlightsFrom: [{ seq: 1.5 }, 'x', null] }).highlightsFrom, undefined);
+  assert.deepEqual(parseSession({ ...raw, highlightsFrom: [{ seq: 2 }, { seq: 3, relPath: 7 }, { seq: 4, relPath: 'b.ts', extra: 1 }] }).highlightsFrom, [
+    { seq: 2 },
+    { seq: 4, relPath: 'b.ts' },
+  ]);
 });
 
 test('loading a session file starts with no clears', () => {
@@ -188,5 +192,5 @@ test('loading a session file starts with no clears', () => {
   const loaded = new Timeline(100);
   // Load Session restores at the first change with no clears.
   loaded.restore(s.events, s.events[0].seq);
-  assert.equal(loaded.highlightClears.all, undefined);
+  assert.deepEqual(loaded.highlightClears, []);
 });

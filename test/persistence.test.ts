@@ -344,7 +344,7 @@ test('highlight clears are saved with the timeline', async () => {
   t.clearHighlights();
   await store.flush();
   store.stop();
-  assert.deepEqual(loadFrom(dir)?.highlightsFrom, { all: 2 });
+  assert.deepEqual(loadFrom(dir)?.highlightsFrom, [{ seq: 2 }]);
 });
 
 test('a timeline saved without clears loads with none', async () => {

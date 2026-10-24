@@ -1188,6 +1188,17 @@ export async function run(): Promise<void> {
     // Clear all, then replay from before the clear: the highlights come back.
     await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
     await until('all cleared', () => drawn('play/hl-a.ts') === undefined && !api.highlights.hasHighlights, 5000);
+    // Typing into a cleared buffer: the clear buttons see the highlights before the change finishes.
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const lagged = push('play/hl-h.ts', 'a\n', 'a\nthe clear button sees this before it is done\n');
+    await until('highlights reported mid-change', () => timeline.stateOf(lagged.seq) === 'playing' && api.highlights.hasHighlights, 15000);
+    // Skipping it: its half-typed text stops counting as live at once, before the player lets go.
+    assert.ok(api.player.liveText('play/hl-h.ts') !== undefined, 'no live text while typing');
+    timeline.seek(lagged.seq + 1);
+    const stopping = api.player.interrupt();
+    assert.equal(api.player.liveText('play/hl-h.ts'), undefined, 'an interrupted change still reports live text');
+    await stopping;
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
     await vscode.commands.executeCommand('agentTypewriter.seek', firstHl.seq);
     await until('replay after clear', idle, 20000);
     await vscode.commands.executeCommand('vscode.open', hlUri('play/hl-a.ts'), { preview: false });
@@ -1225,9 +1236,29 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'markDeletions', true);
     await setting('agentTypewriter', 'charsPerMinute', 240000);
 
-    // A deleted file shows one removal marker at line 1.
+    // Hovering a line with a removal marker shows the removed text; other lines show none.
+    const hoverText = async (rel: string, line: number) => {
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', hlUri(rel), new vscode.Position(line, 1));
+      return hovers.flatMap((h) => h.contents.map((c) => (typeof c === 'string' ? c : c.value))).join('\n');
+    };
+    // hl-a is no longer the tab in front; hovering works on its document all the same.
+    assert.match(await hoverText('play/hl-a.ts', 2), /Removed[\s\S]*three/, 'no hover with the removed line');
+    assert.doesNotMatch(await hoverText('play/hl-a.ts', 0), /Removed/, 'a hover on a line with nothing removed');
+    // During a rename's move pause the old mirror keeps its highlights, and a clear there follows the file.
+    await play('play/hl-r-old.ts', 'r0\n', 'r0\nr1\n');
+    const renHl = pushRename('play/hl-r-old.ts', 'play/hl-r-new.ts', 'r0\nr1\n', 'r0\nr1\nr2\n');
+    await until(
+      'old mirror highlighted during the move',
+      () => timeline.stateOf(renHl.seq) === 'playing' && api.player.playbackRelPath === 'play/hl-r-old.ts' && (drawn('play/hl-r-old.ts')?.lines ?? []).includes(1),
+      5000,
+    );
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-r-old.ts'));
+    await until('rename with a clear played', playedNow(renHl.seq));
+    await until('the clear followed the file to its new path', drawnIs('play/hl-r-new.ts', null), 5000);
+    // A deleted file shows one removal marker at line 1, with its text on hover.
     await play('play/hl-d.ts', 'gone\nfile\n', '', 'delete');
     await until('deleted file marked', drawnIs('play/hl-d.ts', { lines: [], chars: [], removals: [{ line: 0, texts: ['gone\nfile\n'] }] }), 5000);
+    assert.match(await hoverText('play/hl-d.ts', 0), /gone/, 'no hover on the deleted file');
     // Both settings off: nothing is drawn.
     await setting('agentTypewriter', 'markDeletions', false);
     await until('markDeletions off', drawnIs('play/hl-d.ts', null), 5000);

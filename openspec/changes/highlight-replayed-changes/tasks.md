@@ -38,6 +38,16 @@
 
 - [x] 7.1 With `F5`, look at highlights in dark, light and high contrast themes: the colors are subdued, the gutter bar and removal triangle sit where expected, the removal hover shows the removed text, the red strikethrough shows during deletions, and the title bar's Clear Highlights in This File button appears only on the highlighted playback mirror and goes away after clearing
 
+## 8. Review fixes
+
+- [x] 8.1 Keep every clear in effect as an ordered list, so undoing a later clear (global or for the same file) brings back an earlier one; store the list in `highlightsFrom`. Verified by timeline, session and persistence unit tests
+- [x] 8.2 Schedule the "which mirrors have highlights" pass on each player edit, so the clear buttons appear while a change types. Verified by an integration check that `hasHighlights` turns true mid-change after a clear
+- [x] 8.3 Keep a clear made mid-change across a reload (no seek rule in `restore`). Verified by a timeline unit test
+- [x] 8.4 Space out redraws after expensive diffs (`renderWait`). Verified by a unit test
+- [x] 8.5 Key a per-file clear made during a rename to the new path, and keep the old mirror's marks during the move pause. Verified by unit tests and an integration check
+- [x] 8.6 Show removed text through a hover provider instead of a decoration hover. Verified by integration checks with `vscode.executeHoverProvider`, including the deleted file's line 1
+- [x] 8.7 Stop reporting live text once a change is interrupted. Verified by an integration check right after an interrupt
+
 ## Workflow follow-up
 
 - Archive on the PR branch once tasks are done and CI is green, then merge.
