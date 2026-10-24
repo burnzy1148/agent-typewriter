@@ -1,5 +1,5 @@
 import { diffWordsWithSpace } from 'diff';
-import { planHunks, type Hunk } from './planner';
+import { LINE_DIFF_MAX_EDITS, planHunks, type Hunk } from './planner';
 import type { ChangeEvent } from './timeline';
 
 /** How a mirror's text differs from its file's baseline, as LF offsets into the mirror's text. */
@@ -61,20 +61,24 @@ function exactHunks(h: Hunk): Hunk[] {
 }
 
 /**
- * Most added plus removed lines a stretch with no unique lines may search for:
- * twice the planner's own limit, about four times its time (~450 ms). Past it
- * the stretch is marked as one region.
+ * Most added plus removed lines a leaf may search for: twice the planner's own
+ * limit, about four times its time (~450 ms for each leaf that needs it all).
+ * Past it the leaf is marked as one region.
  */
 const LEAF_MAX_EDITS = 3000;
 
+/** How many times over its lines a diff may scan for anchors, so deeply nested input stays linear. */
+const ANCHOR_SCANS = 10;
+
 /**
  * Hunks that turn `baseline` into `current`, in planHunks' form, from a
- * patience diff: each stretch is anchored on lines both sides hold only once
- * within it, and the stretches between anchors are split the same way until
- * none has such a line. Only those leaves go to the planner, so a net diff
- * that built up over many changes stays exact where one planHunks call would
- * pass its edit limit and mark a single region from the first difference to
- * the last.
+ * patience diff. The texts are anchored on lines both hold only once; a
+ * stretch between anchors too big for the planner to be sure of finishing is
+ * split the same way, on lines held once within it, until none has such a
+ * line. So a net diff that built up over many changes stays exact where one
+ * planHunks call would pass its edit limit and mark a single region from the
+ * first difference to the last, while a stretch the planner can finish gets
+ * its minimal diff: a line moved past repeated braces is marked, not the braces.
  */
 export function netHunks(baseline: string, current: string): Hunk[] {
   if (baseline === current) return [];
@@ -84,14 +88,18 @@ export function netHunks(baseline: string, current: string): Hunk[] {
   const bStart = [0];
   for (const line of b) bStart.push(bStart[bStart.length - 1] + line.length);
   const hunks: Hunk[] = [];
+  let scans = ANCHOR_SCANS * (a.length + b.length);
   // Stretches a[a0, a1) and b[b0, b1) still to diff, the first one last.
   const todo: Array<[number, number, number, number]> = [[0, a.length, 0, b.length]];
-  while (todo.length > 0) {
+  for (let top = true; todo.length > 0; top = false) {
     let [a0, a1, b0, b1] = todo.pop()!;
     for (; a0 < a1 && b0 < b1 && a[a0] === b[b0]; a0++) b0++;
     for (; a0 < a1 && b0 < b1 && a[a1 - 1] === b[b1 - 1]; a1--) b1--;
     if (a0 === a1 && b0 === b1) continue;
-    const anchors = increasingRun(uniqueShared(a, a0, a1, b, b0, b1));
+    const size = a1 - a0 + (b1 - b0);
+    const split = (top || size > LINE_DIFF_MAX_EDITS) && scans >= size;
+    const anchors = split ? increasingRun(uniqueShared(a, a0, a1, b, b0, b1)) : [];
+    if (split) scans -= size;
     if (anchors.length === 0) {
       const leaf = planHunks(a.slice(a0, a1).join(''), b.slice(b0, b1).join(''), LEAF_MAX_EDITS);
       for (const h of leaf) hunks.push({ ...h, offset: h.offset + bStart[b0] });
@@ -220,16 +228,20 @@ export function removedPreview(texts: readonly string[], maxLines = 20, maxLineC
   // Removals marked on the same line are separated by a "…" row, which is not a removed line.
   const rows = texts.flatMap((t, i) => [...(i > 0 ? [undefined] : []), ...removedRows(t)]);
   const shown = rows.slice(0, maxLines);
-  const removed = rows.filter((r) => r !== undefined).length;
-  const code = shown.map((l) => (l === undefined ? '…' : l.length > maxLineChars ? l.slice(0, maxLineChars) + '…' : l)).join('\n');
-  return { code, more: removed - shown.filter((r) => r !== undefined).length };
+  const lines = (rs: typeof rows) => rs.reduce((n, r) => n + (r?.lines ?? 0), 0);
+  const code = shown.map((r) => (r === undefined ? '…' : r.text.length > maxLineChars ? r.text.slice(0, maxLineChars) + '…' : r.text)).join('\n');
+  return { code, more: lines(rows) - lines(shown) };
 }
 
-/** A removed text's rows. Line breaks removed with at most whitespace (two lines joined, an empty line removed) get a row saying so. */
-function removedRows(text: string): string[] {
+/**
+ * A removed text's rows and how many removed lines each stands for. Line
+ * breaks removed with nothing but spaces and tabs (two lines joined, empty
+ * lines removed) get one row saying so.
+ */
+function removedRows(text: string): Array<{ text: string; lines: number }> {
   const breaks = text.split('\n').length - 1;
-  if (breaks > 0 && text.trim() === '') return [breaks === 1 ? '(line break removed)' : `(${breaks} line breaks removed)`];
-  return text.replace(/\n$/, '').split('\n');
+  if (breaks > 0 && /^[ \t\n]*$/.test(text)) return [{ text: breaks === 1 ? '(line break removed)' : `(${breaks} line breaks removed)`, lines: breaks }];
+  return text.replace(/\n$/, '').split('\n').map((l) => ({ text: l, lines: 1 }));
 }
 
 /**

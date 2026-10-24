@@ -108,13 +108,22 @@ test('a large net diff in two places marks only those places', () => {
 });
 
 test('stretches without globally unique lines are anchored on lines unique within them', () => {
-  // Two copies of a 2000-line block around a unique separator, every other line
-  // changed in both: no line of a block is unique in the whole changed middle.
-  const block = Array.from({ length: 2000 }, (_, i) => `row ${i}\n`);
+  // Two copies of a 4000-line block around a unique separator, every other line
+  // changed in both: no line of a block is unique in the whole changed middle,
+  // and each block alone is past even the larger budget.
+  const block = Array.from({ length: 4000 }, (_, i) => `row ${i}\n`);
   const changed = block.map((l, i) => (i % 2 ? l.replace('row', 'ROW') : l));
   const { lines: m } = marksOf([...block, '=====\n', ...block].join(''), [...changed, '=====\n', ...changed].join(''));
-  assert.equal(m.lines.length, 2000);
-  assert.ok(m.lines.every((l) => (l < 2000 ? l : l - 2001) % 2 === 1));
+  assert.equal(m.lines.length, 4000);
+  assert.ok(m.lines.every((l) => (l < 4000 ? l : l - 4001) % 2 === 1));
+});
+
+test('a line moved past repeated lines is marked, not the lines it moved past', () => {
+  const before = ['X', 'function f() {', '  return;', '}', 'SEP1', '  return;', '}', '}', '}', '}', 'SEP2'].join('\n') + '\n';
+  const after = ['Y', 'function f() {', '  return;', '}', 'SEP1', '}', '}', '}', '}', '  return;', 'SEP2'].join('\n') + '\n';
+  const { lines: m } = marksOf(before, after);
+  assert.deepEqual(m.lines, [0, 9]);
+  assert.deepEqual(m.removals.map((r) => r.texts), [['X'], ['  return;\n']]);
 });
 
 test('a stretch with no unique lines is diffed with a larger budget', () => {
@@ -133,14 +142,16 @@ test('big generated files with few unique lines diff in bounded time', () => {
   const r = rng(9);
   const pool = Array.from({ length: 8 }, (_, i) => `0,0,${i},0\n`);
   const flat = Array.from({ length: 50000 }, () => pool[Math.floor(r() * pool.length)]);
-  const block = Array.from({ length: 2000 }, (_, i) => `row ${i}\n`);
-  const blocks = Array.from({ length: 10 }, () => block).flat();
+  // Every row repeats ten times, but only once between two separators.
+  const blocks = Array.from({ length: 10 }, (_, k) => [...Array.from({ length: 2000 }, (_, i) => `row ${i}\n`), `sep ${k}\n`]).flat();
+  // c0, c1, c0, c2, c1, ...: each level of the patience diff finds one anchor, at its end.
+  const chain = ['c0\n', ...Array.from({ length: 5000 }, (_, i) => [`c${i + 1}\n`, `c${i}\n`]).flat()];
   const cases: Array<[string, string[], (l: string, i: number) => string]> = [
     // Past even the larger budget: one region, but no slower than that budget.
     ['flat, many changes', flat, (l, i) => (r() < 0.1 ? pool[(i * 7) % pool.length] : l)],
     ['flat, few changes', flat, (l) => (r() < 0.005 ? 'changed\n' : l)],
-    // Every line repeats ten times; recursion finds anchors inside each block.
-    ['repeated blocks', blocks, (l, i) => (i % 3 === 0 ? l.replace('row', 'ROW') : l)],
+    ['repeated blocks', blocks, (l, i) => (i % 2001 % 3 === 0 ? l.replace('row', 'ROW') : l)],
+    ['deep nesting', chain.flatMap((l, i) => [l, `p${i}\n`]), (l) => l.replace(/^p/, 'q')],
   ];
   for (const [name, lines, edit] of cases) {
     const before = lines.join('');
@@ -163,6 +174,11 @@ test('a removed line break alone shows a row saying so', () => {
   assert.deepEqual(removedPreview(empty.removals[0].texts), { code: '(line break removed)', more: 0 });
   assert.equal(removedPreview(['\n\n\n']).code, '(3 line breaks removed)');
   assert.equal(removedPreview(['x', '\n']).code, 'x\n\u2026\n(line break removed)');
+  // Empty lines left out of the hover count as the lines they were.
+  const block = Array.from({ length: 20 }, (_, i) => `l${i}`).join('\n') + '\n';
+  assert.deepEqual(removedPreview([block, '\n\n\n\n\n']), { code: block.replace(/\n$/, ''), more: 5 });
+  // Only spaces and tabs count as nothing; other whitespace is shown.
+  assert.equal(removedPreview(['\u00a0\n']).code, '\u00a0');
 });
 
 test('removed lines on one line count only removed lines as more', () => {

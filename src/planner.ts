@@ -23,7 +23,7 @@ const FOLD_MAX_COMMON = 3;
  * with the square of this (about 100 ms at this bound), so past it the
  * changed region is retyped whole.
  */
-const LINE_DIFF_MAX_EDITS = 1500;
+export const LINE_DIFF_MAX_EDITS = 1500;
 /** Most added plus removed tokens a block's word diff may search for before it is retyped instead. */
 const WORD_DIFF_MAX_EDITS = 1000;
 
