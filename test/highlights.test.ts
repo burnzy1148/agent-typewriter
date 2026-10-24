@@ -107,6 +107,64 @@ test('a large net diff in two places marks only those places', () => {
   }
 });
 
+test('stretches without globally unique lines are anchored on lines unique within them', () => {
+  // Two copies of a 2000-line block around a unique separator, every other line
+  // changed in both: no line of a block is unique in the whole changed middle.
+  const block = Array.from({ length: 2000 }, (_, i) => `row ${i}\n`);
+  const changed = block.map((l, i) => (i % 2 ? l.replace('row', 'ROW') : l));
+  const { lines: m } = marksOf([...block, '=====\n', ...block].join(''), [...changed, '=====\n', ...changed].join(''));
+  assert.equal(m.lines.length, 2000);
+  assert.ok(m.lines.every((l) => (l < 2000 ? l : l - 2001) % 2 === 1));
+});
+
+test('a stretch with no unique lines is diffed with a larger budget', () => {
+  // Generated data: 8 distinct lines, 1000 of 8000 replaced, past the planner's own limit.
+  const r = rng(5);
+  const pool = Array.from({ length: 8 }, (_, i) => `0,0,${i},0\n`);
+  const lines = Array.from({ length: 8000 }, () => pool[Math.floor(r() * pool.length)]);
+  const changed = lines.slice();
+  for (let k = 0; k < 1000; k++) changed[Math.floor(r() * lines.length)] = 'changed\n';
+  const want = changed.flatMap((l, i) => (l === 'changed\n' ? [i] : []));
+  const { lines: m } = marksOf(lines.join(''), changed.join(''));
+  assert.deepEqual(m.lines, want);
+});
+
+test('big generated files with few unique lines diff in bounded time', () => {
+  const r = rng(9);
+  const pool = Array.from({ length: 8 }, (_, i) => `0,0,${i},0\n`);
+  const flat = Array.from({ length: 50000 }, () => pool[Math.floor(r() * pool.length)]);
+  const block = Array.from({ length: 2000 }, (_, i) => `row ${i}\n`);
+  const blocks = Array.from({ length: 10 }, () => block).flat();
+  const cases: Array<[string, string[], (l: string, i: number) => string]> = [
+    // Past even the larger budget: one region, but no slower than that budget.
+    ['flat, many changes', flat, (l, i) => (r() < 0.1 ? pool[(i * 7) % pool.length] : l)],
+    ['flat, few changes', flat, (l) => (r() < 0.005 ? 'changed\n' : l)],
+    // Every line repeats ten times; recursion finds anchors inside each block.
+    ['repeated blocks', blocks, (l, i) => (i % 3 === 0 ? l.replace('row', 'ROW') : l)],
+  ];
+  for (const [name, lines, edit] of cases) {
+    const before = lines.join('');
+    const after = lines.map(edit).join('');
+    const started = performance.now();
+    const hunks = netHunks(before, after);
+    const ms = performance.now() - started;
+    assert.equal(applyHunks(before, hunks), after, name);
+    assert.ok(ms < 4000, `${name} took ${Math.round(ms)} ms`);
+  }
+});
+
+test('a removed line break alone shows a row saying so', () => {
+  // Joining two lines removes the line break between them and the indent after it.
+  const joined = marksOf('foo(\n  a)\n', 'foo(a)\n').lines;
+  assert.deepEqual(joined.removals, [{ line: 0, texts: ['\n  '] }]);
+  assert.deepEqual(removedPreview(joined.removals[0].texts), { code: '(line break removed)', more: 0 });
+  // Removing an empty line removes only a line break.
+  const empty = marksOf('a\n\nb\n', 'a\nb\n').lines;
+  assert.deepEqual(removedPreview(empty.removals[0].texts), { code: '(line break removed)', more: 0 });
+  assert.equal(removedPreview(['\n\n\n']).code, '(3 line breaks removed)');
+  assert.equal(removedPreview(['x', '\n']).code, 'x\n\u2026\n(line break removed)');
+});
+
 test('removed lines on one line count only removed lines as more', () => {
   const block = (tag: string) => Array.from({ length: 15 }, (_, i) => `${tag}${i}`).join('\n') + '\n';
   const p = removedPreview([block('a'), block('b')]);
@@ -361,6 +419,32 @@ test('fuzz: anchored hunks rebuild line-heavy texts with repeated lines', () => 
       else lines.splice(at, 0, pool[Math.floor(r() * pool.length)]);
     }
     const current = lines.join('') + (r() < 0.2 ? 'tail' : '');
+    assert.equal(applyHunks(baseline, netHunks(baseline, current)), current);
+    assert.equal(rebuild(current, diffMarks(baseline, current)), baseline);
+  }
+});
+
+test('fuzz: nested repeated blocks give hunks that rebuild the text and marks that rebuild the baseline', () => {
+  const r = rng(13);
+  for (let i = 0; i < 600; i++) {
+    // Blocks of lines repeated a few times, with unique separators now and then,
+    // so lines are unique only within some stretches; sometimes few distinct lines at all.
+    const width = 1 + Math.floor(r() * 30);
+    const block = Array.from({ length: width }, (_, k) => (r() < 0.3 ? '}\n' : `b${k % (1 + Math.floor(r() * width))};\n`));
+    const lines: string[] = [];
+    for (let k = 1 + Math.floor(r() * 6); k > 0; k--) {
+      lines.push(...block);
+      if (r() < 0.5) lines.push(`sep ${k}\n`);
+    }
+    const baseline = lines.join('');
+    for (let k = Math.floor(r() * 20); k > 0; k--) {
+      const at = Math.floor(r() * (lines.length + 1));
+      const choice = r();
+      if (choice < 0.35) lines.splice(at, 1);
+      else if (choice < 0.7) lines.splice(at, 0, block[Math.floor(r() * block.length)]);
+      else lines.splice(at, 1, `new ${Math.floor(r() * 5)}\n`);
+    }
+    const current = lines.join('') + (r() < 0.1 ? 'tail' : '');
     assert.equal(applyHunks(baseline, netHunks(baseline, current)), current);
     assert.equal(rebuild(current, diffMarks(baseline, current)), baseline);
   }

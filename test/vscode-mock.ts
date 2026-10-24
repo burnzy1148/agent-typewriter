@@ -1,8 +1,8 @@
 /**
  * A minimal 'vscode' module for unit tests that run the real Recorder against
  * real files (see test/recorder.test.ts). The test script aliases 'vscode' to
- * this file. Only what the recorder and the mirror filesystem use is here;
- * `mock` lets a test drive it.
+ * this file. Only what the recorder, the mirror filesystem and the highlight
+ * view use is here; `mock` lets a test drive it.
  */
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -247,4 +247,57 @@ export const workspace = {
   onDidSaveTextDocument: mock.didSave.event,
   onDidChangeWorkspaceFolders: noop.event,
   onDidChangeConfiguration: mock.configEmitter.event,
+  onDidChangeTextDocument: noop.event,
+};
+
+// Just enough of the window for HighlightView, with no editors open.
+export class ThemeColor {
+  constructor(readonly id: string) {}
+}
+
+export enum OverviewRulerLane {
+  Left = 1,
+  Center = 2,
+  Right = 4,
+  Full = 7,
+}
+
+export class Range {
+  constructor(
+    readonly startLine: number,
+    readonly startCharacter: number,
+    readonly endLine: number,
+    readonly endCharacter: number,
+  ) {}
+}
+
+export class MarkdownString {
+  value = '';
+  appendMarkdown(text: string): this {
+    this.value += text;
+    return this;
+  }
+  appendCodeblock(code: string, language = ''): this {
+    this.value += '\n```' + language + '\n' + code + '\n```\n';
+    return this;
+  }
+}
+
+export class Hover {
+  constructor(
+    readonly contents: MarkdownString,
+    readonly range?: Range,
+  ) {}
+}
+
+export const window = {
+  visibleTextEditors: [] as unknown[],
+  createTextEditorDecorationType: () => ({ dispose() {} }),
+  onDidChangeVisibleTextEditors: noop.event,
+};
+
+export const commands = {
+  async executeCommand(): Promise<undefined> {
+    return undefined;
+  },
 };

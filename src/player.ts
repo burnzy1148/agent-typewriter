@@ -64,6 +64,9 @@ export class Player implements vscode.Disposable {
   private liveRelPath: string | undefined;
   /** The epoch that change started in; once interrupted, its text is no longer live. */
   private liveEpoch = -1;
+  /** Bumped by every play(), so each change gets its own liveToken. */
+  private changes = 0;
+  private liveChange = -1;
   private readonly edited = new vscode.EventEmitter<string>();
   /** Fires with a mirror's path after the player changed its text, once liveText has caught up. */
   readonly onDidEditMirror = this.edited.event;
@@ -94,7 +97,7 @@ export class Player implements vscode.Disposable {
 
   /** Identifies the change typing into `relPath`'s mirror right now, so marks drawn during it can be told from older ones. */
   liveToken(relPath: string): number | undefined {
-    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.liveEpoch : undefined;
+    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.liveChange : undefined;
   }
 
   /** The text shown as about to be deleted right now, if any. For tests. */
@@ -232,6 +235,7 @@ export class Player implements vscode.Disposable {
 
   private async play(e: ChangeEvent, epoch: number): Promise<void> {
     const s = this.settings();
+    this.liveChange = ++this.changes;
     if (e.fromRelPath !== undefined && !(await this.moveMirror(e, e.fromRelPath, epoch))) return;
     const switching = this.lastRelPath !== e.relPath;
     // Before showing the tab: VS Code asks for its CodeLens row as it opens.
