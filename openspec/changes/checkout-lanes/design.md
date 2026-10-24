@@ -74,9 +74,8 @@ What stays the same:
 - The own scope's `nested` set still lists every worktree, so a nested worktree with no lane stays unrecorded.
 
 Watchers:
-- The folder's own scope watches `folder/**`, as today.
-- A nested lane gets its own watcher only when the folder's own checkout is not recorded. Otherwise its events arrive through the folder watcher.
-- Every watcher handler drops an event whose `scopeOf(uri)` is not the scope it was created for, so nothing is recorded twice.
+- The folder's own scope watches `folder/**`, as today, and every other scope watches its own root, nested or not.
+- Every watcher handler drops an event whose `scopeOf(uri)` is another scope, so a nested lane's files, seen by both the folder's watcher and its own, are read once, by their own scope. (The first draft gave a nested lane no watcher of its own while the folder's own checkout records; dropping foreign events in every handler turned out simpler and also covers nested workspace folders.)
 
 The reorder buffer stays shared across lanes. Each pushed event carries `lane`. Before pushing the first event of a lane, the recorder calls `timeline.defineLane`.
 
@@ -105,7 +104,14 @@ Pure functions, so they are unit tested without VS Code:
 - `laneLabel(checkoutName, folderName, multiRoot)`.
 - `defaultLanes(folders)`: the first five folders' own checkouts, plus the names left out.
 
-A lane's last activity is its newest change's `time` in the timeline. With no changes, it is the time it started recording.
+A lane's last activity is its newest change's `time` in the timeline. With no changes, it is the time it started recording. Rotation never stops a folder's last lane, since a folder always records something.
+
+### Which lane is followed
+
+- The first lane registered is followed when the followed lane does not exist.
+- On the first scope refresh after start, the recorder follows the remembered lane if it records, else keeps the followed lane if it records, else the first recorded lane; unless the followed lane still has changes queued (a restored timeline), which keeps it.
+- When the followed lane is not recording and has nothing queued, a new change in a recording lane makes that lane followed (`Timeline.push`). Without this, a timeline restored from before lanes (lane `''`, all played) would leave new recordings unplayed.
+- `extension.ts` saves the followed lane in the choices file whenever it changes.
 
 ### Auto-follow controller
 
@@ -154,6 +160,10 @@ The `cursor` field remains, holding the followed lane's cursor. `parseSession` r
 Load Session restores lanes with `recording: false`, sets every lane cursor to the lane's first change, and follows the saved followed lane. Git replay creates one lane, labeled with the range.
 
 `TimelineStore` replaces the first/last-seq JSON cache with a per-seq JSON string cache. Events are immutable, so a save encodes only new events and joins cached strings. Entries are pruned when their seq is trimmed. The 64M-char cap still counts across every lane.
+
+### Seeking and skipping by lane
+
+`replayFrom` on a change in another lane follows that lane first. `skipToNext` skips the followed lane's playing or next change, not `cursor + 1`, since the next seq may belong to another lane. `seekTo` treats "past the followed lane's newest change" as skip to latest.
 
 ### Commands and status bar
 

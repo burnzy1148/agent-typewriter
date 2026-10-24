@@ -31,6 +31,10 @@ Exactly one lane SHALL be followed whenever the buffer holds a change. Only the 
 - **WHEN** the main checkout's lane is followed and an agent writes three files in the recorded worktree `feature`
 - **THEN** nothing from `feature` is typed, and the `feature` lane shows three queued
 
+#### Scenario: A played-out stopped lane gives way
+- **WHEN** the followed lane has stopped recording and has nothing queued, and a change is recorded in a recording lane
+- **THEN** that recording lane is followed and its change is typed
+
 ### Requirement: Following another lane
 The user SHALL be able to follow any lane in the buffer from the Checkouts view, the Changes view or a Follow Lane command. Following a lane SHALL stop the change being typed, which stays pending in its lane, and resume the newly followed lane at its own position. Following SHALL NOT change whether playback is paused.
 
