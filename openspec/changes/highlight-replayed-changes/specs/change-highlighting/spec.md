@@ -70,6 +70,10 @@ A file's highlights SHALL reflect only the changes played so far. Seeking back S
 ### Requirement: Large changes highlight only what differs
 A change applied all at once because it inserts more than `agentTypewriter.maxAnimatedChars` characters SHALL be highlighted like any other change. Only text that differs from the baseline SHALL be highlighted, not the whole file.
 
+#### Scenario: Many changes in two places
+- **WHEN** played changes have rewritten the first 700 and the last 700 lines of a 4,000-line file since its baseline
+- **THEN** only those 1,400 lines are highlighted as added
+
 #### Scenario: Large paste into a long file
 - **WHEN** a change inserts 8,000 characters in the middle of a 2,000-line file with `maxAnimatedChars` at 6,000
 - **THEN** only the inserted lines are highlighted as added

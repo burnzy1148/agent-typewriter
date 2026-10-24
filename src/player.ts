@@ -89,7 +89,12 @@ export class Player implements vscode.Disposable {
 
   /** The text the player has put in `relPath`'s mirror so far, while a change is typed into it. */
   liveText(relPath: string): string | undefined {
-    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.expected : undefined;
+    return this.liveToken(relPath) !== undefined ? this.expected : undefined;
+  }
+
+  /** Identifies the change typing into `relPath`'s mirror right now, so marks drawn during it can be told from older ones. */
+  liveToken(relPath: string): number | undefined {
+    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.liveEpoch : undefined;
   }
 
   /** The text shown as about to be deleted right now, if any. For tests. */
@@ -232,13 +237,14 @@ export class Player implements vscode.Disposable {
     // Before showing the tab: VS Code asks for its CodeLens row as it opens.
     this.setPlaybackPath(e.relPath);
     this.currentEol = e.eol;
-    let editor: vscode.TextEditor | undefined = await this.showMirror(e.relPath, e.before, e.eol);
     // The mirror might not match this event's "before" (first replay, after a
-    // seek, or a reverted mirror). ready() snaps it so the hunks line up.
+    // seek, or a reverted mirror). ready() snaps it so the hunks line up. Set
+    // before showing the tab, so the change counts as live from its start.
     this.expected = e.before;
     this.liveRelPath = e.relPath;
     this.liveEpoch = epoch;
     this.synced = undefined;
+    let editor: vscode.TextEditor | undefined = await this.showMirror(e.relPath, e.before, e.eol);
     if (switching && this.lastRelPath !== undefined) {
       await this.sleep(s.fileSwitchDelayMs / this.speedMultiplier(s));
     }

@@ -138,6 +138,8 @@ export class Timeline {
     const playing = this.playingSeq !== undefined ? this.get(this.playingSeq) : undefined;
     const seq = playing ? playing.seq + 1 : this.cursorSeq;
     const path = relPath !== undefined && playing?.fromRelPath === relPath ? playing.relPath : relPath;
+    // Pressing it again at the same point changes nothing.
+    if (this.clears.some((c) => c.seq === seq && c.relPath === path)) return;
     this.clears.push(path === undefined ? { seq } : { seq, relPath: path });
     this.emit();
   }
@@ -272,6 +274,8 @@ export class Timeline {
     }
     const first = this.events[0]?.seq ?? this.nextSeq;
     if (this.cursorSeq < first) this.cursorSeq = first;
+    // A clear at or before the first kept change no longer changes any baseline.
+    this.clears = this.clears.filter((c) => c.seq > first);
   }
 
   private indexOfSeq(seq: number): number {

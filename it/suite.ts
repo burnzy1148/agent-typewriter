@@ -1192,6 +1192,8 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'charsPerMinute', 600);
     const lagged = push('play/hl-h.ts', 'a\n', 'a\nthe clear button sees this before it is done\n');
     await until('highlights reported mid-change', () => timeline.stateOf(lagged.seq) === 'playing' && api.highlights.hasHighlights, 15000);
+    // The title bar button's context key names the mirror being typed into.
+    assert.ok(api.highlights.highlightedPaths.includes('/play/hl-h.ts'), `context key lacks the typing mirror: ${api.highlights.highlightedPaths.join(', ')}`);
     // Skipping it: its half-typed text stops counting as live at once, before the player lets go.
     assert.ok(api.player.liveText('play/hl-h.ts') !== undefined, 'no live text while typing');
     timeline.seek(lagged.seq + 1);
@@ -1268,6 +1270,14 @@ export async function run(): Promise<void> {
     await sleep(300);
     assert.equal(drawn('play/hl-f.ts'), undefined, 'drawn with both settings off');
     assert.equal(mirrorText('play/hl-f.ts'), 'x\ny\n');
+    // Turned back on, the highlights of every played change since the baseline return.
+    await setting('agentTypewriter', 'highlightAdditions', true);
+    await setting('agentTypewriter', 'markDeletions', true);
+    await until('highlights back after turning them on', drawnIs('play/hl-f.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    // A real file open beside the mirrors is never decorated.
+    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
+    await sleep(300);
+    assert.ok([...api.highlights.drawn.keys()].every((k) => k.startsWith('agent-typewriter:')), 'a real file got highlights');
     console.log('[it] highlights ok');
 
     for (const restore of undo.reverse()) await restore();

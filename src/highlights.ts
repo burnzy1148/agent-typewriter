@@ -1,4 +1,4 @@
-import { planHunks } from './planner';
+import { planHunks, type Hunk } from './planner';
 import type { ChangeEvent } from './timeline';
 
 /** How a mirror's text differs from its file's baseline, as LF offsets into the mirror's text. */
@@ -14,7 +14,7 @@ export function diffMarks(baseline: string, current: string): Marks {
   const marks: Marks = { added: [], removed: [] };
   // Hunk offsets are in the text after earlier hunks, and later hunks come after
   // earlier ones, so each offset is also a position in `current`.
-  for (const h of planHunks(baseline, current)) {
+  for (const h of netHunks(baseline, current)) {
     if (h.deleteText.length > 0) {
       const last = marks.removed[marks.removed.length - 1];
       if (last?.offset === h.offset) last.text += h.deleteText;
@@ -23,6 +23,87 @@ export function diffMarks(baseline: string, current: string): Marks {
     if (h.insertText.length > 0) marks.added.push({ start: h.offset, end: h.offset + h.insertText.length });
   }
   return marks;
+}
+
+/**
+ * Hunks that turn `baseline` into `current`, in planHunks' form, anchored on
+ * lines both texts share and hold only once (as a patience diff does). Each
+ * stretch between anchors is diffed on its own, so a net diff that built up
+ * over many changes stays exact where one planHunks call would pass its edit
+ * limit and mark a single region from the first difference to the last.
+ */
+export function netHunks(baseline: string, current: string): Hunk[] {
+  if (baseline === current) return [];
+  const a = splitLines(baseline);
+  const b = splitLines(current);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const seen = new Map<string, { inA: number; inB: number; ai: number; bi: number }>();
+  for (let i = head; i < a.length - tail; i++) {
+    const c = seen.get(a[i]) ?? { inA: 0, inB: 0, ai: i, bi: -1 };
+    c.inA++;
+    seen.set(a[i], c);
+  }
+  for (let j = head; j < b.length - tail; j++) {
+    const c = seen.get(b[j]);
+    if (c) {
+      c.inB++;
+      c.bi = j;
+    }
+  }
+  const unique = [...seen.values()].filter((c) => c.inA === 1 && c.inB === 1).sort((x, y) => x.ai - y.ai);
+  const hunks: Hunk[] = [];
+  let ai = head;
+  let bi = head;
+  let offset = b.slice(0, head).reduce((n, l) => n + l.length, 0);
+  // Diffs a[ai, aEnd) against b[bi, bEnd); its hunk offsets are relative to where that stretch starts in `current`.
+  const stretch = (aEnd: number, bEnd: number) => {
+    const bText = b.slice(bi, bEnd).join('');
+    for (const h of planHunks(a.slice(ai, aEnd).join(''), bText)) hunks.push({ ...h, offset: h.offset + offset });
+    offset += bText.length;
+  };
+  for (const anchor of increasingRun(unique)) {
+    stretch(anchor.ai, anchor.bi);
+    offset += b[anchor.bi].length;
+    ai = anchor.ai + 1;
+    bi = anchor.bi + 1;
+  }
+  stretch(a.length - tail, b.length - tail);
+  return hunks;
+}
+
+/** Lines with their line breaks; a last line without one is kept as is. */
+function splitLines(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) {
+    out.push(text.slice(start, i + 1));
+    start = i + 1;
+  }
+  if (start < text.length) out.push(text.slice(start));
+  return out;
+}
+
+/** Of anchors sorted by `ai`, the longest run whose `bi` also increases. */
+function increasingRun<T extends { bi: number }>(sorted: readonly T[]): T[] {
+  const tails: number[] = [];
+  const prev: number[] = [];
+  for (let k = 0; k < sorted.length; k++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[tails[mid]].bi < sorted[k].bi) lo = mid + 1;
+      else hi = mid;
+    }
+    prev[k] = lo > 0 ? tails[lo - 1] : -1;
+    tails[lo] = k;
+  }
+  const out: T[] = [];
+  for (let k = tails.length > 0 ? tails[tails.length - 1] : -1; k !== -1; k = prev[k]) out.push(sorted[k]);
+  return out.reverse();
 }
 
 /** Marks by line: what the editor decorates. Lines and columns are the same in LF and CRLF documents. */
@@ -84,9 +165,12 @@ export function lineMarks(text: string, marks: Marks): LineMarks {
 
 /** The removed text a removal marker's hover shows: at most `maxLines` lines of at most `maxLineChars` characters. */
 export function removedPreview(texts: readonly string[], maxLines = 20, maxLineChars = 500): { code: string; more: number } {
-  const lines = texts.flatMap((t, i) => [...(i > 0 ? ['…'] : []), ...t.replace(/\n$/, '').split('\n')]);
-  const shown = lines.slice(0, maxLines).map((l) => (l.length > maxLineChars ? l.slice(0, maxLineChars) + '…' : l));
-  return { code: shown.join('\n'), more: lines.length - shown.length };
+  // Removals marked on the same line are separated by a "…" row, which is not a removed line.
+  const rows = texts.flatMap((t, i) => [...(i > 0 ? [undefined] : []), ...t.replace(/\n$/, '').split('\n')]);
+  const shown = rows.slice(0, maxLines);
+  const removed = rows.filter((r) => r !== undefined).length;
+  const code = shown.map((l) => (l === undefined ? '…' : l.length > maxLineChars ? l.slice(0, maxLineChars) + '…' : l)).join('\n');
+  return { code, more: removed - shown.filter((r) => r !== undefined).length };
 }
 
 /**
@@ -108,11 +192,65 @@ export function clearedAt(clears: HighlightClears, relPath: string): number {
 
 /**
  * How long to wait before redrawing: at least `intervalMs` after the last
- * run, and longer after an expensive one, so a slow diff on a big file never
- * takes more than about a fifth of the time.
+ * run, and longer after an expensive one, so a slow diff on a big file takes
+ * at most about a fifth of the time; but never more than `maxMs`, so one slow
+ * run does not hold back the next for long.
  */
-export function renderWait(now: number, lastRun: number, lastCostMs: number, intervalMs = 100): number {
-  return Math.max(0, lastRun + Math.max(intervalMs, lastCostMs * 4) - now);
+export function renderWait(now: number, lastRun: number, lastCostMs: number, intervalMs = 100, maxMs = 2000): number {
+  return Math.max(0, lastRun + Math.min(maxMs, Math.max(intervalMs, lastCostMs * 4)) - now);
+}
+
+/** What files' highlights are worked out from, read once for each pass over them. */
+export interface HighlightState {
+  /** Baselines for the played changes and the one being typed. */
+  bases: ReadonlyMap<string, string>;
+  /** While a rename is typed and has not moved its mirror yet: its old path, and the baselines from before it. */
+  movingFrom?: string;
+  basesBefore?: ReadonlyMap<string, string>;
+  /** What each mirror shows at the cursor. */
+  texts: ReadonlyMap<string, { text: string }>;
+  clears: HighlightClears;
+  /** The change being typed. */
+  playing?: { seq: number; relPath: string; fromRelPath?: string };
+}
+
+/** A file's baseline and the text its mirror should show, with `live` set when that text is the player's, mid-change. */
+export interface HighlightPair {
+  baseline: string;
+  text: string;
+  live: boolean;
+}
+
+/**
+ * The baseline and text to compare for `relPath`, or undefined when it shows
+ * no highlights. `live` is the player's text while it types into that mirror.
+ */
+export function highlightPair(st: HighlightState, relPath: string, live?: string): HighlightPair | undefined {
+  const baseline = (relPath === st.movingFrom ? st.basesBefore : st.bases)?.get(relPath);
+  if (baseline === undefined) return undefined;
+  const p = st.playing;
+  // A clear made while this file's change is typed takes effect when it
+  // finishes; until then the file shows nothing. A clear on a renamed file is
+  // kept under its new path, so check both.
+  if (p && (relPath === p.relPath || relPath === p.fromRelPath) && Math.max(clearedAt(st.clears, relPath), clearedAt(st.clears, p.relPath)) > p.seq) {
+    return undefined;
+  }
+  if (live !== undefined) return { baseline, text: live, live: true };
+  const text = st.texts.get(relPath)?.text;
+  return text === undefined ? undefined : { baseline, text, live: false };
+}
+
+/**
+ * Whether to draw a mirror's marks, keep the ones already drawn, or clear
+ * them. Marks are drawn only on the text they describe. Mid-change, the
+ * document can be a step ahead of the player's text; marks drawn during that
+ * same change (same `liveToken`) are kept and move with the edit, while marks
+ * from before a seek are cleared.
+ */
+export function renderAction(pair: HighlightPair | undefined, docText: string | undefined, drawnToken: number | undefined, liveToken: number | undefined): 'draw' | 'keep' | 'clear' {
+  if (!pair) return 'clear';
+  if (docText === pair.text) return 'draw';
+  return pair.live && drawnToken !== undefined && drawnToken === liveToken ? 'keep' : 'clear';
 }
 
 /**

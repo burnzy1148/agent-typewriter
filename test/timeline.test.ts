@@ -345,3 +345,27 @@ test('restore without clears has none', () => {
   t.restore(played(2).all(), 3);
   assert.deepEqual(t.highlightClears, []);
 });
+
+test('clearing again at the same point adds no second clear', () => {
+  const t = played(2);
+  t.clearHighlights();
+  t.clearHighlights();
+  t.clearHighlights('a');
+  t.clearHighlights('a');
+  assert.deepEqual(t.highlightClears, [{ seq: 3 }, { seq: 3, relPath: 'a' }]);
+});
+
+test('clears at or before the oldest change left in the buffer are dropped', () => {
+  const t = new Timeline(3);
+  t.push(ev('a', '0', '1'));
+  t.seekToEnd();
+  t.clearHighlights();
+  t.push(ev('a', '1', '2'));
+  t.push(ev('a', '2', '3'));
+  t.seekToEnd();
+  t.clearHighlights('a');
+  t.push(ev('a', '3', '4'));
+  t.push(ev('a', '4', '5'));
+  // Buffer holds seqs 3 to 5: the clear at 2 is gone, the one at 4 stays.
+  assert.deepEqual(t.highlightClears, [{ seq: 4, relPath: 'a' }]);
+});

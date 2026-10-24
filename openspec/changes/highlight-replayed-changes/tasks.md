@@ -48,6 +48,16 @@
 - [x] 8.6 Show removed text through a hover provider instead of a decoration hover. Verified by integration checks with `vscode.executeHoverProvider`, including the deleted file's line 1
 - [x] 8.7 Stop reporting live text once a change is interrupted. Verified by an integration check right after an interrupt
 
+## 9. Second review fixes
+
+- [x] 9.1 Anchor the net diff on unique shared lines (`netHunks`), so a net diff past the planner's edit limit marks only what differs. Verified by unit tests on two large blocks in 2,000- and 4,000-line files, and a fuzz test with repeated lines
+- [x] 9.2 Hide a file's marks once a clear was made during its change, whether or not the player's live text is set yet, and set the live text before opening the tab. Verified by `highlightPair` unit tests
+- [x] 9.3 Check a rename's clear under its new path for the old mirror too. Verified by a `highlightPair` unit test
+- [x] 9.4 Keep marks during a change only if drawn during that same change (`liveToken`); clear marks from before a seek. Verified by `renderAction` unit tests
+- [x] 9.5 Count only removed lines in the hover's "more lines". Verified by a unit test
+- [x] 9.6 Read the settings once per pass, compare strings instead of diffing when both settings are on, spread an all-files pass over 30 ms slices otherwise, cap the backoff at 2 s, skip duplicate clears and drop clears on trim. Verified by unit tests for `renderWait`, duplicate clears and trimming
+- [x] 9.7 Cover the gaps: the title bar `when` clause (unit test on `package.json`), the context key naming the mirror being typed into, turning both settings back on, and no highlights on real files (integration checks)
+
 ## Workflow follow-up
 
 - Archive on the PR branch once tasks are done and CI is green, then merge.

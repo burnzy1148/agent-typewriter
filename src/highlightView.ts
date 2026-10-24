@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { Settings } from './config';
-import { baselines, clearedAt, diffMarks, lineMarks, removedPreview, renderWait, type HighlightClears, type LineMarks } from './highlights';
+import { baselines, diffMarks, highlightPair, lineMarks, removedPreview, renderAction, renderWait, type HighlightPair, type HighlightState, type LineMarks } from './highlights';
 import { MirrorFileSystem, MIRROR_SCHEME } from './mirrorFs';
 import { normalizeEol } from './planner';
 import type { Player } from './player';
@@ -10,19 +10,10 @@ import type { Timeline } from './timeline';
 const RENDER_INTERVAL_MS = 100;
 /** Timer key for working out which mirrors have highlights at all. */
 const ALL = '*';
+/** A pass over every file diffs no more than this long; files left over keep their last answer until the next pass. */
+const PASS_BUDGET_MS = 30;
 
 type HighlightSettings = Pick<Settings, 'highlightAdditions' | 'markDeletions'>;
-
-/** What one refresh works from: read once, used for every file. */
-interface State {
-  playing: number | undefined;
-  clears: HighlightClears;
-  bases: Map<string, string>;
-  texts: Map<string, { text: string }>;
-  /** While a rename is typed: its old path, and the baselines before it, which the old mirror still uses. */
-  movingFrom?: string;
-  basesBefore?: Map<string, string>;
-}
 
 /**
  * Draws highlights on visible mirror editors: added lines and characters and
@@ -43,6 +34,8 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   private readonly cache = new Map<string, { baseline: string; text: string; marks: LineMarks }>();
   /** Marks drawn per mirror URI, after the settings. For tests. */
   readonly drawn = new Map<string, LineMarks>();
+  /** For marks drawn on the player's text mid-change: that change's token, so they are kept only during it. */
+  private readonly drawnToken = new Map<string, number>();
   /** Mirror paths with any highlights shown, as the title bar's context key holds them. */
   private highlighted: string[] | undefined;
   private readonly changed = new vscode.EventEmitter<void>();
@@ -111,9 +104,9 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   /** The removed text when hovering a line with a removal marker. */
   provideHover(doc: vscode.TextDocument, pos: vscode.Position): vscode.Hover | undefined {
     const relPath = relPathOf(doc.uri);
-    const pair = this.pair(relPath, this.state());
+    const pair = highlightPair(this.state(), relPath, this.player.liveText(relPath));
     if (!pair || normalizeEol(doc.getText()) !== pair.text) return undefined;
-    const removal = this.shown(relPath, pair.baseline, pair.text)?.removals.find((r) => r.line === pos.line);
+    const removal = this.shown(relPath, pair, this.settings())?.removals.find((r) => r.line === pos.line);
     return removal && new vscode.Hover(removedHover(removal.texts, doc.languageId), doc.lineAt(pos.line).range);
   }
 
@@ -145,69 +138,58 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     );
   }
 
-  private state(): State {
-    const playing = this.timeline.playing;
+  private state(): HighlightState {
+    const playing = this.timeline.playing !== undefined ? this.timeline.get(this.timeline.playing) : undefined;
     const clears = this.timeline.highlightClears;
-    // The change being typed counts, so its file's baseline is ready for its live text.
-    const through = playing !== undefined ? playing + 1 : this.timeline.cursor;
     const events = this.timeline.all();
-    const st: State = { playing, clears, bases: baselines(events, through, clears), texts: this.timeline.mirrorStates() };
-    const movingFrom = playing !== undefined ? this.timeline.get(playing)?.fromRelPath : undefined;
-    if (movingFrom !== undefined && this.player.liveText(movingFrom) !== undefined) {
-      st.movingFrom = movingFrom;
-      st.basesBefore = baselines(events, playing!, clears);
+    // The change being typed counts, so its file's baseline is ready for its live text.
+    const through = playing ? playing.seq + 1 : this.timeline.cursor;
+    const st: HighlightState = { bases: baselines(events, through, clears), texts: this.timeline.mirrorStates(), clears };
+    if (playing) {
+      st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
+      if (playing.fromRelPath !== undefined && this.player.liveText(playing.fromRelPath) !== undefined) {
+        st.movingFrom = playing.fromRelPath;
+        st.basesBefore = baselines(events, playing.seq, clears);
+      }
     }
     return st;
   }
 
-  /** The file's baseline and the text its mirror should show, or undefined when it shows no highlights. */
-  private pair(relPath: string, st: State): { baseline: string; text: string; live: boolean } | undefined {
-    const baseline = (relPath === st.movingFrom ? st.basesBefore : st.bases)?.get(relPath);
-    if (baseline === undefined) return undefined;
-    const live = this.player.liveText(relPath);
-    if (live !== undefined) {
-      // A clear made while this change is typed takes effect when it finishes.
-      if (st.playing !== undefined && clearedAt(st.clears, relPath) > st.playing) return undefined;
-      return { baseline, text: live, live: true };
+  /** The file's marks for `pair`, worked out once per baseline and text. */
+  private marksOf(relPath: string, pair: HighlightPair): LineMarks {
+    let hit = this.cache.get(relPath);
+    if (!hit || hit.baseline !== pair.baseline || hit.text !== pair.text) {
+      hit = { baseline: pair.baseline, text: pair.text, marks: lineMarks(pair.text, diffMarks(pair.baseline, pair.text)) };
+      this.cache.set(relPath, hit);
     }
-    const text = st.texts.get(relPath)?.text;
-    return text === undefined ? undefined : { baseline, text, live: false };
+    return hit.marks;
   }
 
   /** The marks the settings let through, or undefined when none are left. */
-  private shown(relPath: string, baseline: string, text: string): LineMarks | undefined {
-    const s = this.settings();
-    if ((!s.highlightAdditions && !s.markDeletions) || baseline === text) return undefined;
-    let hit = this.cache.get(relPath);
-    if (!hit || hit.baseline !== baseline || hit.text !== text) {
-      hit = { baseline, text, marks: lineMarks(text, diffMarks(baseline, text)) };
-      this.cache.set(relPath, hit);
-    }
-    const m = hit.marks;
-    const out: LineMarks = {
-      lines: s.highlightAdditions ? m.lines : [],
-      chars: s.highlightAdditions ? m.chars : [],
-      removals: s.markDeletions ? m.removals : [],
-    };
-    return out.lines.length + out.removals.length > 0 ? out : undefined;
+  private shown(relPath: string, pair: HighlightPair, s: HighlightSettings): LineMarks | undefined {
+    if ((!s.highlightAdditions && !s.markDeletions) || pair.baseline === pair.text) return undefined;
+    return filterMarks(this.marksOf(relPath, pair), s);
   }
 
   private render(key: string): void {
     const editors = vscode.window.visibleTextEditors.filter((ed) => ed.document.uri.toString() === key);
     if (editors.length === 0) {
       this.drawn.delete(key);
+      this.drawnToken.delete(key);
       return;
     }
     const doc = editors[0].document;
-    const pair = this.pair(relPathOf(doc.uri), this.state());
-    const docText = pair ? normalizeEol(doc.getText()) : undefined;
-    // Mid-change the document can be a step ahead of the player's text; the
-    // player's edit event redraws it, and until then the old marks move with the text.
-    if (pair?.live && docText !== pair.text) return;
-    const marks = pair && docText === pair.text ? this.shown(relPathOf(doc.uri), pair.baseline, pair.text) : undefined;
+    const relPath = relPathOf(doc.uri);
+    const pair = highlightPair(this.state(), relPath, this.player.liveText(relPath));
+    const liveToken = this.player.liveToken(relPath);
+    const action = renderAction(pair, pair ? normalizeEol(doc.getText()) : undefined, this.drawnToken.get(key), liveToken);
+    if (action === 'keep') return;
+    const marks = action === 'draw' && pair ? this.shown(relPath, pair, this.settings()) : undefined;
     for (const ed of editors) this.draw(ed, marks);
     if (marks) this.drawn.set(key, marks);
     else this.drawn.delete(key);
+    if (action === 'draw' && pair?.live && liveToken !== undefined) this.drawnToken.set(key, liveToken);
+    else this.drawnToken.delete(key);
   }
 
   private draw(editor: vscode.TextEditor, marks: LineMarks | undefined): void {
@@ -219,12 +201,27 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   /** Works out which mirrors have highlights, for the title bar button and the Playback panel. */
   private updateHighlighted(): void {
     const st = this.state();
+    const s = this.settings();
+    const deadline = Date.now() + PASS_BUDGET_MS;
+    let unfinished = false;
     const paths: string[] = [];
     for (const relPath of [...st.bases.keys(), ...(st.movingFrom !== undefined ? [st.movingFrom] : [])]) {
-      const pair = this.pair(relPath, st);
-      if (pair && this.shown(relPath, pair.baseline, pair.text)) paths.push(MirrorFileSystem.uriFor(relPath).path);
+      const pair = highlightPair(st, relPath, this.player.liveText(relPath));
+      if (!pair || (!s.highlightAdditions && !s.markDeletions) || pair.baseline === pair.text) continue;
+      const path = MirrorFileSystem.uriFor(relPath).path;
+      const hit = this.cache.get(relPath);
+      let has: boolean;
+      if (hit && hit.baseline === pair.baseline && hit.text === pair.text) has = filterMarks(hit.marks, s) !== undefined;
+      // With both settings on, any difference shows: no diff needed.
+      else if (s.highlightAdditions && s.markDeletions) has = true;
+      else if (Date.now() > deadline) {
+        has = this.highlighted?.includes(path) ?? false;
+        unfinished = true;
+      } else has = this.shown(relPath, pair, s) !== undefined;
+      if (has) paths.push(path);
     }
     for (const relPath of this.cache.keys()) if (!st.bases.has(relPath) && relPath !== st.movingFrom) this.cache.delete(relPath);
+    if (unfinished) setTimeout(() => this.schedule(ALL), 0);
     paths.sort();
     if (this.highlighted && paths.join('\n') === this.highlighted.join('\n')) return;
     const had = this.hasHighlights;
@@ -232,6 +229,21 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     void vscode.commands.executeCommand('setContext', 'agentTypewriter.highlightedMirrors', paths);
     if (had !== this.hasHighlights) this.changed.fire();
   }
+
+  /** Mirror paths with highlights, as the title bar's context key holds them. For tests. */
+  get highlightedPaths(): readonly string[] {
+    return this.highlighted ?? [];
+  }
+}
+
+/** The marks the settings let through, or undefined when none are left. */
+function filterMarks(m: LineMarks, s: HighlightSettings): LineMarks | undefined {
+  const out: LineMarks = {
+    lines: s.highlightAdditions ? m.lines : [],
+    chars: s.highlightAdditions ? m.chars : [],
+    removals: s.markDeletions ? m.removals : [],
+  };
+  return out.lines.length + out.removals.length > 0 ? out : undefined;
 }
 
 function relPathOf(uri: vscode.Uri): string {

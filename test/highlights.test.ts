@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { baselines, clearedAt, diffMarks, lineMarks, removedPreview, renderWait, type Marks } from '../src/highlights';
+import * as fs from 'node:fs';
+import { baselines, clearedAt, diffMarks, highlightPair, lineMarks, netHunks, removedPreview, renderAction, renderWait, type HighlightState, type Marks } from '../src/highlights';
+import { applyHunks } from '../src/planner';
 import type { ChangeEvent, ChangeKind } from '../src/timeline';
 
 /** The baseline text `marks` say `current` came from. */
@@ -80,6 +82,26 @@ test('a large rewrite past the diff limits still marks only the changed region',
   const { lines: m } = marksOf(before, changed.join(''));
   assert.ok(m.lines.length > 0);
   assert.ok(m.lines.every((l) => l >= 1000 && l < 3000));
+});
+
+test('a large net diff in two places marks only those places', () => {
+  // About 1400 changed lines in two blocks: past the planner's own edit limit.
+  for (const n of [2000, 4000]) {
+    const before = Array.from({ length: n }, (_, i) => `const v${i} = ${i};\n`).join('');
+    const after = before.split('\n').map((l, i) => (i < 700 || (i >= n - 700 && i < n) ? l.replace('const', 'let') : l)).join('\n');
+    const { lines: m } = marksOf(before, after);
+    assert.equal(m.lines.length, 1400, `${n} lines`);
+    assert.ok(m.lines.every((l) => l < 700 || l >= n - 700));
+  }
+});
+
+test('removed lines on one line count only removed lines as more', () => {
+  const block = (tag: string) => Array.from({ length: 15 }, (_, i) => `${tag}${i}`).join('\n') + '\n';
+  const p = removedPreview([block('a'), block('b')]);
+  // 20 rows shown: 15 lines of a, the separator, 4 lines of b; 11 of b are left.
+  assert.equal(p.more, 11);
+  assert.equal(p.code.split('\n')[15], '\u2026');
+  assert.equal(removedPreview([block('a'), block('b')], 40).more, 0);
 });
 
 test('removal hover text is capped by lines and by line length', () => {
@@ -164,6 +186,55 @@ test('a clear made during a rename and keyed to the new path takes effect after 
   assert.equal(baselines(events, ren, []).get('a'), 'a0');
 });
 
+const state = (over: Partial<HighlightState> = {}): HighlightState => ({
+  bases: new Map([['a', 'base a\n'], ['b', 'base b\n'], ['c', 'base a\n']]),
+  texts: new Map([['a', { text: 'now a\n' }], ['b', { text: 'now b\n' }]]),
+  clears: [],
+  ...over,
+});
+
+test('a file being typed shows nothing once a clear was made during that change, live text or not', () => {
+  const st = state({ playing: { seq: 7, relPath: 'a' }, clears: [{ seq: 8 }] });
+  assert.equal(highlightPair(st, 'a'), undefined);
+  assert.equal(highlightPair(st, 'a', 'half typed\n'), undefined);
+  // Other files compare as usual.
+  assert.deepEqual(highlightPair(st, 'b'), { baseline: 'base b\n', text: 'now b\n', live: false });
+  // A clear from before this change does not hide it.
+  assert.deepEqual(highlightPair(state({ playing: { seq: 7, relPath: 'a' }, clears: [{ seq: 7 }] }), 'a', 'typed\n'), { baseline: 'base a\n', text: 'typed\n', live: true });
+});
+
+test('during a rename move the old mirror uses the earlier baseline, and a clear kept under the new path hides it', () => {
+  const moving = state({
+    bases: new Map([['c', 'base a\n']]),
+    basesBefore: new Map([['a', 'base a\n']]),
+    movingFrom: 'a',
+    playing: { seq: 7, relPath: 'c', fromRelPath: 'a' },
+  });
+  assert.deepEqual(highlightPair(moving, 'a', 'before rename\n'), { baseline: 'base a\n', text: 'before rename\n', live: true });
+  assert.equal(highlightPair({ ...moving, clears: [{ seq: 8, relPath: 'c' }] }, 'a', 'before rename\n'), undefined);
+});
+
+test('renderAction draws on matching text and keeps marks only within the same live change', () => {
+  const live = { baseline: 'b', text: 'x', live: true };
+  assert.equal(renderAction(undefined, 'x', 1, 1), 'clear');
+  assert.equal(renderAction(live, 'x', undefined, 1), 'draw');
+  // The document is a step ahead of the player within the same change: keep.
+  assert.equal(renderAction(live, 'xy', 1, 1), 'keep');
+  // Marks from before a seek: a different change is live now.
+  assert.equal(renderAction(live, 'xy', 1, 2), 'clear');
+  assert.equal(renderAction(live, 'xy', undefined, 1), 'clear');
+  assert.equal(renderAction({ ...live, live: false }, 'xy', 1, 1), 'clear');
+});
+
+test('the title bar clear button is scoped to the highlighted playback mirror', () => {
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const entry = pkg.contributes.menus['editor/title'].find((m: { command: string }) => m.command === 'agentTypewriter.clearHighlightsInFile');
+  assert.ok(entry, 'no title bar entry');
+  for (const part of ['resourceScheme == agent-typewriter', 'resourcePath in agentTypewriter.playbackMirror', 'resourcePath in agentTypewriter.highlightedMirrors']) {
+    assert.ok(entry.when.includes(part), `when clause lacks ${part}`);
+  }
+});
+
 test('clearedAt is the latest clear for that file or for all files', () => {
   const clears = [{ seq: 3, relPath: 'a' }, { seq: 5 }, { seq: 7, relPath: 'b' }];
   assert.equal(clearedAt(clears, 'a'), 5);
@@ -177,6 +248,8 @@ test('renderWait spaces runs by the interval, longer after an expensive run', ()
   // A 100 ms diff waits 400 ms from its end, so it takes at most a fifth of the time.
   assert.equal(renderWait(1050, 1000, 100), 350);
   assert.equal(renderWait(2000, 1000, 100), 0);
+  // One very slow run holds the next back at most two seconds.
+  assert.equal(renderWait(1000, 1000, 5000), 2000);
 });
 
 test('a deleted then re-created file keeps its original baseline', () => {
@@ -233,9 +306,27 @@ test('fuzz: 3000 random edits give marks that rebuild the baseline', () => {
     for (let k = 1; k < marks.removed.length; k++) assert.ok(marks.removed[k].offset > marks.removed[k - 1].offset);
     for (const m of marks.removed) assert.ok(m.offset >= 0 && m.offset <= current.length && m.text.length > 0);
     assert.equal(rebuild(current, marks), baseline);
+    assert.equal(applyHunks(baseline, netHunks(baseline, current)), current);
     const lines = lineMarks(current, marks);
     const lineCount = current.split('\n').length;
     for (const l of [...lines.lines, ...lines.removals.map((x) => x.line)]) assert.ok(l >= 0 && l < lineCount);
     for (const c of lines.chars) assert.ok(lines.lines.includes(c.line) && c.start < c.end);
+  }
+});
+
+test('fuzz: anchored hunks rebuild line-heavy texts with repeated lines', () => {
+  const r = rng(11);
+  const pool = ['}\n', '{\n', 'return x;\n', '\n', ...Array.from({ length: 40 }, (_, i) => `line ${i};\n`)];
+  for (let i = 0; i < 1500; i++) {
+    const baseline = Array.from({ length: Math.floor(r() * 60) }, () => pool[Math.floor(r() * pool.length)]).join('');
+    const lines = baseline.split(/(?<=\n)/);
+    for (let k = Math.floor(r() * 8); k > 0; k--) {
+      const at = Math.floor(r() * (lines.length + 1));
+      if (r() < 0.5) lines.splice(at, 1);
+      else lines.splice(at, 0, pool[Math.floor(r() * pool.length)]);
+    }
+    const current = lines.join('') + (r() < 0.2 ? 'tail' : '');
+    assert.equal(applyHunks(baseline, netHunks(baseline, current)), current);
+    assert.equal(rebuild(current, diffMarks(baseline, current)), baseline);
   }
 });
