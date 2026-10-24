@@ -578,3 +578,19 @@ test('fuzz: lanes stay consistent through pushes, follows, seeks, trims and play
     }
   }
 });
+
+test('a played-out lane that is not recording gives way to a recording lane\'s new change', () => {
+  const t = new Timeline(100);
+  t.push(lev('', 'old', '', '1'));
+  drain(t);
+  t.defineLane(laneInfo('live'));
+  assert.equal(t.followed, '');
+  t.push(lev('live', 'a', '', '1'));
+  assert.equal(t.followed, 'live');
+  // Queued changes keep a stopped lane followed.
+  const u = new Timeline(100);
+  u.push(lev('', 'old', '', '1'));
+  u.defineLane(laneInfo('live'));
+  u.push(lev('live', 'a', '', '1'));
+  assert.equal(u.followed, '');
+});

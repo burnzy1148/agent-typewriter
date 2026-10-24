@@ -678,3 +678,136 @@ test('a removed chosen worktree while git cannot run asks for one refresh, not o
   state.fail = false;
   await until('fallback once git answers', () => t.checkout()?.own === true, 40_000);
 });
+
+// --- at-2i9.4: several checkouts record at once, each in its own lane.
+
+/** A repository with a nested worktree `feat` and a sibling worktree `side`. */
+function repoWithWorktrees(files: Record<string, string>) {
+  const repo = committedRepo(files);
+  const nested = path.join(repo, '.worktrees', 'feat');
+  const side = `${repo}-side`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat', nested);
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', side);
+  return { repo, nested, side };
+}
+
+const laneOf = (t: ReturnType<typeof recorderOn>, i: number) => t.timeline.all()[i]?.lane;
+
+test('the main checkout and a nested worktree record at once, each change once, in its own lane', { skip: noGit }, async () => {
+  const { repo, nested } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, nested]);
+  t.change(path.join(nested, 'src', 'a.ts'), 'feat\n');
+  t.change(path.join(repo, 'src', 'a.ts'), 'main\n');
+  await t.settle();
+  assert.deepEqual(t.events().sort(), ['modify feat/src/a.ts', 'modify src/a.ts']);
+  const lanes = new Set(t.timeline.all().map((e) => e.lane));
+  assert.equal(lanes.size, 2);
+  assert.ok(lanes.has(t.folder.uri.toString()), 'the main checkout is the folder lane');
+  assert.deepEqual(
+    t.timeline.laneList().map((l) => [l.label, l.recording]),
+    [
+      ['main', true],
+      ['feat', true],
+    ].map(([label, rec]) => [label === 'main' ? t.recorder.checkoutOf(t.folder)!.name : label, rec]),
+  );
+  assert.notEqual(t.timeline.laneList()[0].color, t.timeline.laneList()[1].color);
+  assert.equal(t.checkout()?.lanes, 2);
+});
+
+test('the main checkout and a sibling worktree record at once', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, side]);
+  t.change(path.join(side, 'src', 'a.ts'), 'side\n');
+  await t.settle();
+  t.change(path.join(repo, 'src', 'a.ts'), 'main\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [`modify ${path.basename(side)}/src/a.ts`, 'modify src/a.ts']);
+  assert.notEqual(laneOf(t, 0), laneOf(t, 1));
+  assert.equal(t.timeline.all()[0].before, 'a\n', 'the added checkout got baselines');
+});
+
+test('clearing the main checkout stops recording it while a worktree keeps recording', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.addCheckout(t.folder, side);
+  await t.recorder.removeCheckout(t.folder, repo);
+  t.change(path.join(repo, 'src', 'a.ts'), 'main\n');
+  t.change(path.join(side, 'src', 'a.ts'), 'side\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [`modify ${path.basename(side)}/src/a.ts`]);
+  assert.equal(t.checkout()?.own, false);
+});
+
+test('no checkout, or more than five, is refused and nothing changes', { skip: noGit }, async () => {
+  const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  for (const name of ['w3', 'w4', 'w5', 'w6']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await assert.rejects(t.recorder.setCheckouts(t.folder, []), /At least one checkout/);
+  await assert.rejects(
+    t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`, `${repo}-w5`]),
+    /At most 5 checkouts/,
+  );
+  await assert.rejects(t.recorder.removeCheckout(t.folder, repo), /At least one checkout/);
+  assert.equal(t.checkout()?.lanes, 1);
+  assert.equal(t.checkout()?.own, true);
+  await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
+  assert.equal(t.checkout()?.lanes, 5);
+});
+
+test('removing a checkout keeps its queued changes in its stopped lane', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.addCheckout(t.folder, side);
+  t.change(path.join(side, 'src', 'a.ts'), 'side\n');
+  await t.settle();
+  const lane = laneOf(t, 0)!;
+  await t.recorder.removeCheckout(t.folder, side);
+  assert.deepEqual(t.events(), [`modify ${path.basename(side)}/src/a.ts`]);
+  assert.equal(t.timeline.laneInfo(lane)?.recording, false);
+  assert.equal(t.timeline.pendingCount(lane), 1);
+  t.change(path.join(side, 'src', 'a.ts'), 'side again\n');
+  await t.settle();
+  assert.equal(t.events().length, 1, 'the removed checkout no longer records');
+});
+
+test('a removed worktree stops only its lane; the main checkout keeps recording', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, side]);
+  t.change(path.join(side, 'src', 'a.ts'), 'side\n');
+  await t.settle();
+  const lane = laneOf(t, 0)!;
+  git(repo, 'worktree', 'remove', '--force', side);
+  for (const rel of ['src/a.ts', '.git']) t.fire('delete', path.join(side, rel));
+  await until('lane stopped', () => t.logs.some((l) => l.includes('its lane stopped')));
+  assert.equal(t.timeline.laneInfo(lane)?.recording, false);
+  assert.equal(t.checkout()?.own, true);
+  assert.equal(t.checkout()?.lanes, 1);
+  t.change(path.join(repo, 'src', 'a.ts'), 'main\n');
+  await t.settle(HOLD_MS);
+  assert.deepEqual(t.events(), [`modify ${path.basename(side)}/src/a.ts`, 'modify src/a.ts']);
+});
+
+test('the first lane recorded is followed, and a remembered followed lane wins', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const sideLane = `${vscode.Uri.file(repo).toString()}\0${fs.realpathSync.native(side)}`;
+  const choices: CheckoutChoices = {
+    get: () => undefined,
+    set: () => undefined,
+    getSet: () => [repo, side],
+    setSet: () => undefined,
+    followed: sideLane,
+  };
+  const t = recorderOn(settings(), { choices }, repo);
+  await t.recorder.start();
+  assert.equal(t.timeline.laneList().length, 2);
+  assert.equal(t.timeline.followed, t.timeline.laneList()[1].id);
+});

@@ -107,6 +107,10 @@ export class Timeline {
     const lane = laneOf(event);
     if (!this.cursors.has(lane)) this.cursors.set(lane, event.seq);
     if (!this.hasLane(this.followedLane)) this.followedLane = lane;
+    // A followed lane that stopped recording and has been played out gives way to live changes.
+    else if (lane !== this.followedLane && this.laneInfos.get(lane)?.recording && !this.laneInfos.get(this.followedLane)?.recording) {
+      if (this.playingSeq === undefined && this.pendingCount() === 0) this.followedLane = lane;
+    }
     this.events.push(event);
     this.trim();
     this.emit();

@@ -33,6 +33,7 @@ import { KeyedSerial } from './keyedSerial';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import { pickRenamePartner } from './renames';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
+import { colorSlot, laneLabel, MAX_LANES } from './lanes';
 import type { Settings } from './config';
 
 /** Where display prefixes of workspace folders are remembered among labels; folder keys are URIs, so never this. */
@@ -123,15 +124,23 @@ export class Recorder implements vscode.Disposable {
   private filter: PathFilter;
   /** Name of the active filter profile the current filter came from, or ''. */
   private profileName = '';
-  /** Gitignored paths per workspace folder (keyed by folder URI) while `respectGitignore` is on and git can tell. */
+  /** Gitignored paths per recorded checkout (keyed by scope key) while `respectGitignore` is on and git can tell. */
   private readonly ignored = new Map<string, IgnoredPaths>();
   /** Folders already logged as having no gitignore rules this session. */
   private readonly ignoreNoted = new Set<string>();
   private ignoreRefresh: NodeJS.Timeout | undefined;
   /** The last gitignore listing failed for some folder and a retry was scheduled for it. */
   private ignoreRetried = false;
-  /** The checkout each workspace folder records while running, keyed by folder URI. */
+  /** The checkouts recorded while running, one per lane, keyed by `Scope.key`. */
   private readonly scopes = new Map<string, Scope>();
+  /** Checkouts chosen per folder URI, when `choices` cannot keep sets. */
+  private readonly sets = new Map<string, string[]>();
+  /** Lane color slot per checkout `pathKey`, when `choices` cannot keep them. */
+  private readonly colors = new Map<string, number>();
+  /** The checkouts last logged as left out for the lane cap. */
+  private capNoted = '';
+  /** Set by start until the first scope refresh has picked the lane to follow. */
+  private followPending = false;
   /** Chosen worktree labels per folder URI, by worktree `pathKey`, and folder prefixes, when `choices` cannot keep them. */
   private readonly labels = new Map<string, Map<string, string>>();
   /** Remembered worktree labels checked this session against the folder's top-level entries, as `folder\0worktree` keys. */
@@ -139,11 +148,11 @@ export class Recorder implements vscode.Disposable {
   /** Scope refreshes run one at a time, so watchers are never replaced twice at once. */
   private scopeWork: Promise<void> = Promise.resolve();
   private worktreeRefresh: NodeJS.Timeout | undefined;
-  /** Pending "is the chosen checkout gone?" checks, per folder URI, with when each is due. */
+  /** Pending "is the chosen checkout gone?" checks, per scope key, with when each is due. */
   private readonly goneChecks = new Map<string, { timer: NodeJS.Timeout; at: number }>();
-  /** Per folder URI, the chosen checkout and what of it was missing when a check last asked for a refresh. */
+  /** Per scope key, the chosen checkout and what of it was missing when a check last asked for a refresh. */
   private readonly goneRefreshed = new Map<string, string>();
-  /** Per folder URI, directories hidden as new worktrees until a listing started after them settles them. */
+  /** Per scope key, directories hidden as new worktrees until a listing started after them settles them. */
   private readonly provisional = new Map<string, Array<ProvisionalDir & { root: string }>>();
   /** Numbers provisional directories and worktree listings, so a listing knows which directories it may have missed. */
   private provisionalSeq = 0;
@@ -153,7 +162,7 @@ export class Recorder implements vscode.Disposable {
   private listRetries = 0;
   /** Deletes in chosen worktrees, per file URI, held until it is clear the checkout itself is not being removed. */
   private readonly heldDeletes = new Map<string, HeldDelete>();
-  /** Per folder URI, the timer that decides its held deletes once deletes there have been quiet for DELETE_SETTLE_MS. */
+  /** Per scope key, the timer that decides its held deletes once deletes there have been quiet for DELETE_SETTLE_MS. */
   private readonly deleteSettles = new Map<string, { timer: NodeJS.Timeout; since: number }>();
   /** Filter refreshes run one at a time, so an older one never overwrites a newer one's gitignore rules. */
   private filterWork: Promise<void> = Promise.resolve();
@@ -208,10 +217,26 @@ export class Recorder implements vscode.Disposable {
     );
   }
 
-  /** The checkout a folder records while running, or undefined when stopped. */
+  /**
+   * The checkout a folder records while running, or undefined when stopped:
+   * the followed lane's when it is the folder's, else its own, else the first.
+   */
   checkoutOf(folder: vscode.WorkspaceFolder): CheckoutInfo | undefined {
-    const s = this.scopes.get(folder.uri.toString());
-    return s && { own: s.own, name: s.name, root: s.root.fsPath, worktrees: s.worktrees, container: s.container };
+    const mine = this.scopesOf(folder.uri.toString());
+    const s = mine.find((m) => m.key === this.timeline.followed) ?? mine.find((m) => m.own) ?? mine[0];
+    return s && { own: s.own, name: s.name, root: s.root.fsPath, worktrees: s.worktrees, container: s.container, lanes: mine.length, lane: s.key };
+  }
+
+  /** Every lane recording while running, in folder order. */
+  recordedLanes(): Array<{ lane: string; folder: vscode.WorkspaceFolder; checkout: string; own: boolean; name: string; label: string }> {
+    return [...this.scopes.values()].map((s) => ({
+      lane: s.key,
+      folder: s.folder,
+      checkout: s.checkout.fsPath,
+      own: s.own,
+      name: s.name,
+      label: this.timeline.laneInfo(s.key)?.label ?? s.name,
+    }));
   }
 
   /** The folder's repository worktrees and the remembered choice, or undefined outside git. */
@@ -221,16 +246,72 @@ export class Recorder implements vscode.Disposable {
     // A worktree being removed is still listed, but is no checkout to pick.
     const worktrees = r.kind === 'ok' ? liveWorktrees(r.worktrees) : [];
     if (worktrees.length === 0) return undefined;
-    return { worktrees, own: ownCheckout(folder.uri.fsPath, worktrees), chosen: this.choices.get(folder.uri.toString()) };
+    const key = folder.uri.toString();
+    const own = ownCheckout(folder.uri.fsPath, worktrees);
+    return { worktrees, own, chosen: this.choices.get(key), recorded: this.chosenSet(key) ?? [own?.path ?? folder.uri.fsPath] };
   }
 
   /**
-   * Records `worktreePath` for this folder from now on, or the folder's own
-   * checkout when undefined. Applies at once while running; changes already in
-   * the timeline are kept.
+   * Records only `worktreePath` for this folder from now on, or only the
+   * folder's own checkout when undefined. Applies at once while running;
+   * changes already in the timeline are kept.
    */
   async setCheckout(folder: vscode.WorkspaceFolder, worktreePath: string | undefined): Promise<void> {
-    const unsaved = await this.saveChoice(folder.uri.toString(), worktreePath);
+    const key = folder.uri.toString();
+    this.sets.delete(key);
+    const unsaved = this.choices.setSet ? await this.saveChoiceSet(key, undefined) : undefined;
+    await this.applyChoice(folder, unsaved ?? (await this.saveChoice(key, worktreePath)));
+  }
+
+  /**
+   * Records exactly these checkouts of the folder from now on (worktree
+   * paths, the folder's own checkout by its path). Refuses none, and more
+   * than MAX_LANES across every folder. Applies at once while running;
+   * changes already in the timeline are kept.
+   */
+  async setCheckouts(folder: vscode.WorkspaceFolder, paths: readonly string[]): Promise<void> {
+    const unique = [...new Map(paths.map((p) => [pathKey(p), p])).values()];
+    if (unique.length === 0) throw new Error('At least one checkout must record.');
+    const key = folder.uri.toString();
+    const total = unique.length + this.recordedCountExcept(key);
+    if (total > MAX_LANES) throw new Error(`At most ${MAX_LANES} checkouts record at once.`);
+    await this.applyChoice(folder, await this.saveChoiceSet(key, unique));
+  }
+
+  /** Adds a checkout to those the folder records. */
+  async addCheckout(folder: vscode.WorkspaceFolder, checkoutPath: string): Promise<void> {
+    const current = await this.recordedPaths(folder);
+    if (current.some((p) => pathKey(p) === pathKey(checkoutPath))) return;
+    await this.setCheckouts(folder, [...current, checkoutPath]);
+  }
+
+  /** Stops recording a checkout of the folder; its lane keeps its changes. Refuses the last one. */
+  async removeCheckout(folder: vscode.WorkspaceFolder, checkoutPath: string): Promise<void> {
+    const current = await this.recordedPaths(folder);
+    const rest = current.filter((p) => pathKey(p) !== pathKey(checkoutPath));
+    if (rest.length === current.length) return;
+    await this.setCheckouts(folder, rest);
+  }
+
+  /** The checkouts the folder records, or would record when started: chosen ones, or its own. */
+  private async recordedPaths(folder: vscode.WorkspaceFolder): Promise<string[]> {
+    const mine = this.scopesOf(folder.uri.toString());
+    if (mine.length > 0) return mine.map((s) => s.checkout.fsPath);
+    return (await this.checkoutsOf(folder))?.recorded ?? [folder.uri.fsPath];
+  }
+
+  /** How many checkouts every other folder records, or would record when started. */
+  private recordedCountExcept(folderKey: string): number {
+    let n = 0;
+    for (const f of vscode.workspace.workspaceFolders ?? []) {
+      const key = f.uri.toString();
+      if (key === folderKey) continue;
+      n += this.running ? this.scopesOf(key).length : (this.chosenSet(key)?.length ?? 1);
+    }
+    return n;
+  }
+
+  private async applyChoice(folder: vscode.WorkspaceFolder, unsaved: Error | undefined): Promise<void> {
     if (!this.running) {
       this.scopeEmitter.fire();
     } else {
@@ -240,10 +321,42 @@ export class Recorder implements vscode.Disposable {
     if (unsaved) throw new Error(`The checkout chosen for ${folder.name} applies until the window closes, but could not be saved: ${unsaved.message}`);
   }
 
+  /** Every checkout chosen for a folder, or undefined when nothing was chosen. */
+  private chosenSet(folderKey: string): string[] | undefined {
+    if (this.choices.getSet) return this.choices.getSet(folderKey);
+    const set = this.sets.get(folderKey);
+    if (set) return [...set];
+    const single = this.choices.get(folderKey);
+    return single === undefined ? undefined : [single];
+  }
+
+  /** The scopes recording checkouts of one folder. */
+  private scopesOf(folderKey: string): Scope[] {
+    return [...this.scopes.values()].filter((s) => s.folder.uri.toString() === folderKey);
+  }
+
   /** Remembers a folder's checkout choice; returns why saving it failed, if it did, instead of throwing. */
   private async saveChoice(folderKey: string, worktreePath: string | undefined): Promise<Error | undefined> {
     try {
       const r = await this.choices.set(folderKey, worktreePath);
+      return r instanceof Error ? r : undefined;
+    } catch (err) {
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /** Remembers every checkout chosen for a folder, or none; returns why saving failed, if it did. */
+  private async saveChoiceSet(folderKey: string, paths: readonly string[] | undefined): Promise<Error | undefined> {
+    if (!this.choices.setSet) {
+      if (paths === undefined) {
+        this.sets.delete(folderKey);
+        return this.saveChoice(folderKey, undefined);
+      }
+      this.sets.set(folderKey, [...paths]);
+      return undefined;
+    }
+    try {
+      const r = await this.choices.setSet(folderKey, paths);
       return r instanceof Error ? r : undefined;
     } catch (err) {
       return err instanceof Error ? err : new Error(String(err));
@@ -410,6 +523,7 @@ export class Recorder implements vscode.Disposable {
     this.gitUnavailable = false;
     this.ignoreNoted.clear();
     this.ignoreRetried = false;
+    this.followPending = true;
     try {
       await this.refreshScopes();
       if (stale()) return;
@@ -433,7 +547,10 @@ export class Recorder implements vscode.Disposable {
     this.session++;
     for (const d of this.subscriptions.splice(0)) d.dispose();
     for (const scope of this.scopes.values()) for (const d of scope.watcher) d.dispose();
+    const lanes = [...this.scopes.keys()];
     this.scopes.clear();
+    this.capNoted = '';
+    for (const lane of lanes) this.timeline.setLaneRecording(lane, false);
     for (const burst of this.timers.values()) {
       clearTimeout(burst.timer);
       burst.done();
@@ -523,9 +640,16 @@ export class Recorder implements vscode.Disposable {
    */
   private refreshScopes(): Promise<void> {
     const work = this.scopeWork.then(async () => {
-      const next = new Map<string, Scope>();
-      for (const folder of vscode.workspace.workspaceFolders ?? []) next.set(folder.uri.toString(), await this.resolveScope(folder));
+      const all: Scope[] = [];
+      for (const folder of vscode.workspace.workspaceFolders ?? []) all.push(...(await this.resolveScopes(folder)));
       if (!this.running) return;
+      // Only by default can more than MAX_LANES come up: one per folder in a large multi-root workspace.
+      const left = all.slice(MAX_LANES).map((s) => (s.own ? s.folder.name : `${s.folder.name} (${s.name})`));
+      if (left.join('\0') !== this.capNoted && left.length > 0) {
+        this.log.appendLine(`At most ${MAX_LANES} checkouts record at once; not recording ${left.join(', ')}.`);
+      }
+      this.capNoted = left.join('\0');
+      const next = new Map(all.slice(0, MAX_LANES).map((s) => [s.key, s]));
       for (const [key, old] of this.scopes) {
         const fresh = next.get(key);
         if (fresh && fresh.root.toString() === old.root.toString()) fresh.watcher = old.watcher;
@@ -552,8 +676,12 @@ export class Recorder implements vscode.Disposable {
           this.log.appendLine(`Skipping ${scope.nestedDirs.length} other worktree(s) in ${scope.folder.name}: ${scope.nestedDirs.join(', ')}`);
         }
       }
+      const gone = [...this.scopes.keys()].filter((key) => !next.has(key));
       this.scopes.clear();
       for (const [key, scope] of next) this.scopes.set(key, scope);
+      for (const lane of gone) this.timeline.setLaneRecording(lane, false);
+      for (const scope of next.values()) this.defineLane(scope);
+      this.followFirstLane();
       // A chosen worktree git calls prunable is being removed: fall back once its root is gone.
       // Any other is checked now and then too, in case its watcher says nothing as it goes.
       for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS, true);
@@ -606,10 +734,15 @@ export class Recorder implements vscode.Disposable {
     else this.scheduleWorktreeRetry();
   }
 
-  /** The checkout a folder records: its own, or the remembered choice while that is still a worktree of its repository. */
-  private async resolveScope(folder: vscode.WorkspaceFolder): Promise<Scope> {
+  /**
+   * The checkouts a folder records: its own, or the remembered choice, less
+   * any chosen worktree that is no longer one of its repository. When none is
+   * left, its own.
+   */
+  private async resolveScopes(folder: vscode.WorkspaceFolder): Promise<Scope[]> {
     const key = folder.uri.toString();
     const scope: Scope = {
+      key,
       folder,
       root: folder.uri,
       checkout: folder.uri,
@@ -626,35 +759,36 @@ export class Recorder implements vscode.Disposable {
       listedAt: this.provisionalSeq,
       watcher: [],
     };
-    if (folder.uri.scheme !== 'file') return scope;
+    if (folder.uri.scheme !== 'file') return [scope];
     const session = this.session;
     const r = await this.listWorktreesIn(folder.uri.fsPath);
     // Stopped meanwhile: this scope is never used.
-    if (session !== this.session) return scope;
+    if (session !== this.session) return [scope];
     if (r.kind === 'unavailable') {
       // Git could not run this time. A folder git has listed keeps what it
       // records, and one with a chosen checkout waits to apply it; both are
       // listed again later. Otherwise the folder is recorded as outside git.
       const noted = this.listFailing.has(key);
-      const current = this.scopes.get(key);
-      const choice = this.choices.get(key);
-      if (current?.repo) {
+      const current = this.scopesOf(key);
+      const choice = this.chosenSet(key);
+      if (current.some((c) => c.repo)) {
         this.listFailing.add(key);
         if (!noted) this.log.appendLine(`Could not re-read the worktrees of ${folder.name} (${r.reason}); keeping its current checkout until git answers.`);
-        const recorded = current.own ? undefined : current.checkout.fsPath;
-        if ((choice === undefined) !== (recorded === undefined) || (choice !== undefined && recorded !== undefined && pathKey(choice) !== pathKey(recorded))) {
+        const have = current.map((c) => pathKey(c.checkout.fsPath)).sort().join('\0');
+        const want = choice?.map(pathKey).sort().join('\0');
+        if (want === undefined ? current.some((c) => !c.own) : want !== have) {
           this.log.appendLine(`The checkout chosen for ${folder.name} applies once git can list its worktrees.`);
         }
-        return { ...current, folder };
+        return current.map((c) => ({ ...c, folder }));
       }
       if (choice !== undefined) {
         this.listFailing.add(key);
-        if (!noted) this.log.appendLine(`Could not read the worktrees of ${folder.name} (${r.reason}); recording the folder itself until git answers, then ${choice}.`);
+        if (!noted) this.log.appendLine(`Could not read the worktrees of ${folder.name} (${r.reason}); recording the folder itself until git answers, then ${choice.join(', ')}.`);
       }
-      return scope;
+      return [scope];
     }
     this.listFailing.delete(key);
-    if (r.kind !== 'ok') return scope;
+    if (r.kind !== 'ok') return [scope];
     const own = ownCheckout(folder.uri.fsPath, r.worktrees);
     const live = liveWorktrees(r.worktrees);
     scope.repo = true;
@@ -664,40 +798,99 @@ export class Recorder implements vscode.Disposable {
     scope.name = folderCheckoutChoice(folder.name, own, live).name;
     if (own) scope.checkout = vscode.Uri.file(own.path);
 
-    const choice = this.choices.get(key);
-    let chosen: Worktree | undefined;
-    if (choice !== undefined) {
+    const ownKey = pathKey(own?.path ?? folder.uri.fsPath);
+    const choice = this.chosenSet(key);
+    const scopes: Scope[] = [];
+    const kept: string[] = [];
+    const gone: string[] = [];
+    for (const wanted of choice ?? [own?.path ?? folder.uri.fsPath]) {
+      if (pathKey(wanted) === ownKey) {
+        if (!scopes.includes(scope)) scopes.push(scope);
+        kept.push(wanted);
+        continue;
+      }
       // A worktree being removed stays chosen until its root is gone.
-      chosen = r.worktrees.find((w) => pathKey(w.path) === pathKey(choice));
+      const chosen = r.worktrees.find((w) => pathKey(w.path) === pathKey(wanted));
       const root = chosen && rootIn(chosen, own, folder.uri.fsPath);
       if (!chosen || !root || !(await stat(vscode.Uri.file(root)))) {
-        this.log.appendLine(`The chosen checkout ${choice} is no longer a worktree of ${folder.name}; recording the folder's own checkout.`);
-        const unsaved = await this.saveChoice(key, undefined);
-        if (unsaved) this.log.appendLine(`Could not save that ${choice} is no longer chosen: ${unsaved.message}`);
-        chosen = undefined;
-      } else if (own && pathKey(chosen.path) === pathKey(own.path)) {
-        chosen = undefined;
-      } else {
-        // Inside the folder, the root is spelled as the folder is (git
-        // resolves symlinks), so watcher events, baselines and editor
-        // documents of its files all use one spelling.
-        const inside = relativeInside(folder.uri.fsPath, root);
-        scope.root = inside ? vscode.Uri.joinPath(folder.uri, ...inside.split('/')) : vscode.Uri.file(root);
-        scope.checkout = vscode.Uri.file(chosen.path);
-        scope.own = false;
-        scope.prunable = !!chosen.prunable;
-        scope.label = await this.labelFor(folder, chosen, r.worktrees.filter((w) => !w.prunable || w === chosen));
-        scope.name = checkoutName(chosen);
+        gone.push(wanted);
+        continue;
       }
+      if (scopes.some((s) => s.key === `${key}\0${pathKey(chosen.path)}`)) continue;
+      // Inside the folder, the root is spelled as the folder is (git
+      // resolves symlinks), so watcher events, baselines and editor
+      // documents of its files all use one spelling.
+      const inside = relativeInside(folder.uri.fsPath, root);
+      scopes.push({
+        ...scope,
+        key: `${key}\0${pathKey(chosen.path)}`,
+        root: inside ? vscode.Uri.joinPath(folder.uri, ...inside.split('/')) : vscode.Uri.file(root),
+        checkout: vscode.Uri.file(chosen.path),
+        own: false,
+        container: false,
+        prunable: !!chosen.prunable,
+        label: await this.labelFor(folder, chosen, r.worktrees.filter((w) => !w.prunable || w === chosen)),
+        name: checkoutName(chosen),
+        watcher: [],
+      });
+      kept.push(wanted);
     }
-    // Every worktree git lists, prunable ones too: one being removed still has files.
-    scope.nestedDirs = nestedUnder(scope.root.fsPath, r.worktrees);
-    scope.nested = new IgnoredPaths(scope.nestedDirs);
-    for (const wt of [own, chosen, ...live]) {
-      scope.commonKey = wt && commonDirKey(wt.path);
-      if (scope.commonKey !== undefined) break;
+    if (gone.length > 0) {
+      if (scopes.length === 0) {
+        this.log.appendLine(`The chosen checkout ${gone.join(', ')} is no longer a worktree of ${folder.name}; recording the folder's own checkout.`);
+        scopes.push(scope);
+      } else {
+        for (const g of gone) this.log.appendLine(`The checkout ${g} is no longer a worktree of ${folder.name}; its lane stopped.`);
+      }
+      const ownOnly = kept.length === 0 || (kept.length === 1 && pathKey(kept[0]) === ownKey);
+      const unsaved = await this.saveChoiceSet(key, ownOnly ? undefined : kept);
+      if (unsaved) this.log.appendLine(`Could not save that ${gone.join(', ')} is no longer chosen: ${unsaved.message}`);
     }
-    return scope;
+    let commonKey: string | undefined;
+    for (const wt of [own, ...r.worktrees]) {
+      commonKey = wt && commonDirKey(wt.path);
+      if (commonKey !== undefined) break;
+    }
+    for (const s of scopes) {
+      // Every worktree git lists, prunable ones too: one being removed still has files.
+      s.nestedDirs = nestedUnder(s.root.fsPath, r.worktrees);
+      s.nested = new IgnoredPaths(s.nestedDirs);
+      s.commonKey = commonKey;
+    }
+    return scopes;
+  }
+
+  /** Tells the timeline about a recording lane: its label, root and color, the color kept per checkout. */
+  private defineLane(scope: Scope): void {
+    const info = this.timeline.laneInfo(scope.key);
+    const multiRoot = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
+    const label = laneLabel(scope.container ? '' : scope.name, scope.folder.name, multiRoot);
+    let color = info?.color ?? 0;
+    if (!color) {
+      const checkoutKey = scope.checkout.scheme === 'file' ? pathKey(scope.checkout.fsPath) : scope.key;
+      const taken = this.timeline.laneList().filter((l) => l.id !== scope.key).map((l) => l.color);
+      color = colorSlot(this.choices.colorOf ? this.choices.colorOf(checkoutKey) : this.colors.get(checkoutKey), taken);
+      if (this.choices.setColor) void Promise.resolve(this.choices.setColor(checkoutKey, color)).catch(() => {});
+      else this.colors.set(checkoutKey, color);
+    }
+    const root = scope.root.scheme === 'file' ? scope.root.fsPath : scope.root.toString();
+    if (info?.recording && info.label === label && info.root === root && info.color === color) return;
+    this.timeline.defineLane({ id: scope.key, label, root, color, recording: true, since: info?.recording ? info.since : Date.now() });
+  }
+
+  /**
+   * On the first refresh after start, follows the remembered lane, or the
+   * first recorded one, unless the followed lane still has changes queued.
+   */
+  private followFirstLane(): void {
+    if (!this.followPending) return;
+    this.followPending = false;
+    // Queued changes in the followed lane, such as a restored timeline's, keep it followed.
+    if (this.timeline.pendingCount() > 0) return;
+    const remembered = this.choices.followed;
+    const followed = this.timeline.followed;
+    const lane = remembered !== undefined && this.scopes.has(remembered) ? remembered : this.scopes.has(followed) ? followed : this.scopes.keys().next().value;
+    if (lane !== undefined) this.timeline.follow(lane);
   }
 
   /**
@@ -796,14 +989,24 @@ export class Recorder implements vscode.Disposable {
     }
   }
 
-  /** A watcher for the scope's root. It outlives the Scope object while the root stays the same, so handlers look the scope up by folder. */
+  /**
+   * A watcher for the scope's root. It outlives the Scope object while the root
+   * stays the same, so handlers look the scope up by key. A folder's watcher
+   * also sees the files of checkouts and folders nested in it; those are left
+   * to their own scope's watcher, so nothing is read twice.
+   */
   private watch(scope: Scope): vscode.Disposable[] {
-    const key = scope.folder.uri.toString();
+    const key = scope.key;
+    const mine = (uri: vscode.Uri) => {
+      const owner = this.scopeOf(uri);
+      return !owner || owner.key === key;
+    };
     const pattern = scope.own ? new vscode.RelativePattern(scope.folder, '**/*') : new vscode.RelativePattern(scope.root, '**/*');
     const watcher = vscode.workspace.createFileSystemWatcher(pattern);
     const subs: vscode.Disposable[] = [watcher];
     watcher.onDidCreate(
       (uri) => {
+        if (!mine(uri)) return;
         this.noteWorktreeEvent(uri, 'create');
         this.schedule(uri, 'create');
       },
@@ -812,6 +1015,7 @@ export class Recorder implements vscode.Disposable {
     );
     watcher.onDidChange(
       (uri) => {
+        if (!mine(uri)) return;
         this.noteWorktreeEvent(uri, 'change');
         this.schedule(uri, 'change');
       },
@@ -820,6 +1024,7 @@ export class Recorder implements vscode.Disposable {
     );
     watcher.onDidDelete(
       (uri) => {
+        if (!mine(uri)) return;
         this.noteWorktreeEvent(uri, 'delete');
         const current = this.scopes.get(key);
         if (current && !current.own) {
@@ -848,7 +1053,7 @@ export class Recorder implements vscode.Disposable {
    * With `keepSooner`, a check already due sooner is left as it is.
    */
   private checkCheckoutGone(scope: Scope, delayMs = 300, keepSooner = false): void {
-    const key = scope.folder.uri.toString();
+    const key = scope.key;
     const at = Date.now() + delayMs;
     const pending = this.goneChecks.get(key);
     if (keepSooner && pending && pending.at <= at) return;
@@ -940,7 +1145,7 @@ export class Recorder implements vscode.Disposable {
   /** Hides a new worktree's root-relative `dir/` right away, until a worktree listing started after now settles it. */
   private hideNewWorktree(scope: Scope, dir: string): void {
     scope.nested.add(dir);
-    const key = scope.folder.uri.toString();
+    const key = scope.key;
     const entries = this.provisional.get(key) ?? [];
     entries.push({ dir, seq: ++this.provisionalSeq, root: scope.root.toString() });
     this.provisional.set(key, entries);
@@ -988,7 +1193,7 @@ export class Recorder implements vscode.Disposable {
    */
   private async walk(scope: Scope, stale: () => boolean, start = scope.root, startRel = ''): Promise<vscode.Uri[]> {
     const files: vscode.Uri[] = [];
-    const ignored = this.ignored.get(scope.folder.uri.toString());
+    const ignored = this.ignored.get(scope.key);
     const dirs: Array<[vscode.Uri, string]> = [[start, startRel]];
     while (dirs.length > 0 && !stale()) {
       await Promise.all(
@@ -1019,7 +1224,7 @@ export class Recorder implements vscode.Disposable {
   }
 
   /** True when nothing under this root-relative directory is recorded: a nested worktree, gitignored, excluded, or hidden from the watcher. */
-  private skipsDir(scope: Scope, rel: string, ignored = this.ignored.get(scope.folder.uri.toString())): boolean {
+  private skipsDir(scope: Scope, rel: string, ignored = this.ignored.get(scope.key)): boolean {
     const asDir = rel + '/';
     return scope.nested.has(asDir) || !!ignored?.has(asDir) || this.filter.excludesDir(rel) || this.watcherHides(scope, rel);
   }
@@ -1117,10 +1322,9 @@ export class Recorder implements vscode.Disposable {
       const found = await this.walk(scope, stale);
       const clean = s.gitBaselines ? await this.cleanTracked(scope) : undefined;
       if (stale()) return;
-      const folderKey = scope.folder.uri.toString();
       for (const uri of found) {
-        // A file in a workspace folder nested in this one is that folder's, with paths relative to it.
-        if (this.scopeOf(uri)?.folder.uri.toString() !== folderKey || !this.passes(uri) || known(uri.toString())) continue;
+        // A file in a workspace folder or recorded checkout nested in this one is that one's, with paths relative to it.
+        if (this.scopeOf(uri)?.key !== scope.key || !this.passes(uri) || known(uri.toString())) continue;
         const rel = this.relOf(scope, uri);
         const sha = clean?.get(rel);
         if (sha !== undefined) tracked.push([uri, { folder: scope.root.fsPath, path: rel, sha }]);
@@ -1220,7 +1424,7 @@ export class Recorder implements vscode.Disposable {
     if (!scope) return false;
     const rel = this.relOf(scope, uri);
     if (!this.filter.matches(rel) || scope.nested.has(rel) || this.watcherHides(scope, rel)) return false;
-    return !this.ignored.get(scope.folder.uri.toString())?.has(rel);
+    return !this.ignored.get(scope.key)?.has(rel);
   }
 
   /**
@@ -1233,7 +1437,7 @@ export class Recorder implements vscode.Disposable {
     let lost = false;
     if (this.settings().respectGitignore) {
       for (const scope of [...this.scopes.values()]) {
-        const key = scope.folder.uri.toString();
+        const key = scope.key;
         const r = scope.root.scheme === 'file' ? await listIgnored(scope.root.fsPath) : ({ kind: 'not-repo' } as const);
         if (r.kind === 'ok') {
           next.set(key, r.ignored);
@@ -1258,7 +1462,7 @@ export class Recorder implements vscode.Disposable {
   /** A file the ignore snapshot doesn't know yet: asks git once and remembers an ignored answer. */
   private async newlyIgnored(uri: vscode.Uri): Promise<boolean> {
     const scope = this.scopeOf(uri);
-    const known = scope && this.ignored.get(scope.folder.uri.toString());
+    const known = scope && this.ignored.get(scope.key);
     if (!scope || !known) return false;
     const rel = this.relOf(scope, uri);
     if (!(await checkIgnored(scope.root.fsPath, rel))) return false;
@@ -1322,7 +1526,7 @@ export class Recorder implements vscode.Disposable {
     // repeated delete event only says deletes are still coming.
     const held = this.heldDeletes.get(key);
     if (held && event !== 'delete') this.releaseDelete(key, held);
-    else if (held) this.settleDeletes(held.folderKey);
+    else if (held) this.settleDeletes(held.scopeKey);
     const passes = this.passes(uri);
     this.note(`${inDir ? 'in directory' : 'watcher'} ${event} ${this.traceName(uri)}${passes ? '' : ' (filtered out)'}`);
     if (!passes) return;
@@ -1427,7 +1631,7 @@ export class Recorder implements vscode.Disposable {
           // Unless it is half of a rename whose create in this checkout is
           // already held: that shows the checkout is not being removed.
           const deletedAt = burst.deletedAt ?? burst.lastArrival;
-          const event = changeEvent(uri, relPath, 'delete', previous.text, '', previous.eol, deletedAt);
+          const event = changeEvent(uri, relPath, 'delete', previous.text, '', previous.eol, deletedAt, scope.key);
           if (!this.recordRename(event, deletedAt, scope.root.toString())) this.holdDelete(scope, uri, relPath, previous, burst);
           return;
         }
@@ -1533,7 +1737,7 @@ export class Recorder implements vscode.Disposable {
    * done as delete-then-create replays in that order.
    */
   private holdDelete(scope: Scope, uri: vscode.Uri, relPath: string, before: Snapshot, burst: Burst): void {
-    const folderKey = scope.folder.uri.toString();
+    const scopeKey = scope.key;
     const order = this.reorder.hold(burst.deletedAt ?? burst.lastArrival, DELETE_ORDER_HOLD_MAX_MS);
     burst.held = true;
     this.note(`delete held ${relPath}`);
@@ -1542,7 +1746,7 @@ export class Recorder implements vscode.Disposable {
       relPath,
       before,
       order,
-      folderKey,
+      scopeKey,
       root: scope.root.toString(),
       session: burst.session,
       done: () => {
@@ -1550,23 +1754,23 @@ export class Recorder implements vscode.Disposable {
         burst.done();
       },
     });
-    this.settleDeletes(folderKey);
+    this.settleDeletes(scopeKey);
   }
 
-  /** (Re)starts the quiet period after which a folder's held deletes are decided, up to DELETE_HOLD_MAX_MS after the first. */
-  private settleDeletes(folderKey: string): void {
+  /** (Re)starts the quiet period after which a checkout's held deletes are decided, up to DELETE_HOLD_MAX_MS after the first. */
+  private settleDeletes(scopeKey: string): void {
     const now = Date.now();
-    const pending = this.deleteSettles.get(folderKey);
+    const pending = this.deleteSettles.get(scopeKey);
     clearTimeout(pending?.timer);
     const since = pending?.since ?? now;
     const timer = setTimeout(
       () => {
-        this.deleteSettles.delete(folderKey);
-        for (const [key, held] of [...this.heldDeletes]) if (held.folderKey === folderKey) this.releaseDelete(key, held);
+        this.deleteSettles.delete(scopeKey);
+        for (const [key, held] of [...this.heldDeletes]) if (held.scopeKey === scopeKey) this.releaseDelete(key, held);
       },
       Math.max(0, Math.min(DELETE_SETTLE_MS, since + DELETE_HOLD_MAX_MS - now)),
     );
-    this.deleteSettles.set(folderKey, { timer, since });
+    this.deleteSettles.set(scopeKey, { timer, since });
   }
 
   /**
@@ -1580,7 +1784,7 @@ export class Recorder implements vscode.Disposable {
     this.flushes
       .run(key, async () => {
         const current = () => {
-          const scope = this.scopes.get(held.folderKey);
+          const scope = this.scopes.get(held.scopeKey);
           return this.running && held.session === this.session && scope && !scope.own && scope.root.toString() === held.root ? scope : undefined;
         };
         const scope = current();
@@ -1594,16 +1798,16 @@ export class Recorder implements vscode.Disposable {
       .finally(held.done);
   }
 
-  /** Forgets held deletes, of one folder when given, without recording them. */
-  private dropHeldDeletes(folderKey?: string): void {
+  /** Forgets held deletes, of one checkout when given, without recording them. */
+  private dropHeldDeletes(scopeKey?: string): void {
     for (const [key, held] of [...this.heldDeletes]) {
-      if (folderKey !== undefined && held.folderKey !== folderKey) continue;
+      if (scopeKey !== undefined && held.scopeKey !== scopeKey) continue;
       this.heldDeletes.delete(key);
       held.done();
     }
-    if (folderKey !== undefined) {
-      clearTimeout(this.deleteSettles.get(folderKey)?.timer);
-      this.deleteSettles.delete(folderKey);
+    if (scopeKey !== undefined) {
+      clearTimeout(this.deleteSettles.get(scopeKey)?.timer);
+      this.deleteSettles.delete(scopeKey);
     }
   }
 
@@ -1671,7 +1875,7 @@ export class Recorder implements vscode.Disposable {
     eol: Eol,
     writtenAt: number,
   ): void {
-    const event = changeEvent(uri, relPath, kind, before, after, eol, writtenAt);
+    const event = changeEvent(uri, relPath, kind, before, after, eol, writtenAt, this.scopeOf(uri)?.key);
     if (this.recordRename(event, writtenAt)) return;
     this.note(`recorded ${kind} ${relPath}`);
     this.reorder.add(event, writtenAt, event.uri);
@@ -1703,7 +1907,8 @@ export class Recorder implements vscode.Disposable {
       for (const { item } of items) perFile.set(item.uri, (perFile.get(item.uri) ?? 0) + 1);
       const halves = items
         .filter(({ item }) => (isCreate ? item.kind === 'delete' && item.after === '' : item.kind === 'create' && item.before === ''))
-        .filter(({ item }) => perFile.get(item.uri) === 1 && (root === undefined || rootOf(item.uri) === root))
+        // Only within one lane: a file never moves between checkouts.
+        .filter(({ item }) => perFile.get(item.uri) === 1 && item.lane === event.lane && (root === undefined || rootOf(item.uri) === root))
         .map(({ item, key }) => ({ item, relPath: item.relPath, text: isCreate ? item.before : item.after, key }));
       const pick = pickRenamePartner<{ relPath: string; text: string; key: number; item?: NewChangeEvent; held?: HeldDelete }>(
         text,
@@ -1743,6 +1948,7 @@ export class Recorder implements vscode.Disposable {
       eol: to.eol,
       linesAdded: added,
       linesRemoved: removed,
+      ...(to.lane !== undefined && { lane: to.lane }),
     };
     this.note(`recorded rename ${from.relPath} -> ${to.relPath}`);
     this.reorder.add(rename, writtenAt, rename.uri);
@@ -1782,9 +1988,18 @@ export class Recorder implements vscode.Disposable {
 }
 
 /** A recorded change, keyed for the reorder buffer by `writtenAt`, which becomes its time. */
-function changeEvent(uri: vscode.Uri, relPath: string, kind: ChangeKind, before: string, after: string, eol: Eol, writtenAt: number): NewChangeEvent {
+function changeEvent(
+  uri: vscode.Uri,
+  relPath: string,
+  kind: ChangeKind,
+  before: string,
+  after: string,
+  eol: Eol,
+  writtenAt: number,
+  lane: string | undefined,
+): NewChangeEvent {
   const { added, removed } = countChanges(before, after);
-  return { uri: uri.toString(), relPath, time: writtenAt, kind, before, after, eol, linesAdded: added, linesRemoved: removed };
+  return { uri: uri.toString(), relPath, time: writtenAt, kind, before, after, eol, linesAdded: added, linesRemoved: removed, ...(lane !== undefined && { lane }) };
 }
 
 /** What the latest editor save of a file wrote. `done` once did-save has fired. */
@@ -1823,7 +2038,8 @@ interface HeldDelete {
   before: Snapshot;
   /** Keeps later changes back until it is decided; its key is the delete's place in write order. */
   order: OrderHold;
-  folderKey: string;
+  /** Key of the scope it was deleted in. */
+  scopeKey: string;
   /** The recorded root it was deleted from; recording another drops it. */
   root: string;
   session: number;
@@ -1864,17 +2080,29 @@ export interface CheckoutInfo {
   worktrees: number;
   /** The folder has no checkout of its own: it holds a bare repository's worktrees. */
   container: boolean;
+  /** How many checkouts the folder records. */
+  lanes: number;
+  /** Lane id of this checkout. */
+  lane: string;
 }
 
 export interface FolderCheckouts {
   worktrees: Worktree[];
   own: Worktree | undefined;
-  /** Path of the remembered choice, undefined for the folder's own checkout. */
+  /** Path of the remembered single choice from before lanes, undefined otherwise. */
   chosen: string | undefined;
+  /** Paths of every checkout the folder records, or would record when started; its own by its path. */
+  recorded: string[];
 }
 
-/** What one workspace folder records. */
+/** One checkout a workspace folder records: one lane. */
 interface Scope {
+  /**
+   * Lane id, and the key of every per-scope map: the folder URI for the
+   * folder's own checkout (or the folder itself), the folder URI and the
+   * checkout's `pathKey` for another worktree.
+   */
+  key: string;
   folder: vscode.WorkspaceFolder;
   /** Directory recorded: the folder, or the same subpath in a chosen worktree. */
   root: vscode.Uri;
