@@ -53,6 +53,15 @@ export async function runRec4(): Promise<void> {
     [file(folder, rel), vscode.Uri.file(path.join(fs.realpathSync.native(folder.uri.fsPath), ...rel.split('/')))].some((u) => recorder.hasBaseline(u));
   const since = (from: number) => timeline.all().slice(from);
   const idle = () => timeline.pendingCount() === 0 && !timeline.all().some((e) => timeline.stateOf(e.seq) === 'playing');
+  // Each workspace folder records in its own lane, and only the followed lane plays: follow each one with changes queued in turn.
+  const playEveryLane = async (what: string) => {
+    for (const lane of timeline.lanesInBuffer()) {
+      if (timeline.pendingCount(lane) === 0) continue;
+      await vscode.commands.executeCommand('agentTypewriter.followLane', lane);
+      await until(`${what} in lane ${lane}`, idle);
+    }
+    await until(what, idle);
+  };
   /** Waits for debounces and reads to finish, then hands held changes to the timeline. */
   const settled = async () => {
     await sleep(1500);
@@ -82,7 +91,7 @@ export async function runRec4(): Promise<void> {
   const latest = timeline.latestStates();
   assert.equal(latest.get('client-app/src/index.ts')?.after, "export const side = 'client 2';\n");
   assert.equal(latest.get('server-app/src/index.ts')?.after, "export const side = 'server 2';\n");
-  await until('app playback', idle);
+  await playEveryLane('app playback');
   await until('two app mirrors', () => mirrorText('client-app/src/index.ts') !== undefined && mirrorText('server-app/src/index.ts') !== undefined);
   assert.equal(mirrorText('client-app/src/index.ts'), "export const side = 'client 2';\n");
   assert.equal(mirrorText('server-app/src/index.ts'), "export const side = 'server 2';\n");
@@ -99,7 +108,7 @@ export async function runRec4(): Promise<void> {
       [['create', 'client-app/src\\index.ts']],
     );
     assert.equal(timeline.latestStates().get('client-app/src/index.ts')?.after, "export const side = 'client 2';\n");
-    await until('backslash playback', idle);
+    await playEveryLane('backslash playback');
     console.log('[it] REC4: backslash file names ok');
   }
 
@@ -126,7 +135,7 @@ export async function runRec4(): Promise<void> {
   );
   const chosen = (await api.refreshCheckouts()).get(projKey);
   assert.deepEqual(chosen && { ...chosen }, { own: false, name: 'main', worktrees: 2 });
-  await until('proj playback', idle);
+  await playEveryLane('proj playback');
   console.log('[it] REC4: bare repository container ok');
 
   // --- at-l3q.11.4: an own save in a chosen nested worktree, opened through the folder's spelling.
@@ -155,6 +164,6 @@ export async function runRec4(): Promise<void> {
   );
   console.log('[it] REC4: own saves in a chosen nested worktree ok');
 
-  await until('final playback', idle);
+  await playEveryLane('final playback');
   await vscode.commands.executeCommand('agentTypewriter.stop');
 }
