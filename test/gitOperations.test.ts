@@ -11,7 +11,9 @@ import {
   findGitWrite,
   GitOperationWatch,
   groupEntries,
+  operationLabel,
   reflogLabel,
+  writesNoFiles,
   stashChange,
   type GitOperation,
   type MarkerLook,
@@ -58,7 +60,7 @@ test('buildOperation: clean, dirty, unmerged, removed and popped paths', () => {
 });
 
 test('findGitWrite: span edges and whether the file exists', () => {
-  const op: GitOperation = { label: 'checkout', from: 100, to: 200, present: new Set(['a.ts']), absent: new Set(['b.ts']), blobs: new Map(), skipped: 0 };
+  const op: GitOperation = { label: 'checkout', from: 100, to: 200, present: new Set(['a.ts']), absent: new Set(['b.ts']), blobs: new Map(), blobAt: new Map(), skipped: 0 };
   assert.equal(findGitWrite([op], 'a.ts', 100, true), op);
   assert.equal(findGitWrite([op], 'a.ts', 200, true), op);
   assert.equal(findGitWrite([op], 'a.ts', 99, true), undefined);
@@ -66,6 +68,27 @@ test('findGitWrite: span edges and whether the file exists', () => {
   assert.equal(findGitWrite([op], 'a.ts', 150, false), undefined);
   assert.equal(findGitWrite([op], 'b.ts', 150, false), op);
   assert.equal(findGitWrite([op], 'c.ts', 150, true), undefined);
+});
+
+test('findGitWrite: a blob made after the write was taken in by git, not written by it', () => {
+  const op: GitOperation = { label: 'commit', from: 100, to: 200, present: new Set(['a.ts', 'b.ts']), absent: new Set(), blobs: new Map(), blobAt: new Map([['a.ts', 160], ['b.ts', 120]]), skipped: 0 };
+  assert.equal(findGitWrite([op], 'a.ts', 150, true), undefined);
+  assert.equal(findGitWrite([op], 'a.ts', 160, true), op);
+  assert.equal(findGitWrite([op], 'b.ts', 150, true), op);
+});
+
+test('operationLabel: a state file that appeared, else the reflog only when it moved', () => {
+  const look = (m: Record<string, number>): MarkerLook => ({ at: 0, markers: '', stash: '', index: '', indexMtime: 0, lock: false, mtimes: new Map(Object.entries(m)) });
+  const tail = `${SHA_A} ${SHA_B} T <t@e> 1700000000 +0000\tcommit: earlier\n`;
+  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, MERGE_HEAD: 2 }), tail), 'merge');
+  assert.equal(operationLabel(look({}), look({ 'rebase-merge': 2, 'logs/HEAD': 3 }), tail), 'rebase');
+  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 2 }), tail), 'commit');
+  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, ORIG_HEAD: 2 }), tail), 'git operation');
+});
+
+test('writesNoFiles: commits of every kind, nothing else', () => {
+  for (const l of ['commit', 'commit (amend)', 'commit (initial)', 'commit (merge)']) assert.ok(writesNoFiles(l), l);
+  for (const l of ['checkout', 'merge feature', 'rebase (continue)', 'cherry-pick', 'reset', 'git operation']) assert.ok(!writesNoFiles(l), l);
 });
 
 test('stashChange: push, pop, and anything else', () => {
@@ -291,6 +314,91 @@ test('watch: a stale index.lock delays a write by the cap, not forever', { skip:
   assert.equal(await gits(w, 'a.ts'), undefined);
   const took = Date.now() - started;
   assert.ok(took >= 250 && took < 2000, `took ${took} ms`);
+});
+
+test('watch: a commit right after an agent edit leaves the edit to the agent', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  write(repo, 'a.ts', 'agent\n');
+  write(repo, 'n.ts', 'new\n');
+  fs.rmSync(path.join(repo, 'b.ts'));
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', 'agent');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+  assert.equal(await gits(w, 'n.ts'), undefined);
+  assert.equal(await gits(w, 'b.ts'), undefined);
+  write(repo, 'a.ts', 'again\n');
+  git(repo, 'commit', '-qam', 'again');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a conflict resolved and committed stays the agent\'s; the merge is labelled merge', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  const w = await watchOf(repo);
+  assert.throws(() => git(repo, 'merge', '-q', 'feature'));
+  assert.equal(await gits(w, 'a.ts'), 'merge');
+  await new Promise((r) => setTimeout(r, 120));
+  write(repo, 'a.ts', 'resolved\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'commit', '-q', '--no-edit');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a rebase conflict resolved before --continue stays the agent\'s; the next commit\'s files are git\'s', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  git(repo, 'switch', '-q', 'feature');
+  write(repo, 'd.ts', 'd\n');
+  git(repo, 'add', 'd.ts');
+  git(repo, 'commit', '-qm', 'feature d');
+  const w = await watchOf(repo);
+  assert.throws(() => git(repo, 'rebase', '-q', 'main'));
+  assert.equal(await gits(w, 'a.ts'), 'rebase');
+  await new Promise((r) => setTimeout(r, 120));
+  write(repo, 'a.ts', 'resolved\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'rebase', '--continue');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+  assert.match((await gits(w, 'd.ts')) ?? '', /^rebase/);
+});
+
+test('watch: a file written back to its committed text, then a status refresh, is not git', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  write(repo, 'a.ts', 'edit\n');
+  write(repo, 'a.ts', 'a1\n');
+  git(repo, 'status', '--porcelain');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: git going missing mid-classify turns it off and leaves the write unclaimed', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  let missing = false;
+  const run: GitRunner = (args, cwd) => (missing ? Promise.reject(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })) : execGit(args, cwd));
+  const w = await watchOf(repo, run);
+  git(repo, 'merge', '-q', 'feature');
+  missing = true;
+  assert.equal(await gits(w, 'a.ts'), undefined);
+  assert.match(w.failure ?? '', /ENOENT/);
+});
+
+test('watch: a failing refresh leaves writes unclaimed and does not run git again until a marker changes', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  let broken = false;
+  let calls = 0;
+  const run: GitRunner = (args, cwd) => {
+    calls++;
+    if (broken && args[0] === 'ls-files') return Promise.reject(Object.assign(new Error('index file corrupt'), { code: 128 }));
+    return execGit(args, cwd);
+  };
+  const w = await watchOf(repo, run);
+  broken = true;
+  git(repo, 'merge', '-q', 'feature');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+  assert.match(w.problem ?? '', /index file corrupt/);
+  const after = calls;
+  assert.equal(await gits(w, 'c.ts'), undefined);
+  assert.equal(calls, after);
+  assert.equal(w.failure, undefined);
 });
 
 test('watch: a folder outside git is not a repository', { skip: noGit }, async () => {

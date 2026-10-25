@@ -1009,3 +1009,42 @@ test('git: a folder outside git records every write', async () => {
   await t.settle();
   assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: 'one\n', after: 'two\n' }]);
 });
+
+test('git: a rebase conflict resolved, then --continue: the resolution records, the next commit does not', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  git(repo, 'switch', '-q', 'feature');
+  write(repo, 'd.ts', 'd\n');
+  git(repo, 'add', 'd.ts');
+  git(repo, 'commit', '-qm', 'feature d');
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  assert.throws(() => git(repo, 'rebase', '-q', 'main'));
+  const markers = fs.readFileSync(path.join(repo, 'a.ts'), 'utf8');
+  fireGitWrites(repo, [], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  // The agent resolves and continues before the recorder reads its write.
+  write(repo, 'a.ts', 'resolved\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'rebase', '--continue');
+  fireGitWrites(repo, ['d.ts'], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: markers, after: 'resolved\n' }]);
+});
+
+test('git: git going missing while a write is classified records the write and says so once', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings({ gitBaselines: false }), repo);
+  await t.recorder.start();
+  git(repo, 'merge', '-q', 'feature');
+  const savedPath = process.env.PATH;
+  process.env.PATH = tempDir('at-rec-nopath-');
+  try {
+    fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+    await t.settle();
+  } finally {
+    process.env.PATH = savedPath;
+  }
+  assert.deepEqual(t.events().map((e) => `${e.kind} ${e.relPath}`).sort(), ['create c.ts', 'delete b.ts', 'modify a.ts']);
+  assert.equal(t.logs.filter((l) => l.startsWith('Git operations are recorded like any other change: git could not run')).length, 1, t.logs.join('\n'));
+});

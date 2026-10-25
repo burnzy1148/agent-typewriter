@@ -37,6 +37,16 @@ export const COMMON_DIR_MARKERS = ['packed-refs', 'reftable/tables.list', 'refs/
 
 const STASH_MARKERS = new Set(['refs/stash', 'logs/refs/stash']);
 
+/** State files an operation that stops leaves behind, and what to call it when one appears. */
+const STATE_LABELS: ReadonlyArray<[string, string]> = [
+  ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'],
+  ['REVERT_HEAD', 'revert'],
+  ['REBASE_HEAD', 'rebase'],
+  ['rebase-merge', 'rebase'],
+  ['rebase-apply', 'rebase'],
+];
+
 export interface GitWatchTiming {
   /** How often a held write looks again while `index.lock` exists. */
   pollMs: number;
@@ -124,6 +134,13 @@ export interface GitOperation {
   absent: Set<string>;
   /** Index blob of each present path git left clean at stage 0. */
   blobs: Map<string, string>;
+  /**
+   * When each of those blobs was written as a loose object, if it was. Git
+   * writes a file from a blob that already exists; `git add` and `commit -a`
+   * make the blob from the file after it was written. A blob newer than the
+   * file means git took the file in, not that git wrote it.
+   */
+  blobAt: Map<string, number>;
   /** Writes skipped so far, for the summary line. */
   skipped: number;
 }
@@ -148,7 +165,16 @@ export interface OperationInput {
  * so from disk).
  */
 export function buildOperation(input: OperationInput): GitOperation {
-  const op: GitOperation = { label: input.label, from: input.from, to: input.to, present: new Set(), absent: new Set(), blobs: new Map(), skipped: 0 };
+  const op: GitOperation = {
+    label: input.label,
+    from: input.from,
+    to: input.to,
+    present: new Set(),
+    absent: new Set(),
+    blobs: new Map(),
+    blobAt: new Map(),
+    skipped: 0,
+  };
   for (const path of input.candidates) {
     const entries = input.after.get(path);
     if (!entries) op.absent.add(path);
@@ -174,7 +200,9 @@ export function buildOperation(input: OperationInput): GitOperation {
 export function findGitWrite(ops: readonly GitOperation[], path: string, writtenAt: number, exists: boolean, lateMs = 0): GitOperation | undefined {
   for (let i = ops.length - 1; i >= 0; i--) {
     const op = ops[i];
-    if (writtenAt >= op.from && writtenAt <= op.to + lateMs && (exists ? op.present : op.absent).has(path)) return op;
+    if (writtenAt < op.from || writtenAt > op.to + lateMs || !(exists ? op.present : op.absent).has(path)) continue;
+    if (exists && (op.blobAt.get(path) ?? -Infinity) > writtenAt) continue;
+    return op;
   }
   return undefined;
 }
@@ -220,6 +248,22 @@ export function stashChange(before: readonly string[], after: readonly string[])
   return {};
 }
 
+/**
+ * What git did between two looks: an operation that stopped names itself by
+ * the state file it left, anything else by its reflog line, which is only
+ * read when the reflog changed (a stopped merge writes none).
+ */
+export function operationLabel(before: MarkerLook, after: MarkerLook, reflogTail: string): string {
+  for (const [marker, label] of STATE_LABELS) if (after.mtimes.has(marker) && !before.mtimes.has(marker)) return label;
+  const reflogMoved = after.mtimes.get('logs/HEAD') !== before.mtimes.get('logs/HEAD');
+  return (reflogMoved && reflogLabel(reflogTail)) || 'git operation';
+}
+
+/** A commit, amend or merge commit only records what is staged; it writes no working-tree files. */
+export function writesNoFiles(label: string): boolean {
+  return /^commit\b/.test(label);
+}
+
 /** What the last reflog line says git did, up to its first colon: `merge f`, `checkout`, `pull`, `reset`. */
 export function reflogLabel(tail: string): string | undefined {
   const line = tail.split('\n').filter(Boolean).at(-1);
@@ -245,6 +289,8 @@ interface WatchState {
 export class GitOperationWatch {
   /** Why git could not run, once it could not; the watch then classifies nothing. */
   failure: string | undefined;
+  /** Why git failed while it could run, the latest time; writes are recorded meanwhile. */
+  problem: string | undefined;
   private readonly ready: Promise<WatchStatus>;
   private gitDir = '';
   private commonDir = '';
@@ -309,7 +355,9 @@ export class GitOperationWatch {
       this.state = { takenAt: this.clock.now(), look, index: digestIndex(entries), stash };
       return 'ok';
     } catch (err) {
-      return this.failed(err) ? 'unavailable' : 'not-repo';
+      if (this.failed(err)) return 'unavailable';
+      this.problem = String((err as Error).message ?? err);
+      return 'not-repo';
     }
   }
 
@@ -370,8 +418,9 @@ export class GitOperationWatch {
   private async doRefresh(): Promise<void> {
     const prev = this.state;
     if (!prev) return;
+    let look: MarkerLook | undefined;
     try {
-      const look = await this.look(true);
+      look = await this.look(true);
       if (look.markers === prev.look.markers) return;
       const stashMoved = look.stash !== prev.look.stash;
       const [byPath, dirtyOut, stash, labelTail] = await Promise.all([
@@ -392,8 +441,9 @@ export class GitOperationWatch {
       const span = changeSpan(prev.look, look);
       const start = Math.min(this.lockSeenAt ?? Infinity, span.earliest ?? now) - this.timing.leadMs;
       const end = Math.max(span.latest ?? 0, look.index !== prev.look.index ? look.indexMtime : 0) || now;
+      const label = pushed ? 'stash push' : popped ? 'stash pop' : operationLabel(prev.look, look, labelTail);
       const op = buildOperation({
-        label: pushed ? 'stash push' : popped ? 'stash pop' : (reflogLabel(labelTail) ?? 'git operation'),
+        label,
         from: Math.max(prev.takenAt, start) - this.timing.skewMs,
         to: end + this.timing.endSlackMs,
         candidates,
@@ -401,12 +451,33 @@ export class GitOperationWatch {
         dirty: new Set(dirtyOut.toString('utf8').split('\0').filter(Boolean)),
         popped: poppedPaths,
       });
-      if (op.present.size > 0 || op.absent.size > 0) this.ops.push(op);
+      if (!writesNoFiles(label) && (op.present.size > 0 || op.absent.size > 0)) {
+        await this.stampBlobs(op);
+        if (this.disposed || this.state !== prev) return;
+        this.ops.push(op);
+      }
       this.state = { takenAt: now, look, index, stash };
       this.lockSeenAt = undefined;
     } catch (err) {
-      // Git failing for another reason keeps the old state, so the next change of a marker tries again.
-      this.failed(err);
+      if (this.failed(err) || !look || this.state !== prev) return;
+      // Git failing for another reason: this operation goes unrecognized, so
+      // its writes are recorded, and git is not asked again until a marker changes.
+      this.problem = String((err as Error).message ?? err);
+      this.state = { ...prev, look };
+      this.lockSeenAt = undefined;
+    }
+  }
+
+  /** Fills `op.blobAt` from the loose objects of its blobs; a packed or missing object is old. */
+  private async stampBlobs(op: GitOperation): Promise<void> {
+    const entries = [...op.blobs];
+    for (let i = 0; i < entries.length; i += 256) {
+      await Promise.all(
+        entries.slice(i, i + 256).map(async ([path, sha]) => {
+          const s = await statOf(nodePath.join(this.commonDir, 'objects', sha.slice(0, 2), sha.slice(2)));
+          if (s) op.blobAt.set(path, s.mtimeMs);
+        }),
+      );
     }
   }
 

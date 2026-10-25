@@ -32,7 +32,7 @@ import {
 import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { KeyedSerial } from './keyedSerial';
-import { GitOperationWatch, type GitOperation } from './gitOperations';
+import { DEFAULT_TIMING, GitOperationWatch, type GitOperation } from './gitOperations';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import { pickRenamePartner } from './renames';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
@@ -98,8 +98,8 @@ const INIT_RETRIES = 60;
 /** Longest wait between checks of whether a chosen worktree is gone. */
 const GONE_CHECK_MAX_MS = 5000;
 
-/** Longest a write holds later changes back while a git operation settles: the lock wait plus reading the result. */
-const GIT_HOLD_MAX_MS = 15_000;
+/** Longest a write holds later changes back while a git operation settles: the lock wait plus git's own timeout for reading the result. */
+const GIT_HOLD_MAX_MS = DEFAULT_TIMING.lockMaxMs + 30_000;
 
 /** Quiet time after a git operation's last skipped write before its summary line is logged. */
 const GIT_SUMMARY_DELAY_MS = 1000;
@@ -177,6 +177,8 @@ export class Recorder implements vscode.Disposable {
   private readonly gitSummaries = new Map<GitOperation, { timer: ReturnType<typeof setTimeout>; lane: string }>();
   /** Set once the output channel said git operations are recorded because git could not run. */
   private gitOpsOffNoted = false;
+  /** Git problems already logged, per watch, so each is said once. */
+  private readonly gitProblemsNoted = new WeakMap<GitOperationWatch, string>();
   /** Chosen worktree labels per folder URI, by worktree `pathKey`, and folder prefixes, when `choices` cannot keep them. */
   private readonly labels = new Map<string, Map<string, string>>();
   /** Remembered worktree labels checked this session against the folder's top-level entries, as `folder\0worktree` keys. */
@@ -1987,10 +1989,18 @@ export class Recorder implements vscode.Disposable {
       started.push(
         watch.status().then((status) => {
           if (status === 'unavailable' && watch.failure) this.noteGitOpsOff(watch.failure);
+          this.noteGitProblem(watch, scope);
         }),
       );
     }
     return Promise.all(started).then(() => {});
+  }
+
+  /** Logs a watch's latest git problem once: git operations there are recorded until git answers again. */
+  private noteGitProblem(watch: GitOperationWatch, scope: Scope): void {
+    if (!watch.problem || this.gitProblemsNoted.get(watch) === watch.problem || !this.running) return;
+    this.gitProblemsNoted.set(watch, watch.problem);
+    this.log.appendLine(`Git operations in ${laneName(scope)} are recorded like any other change for now: git failed (${watch.problem}).`);
   }
 
   private noteGitOpsOff(reason: string): void {
@@ -2015,6 +2025,7 @@ export class Recorder implements vscode.Disposable {
     try {
       const op = await watch.classify(this.relOf(scope, uri), at, exists, lateMs, () => (hold = this.reorder.hold(writtenAt, GIT_HOLD_MAX_MS)));
       if (watch.failure) this.noteGitOpsOff(watch.failure);
+      this.noteGitProblem(watch, scope);
       return { op, key: () => hold?.key() ?? writtenAt, end: () => hold?.end() };
     } catch (err) {
       hold?.end();
@@ -2044,8 +2055,7 @@ export class Recorder implements vscode.Disposable {
     op.skipped++;
     const pending = this.gitSummaries.get(op);
     if (pending) clearTimeout(pending.timer);
-    const lane = scope.own ? scope.folder.name : `${scope.folder.name} (${scope.name})`;
-    this.gitSummaries.set(op, { lane, timer: setTimeout(() => this.logGitSummary(op), GIT_SUMMARY_DELAY_MS) });
+    this.gitSummaries.set(op, { lane: laneName(scope), timer: setTimeout(() => this.logGitSummary(op), GIT_SUMMARY_DELAY_MS) });
   }
 
   private logGitSummary(op: GitOperation): void {
@@ -2434,6 +2444,11 @@ export interface FolderCheckouts {
 }
 
 /** One checkout a workspace folder records: one lane. */
+/** A recorded checkout as the output channel names it: the folder, with the checkout for a chosen worktree. */
+function laneName(scope: Scope): string {
+  return scope.own ? scope.folder.name : `${scope.folder.name} (${scope.name})`;
+}
+
 interface Scope {
   /**
    * Lane id, and the key of every per-scope map: the folder URI for the
