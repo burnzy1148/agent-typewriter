@@ -111,6 +111,29 @@ test('reorder: a pending burst that arrived after the window does not block', ()
   assert.deepEqual(out, ['a']);
 });
 
+test('reorder: an item keyed long before it was reported waits for a burst reported just after it', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1200;
+  // Reported at 1000 with an old write time, like a moved file; a burst begins 5 ms after the report.
+  const done = buf.pending(1005);
+  buf.add('old', 900, 'old', 1000);
+  clock.advance(50);
+  assert.deepEqual(out, [], 'released before the burst reported just after it');
+  buf.add('next', 1005, 'next');
+  done();
+  clock.advance(500);
+  assert.deepEqual(out, ['old', 'next']);
+});
+
+test('reorder: without a report time, an item keyed long ago does not wait for a later burst', () => {
+  const { clock, out, buf } = setup(100);
+  clock.t = 1200;
+  buf.pending(1005);
+  buf.add('old', 900, 'old');
+  clock.advance(0);
+  assert.deepEqual(out, ['old']);
+});
+
 test('reorder: a burst that never finishes blocks only until key + 2 × window', () => {
   const { clock, out, buf } = setup();
   clock.t = 1000;
