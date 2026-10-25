@@ -18,7 +18,7 @@ export class ChangeItem extends vscode.TreeItem {
         : event.kind === 'create'
           ? `new +${event.linesAdded}`
           : event.kind === 'rename'
-            ? `renamed from ${event.fromRelPath}${event.before === event.after ? '' : ` ${counts}`}`
+            ? `renamed from ${event.fromRelPath}${event.linesAdded === 0 && event.linesRemoved === 0 ? '' : ` ${counts}`}`
             : counts;
     this.description = [delta, dir, time].filter(Boolean).join('  ·  ');
     this.tooltip = new vscode.MarkdownString(

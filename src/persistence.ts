@@ -69,6 +69,8 @@ interface Segment {
   n: number;
   bytes: number;
   holders: Array<TextHolder | undefined>;
+  /** Its size on disk is not known for sure (a damaged end could not be cut off): nothing more is appended to it. */
+  sealed?: boolean;
 }
 
 interface LaneLog {
@@ -155,7 +157,21 @@ export class TimelineStore {
    * cut short by a crash is truncated after its last complete change.
    */
   load(): Session | undefined {
+    try {
+      return this.loadSaved();
+    } catch (err) {
+      // Whatever went wrong, the extension starts; saving waits until the history can be moved aside.
+      this.log(`Could not restore the saved timeline (${errorText(err)}). Starting empty.`);
+      this.forget();
+      this.setAside(this.historyAside());
+      return undefined;
+    }
+  }
+
+  private loadSaved(): Session | undefined {
     this.forget();
+    // Left by an earlier version that stopped mid-save.
+    for (const f of [LEGACY + '.tmp', LEGACY + '.sync.tmp']) removeQuietly(path.join(this.folder, f));
     const st = this.readState();
     if (st.kind === 'unreadable' || st.kind === 'newer') {
       this.log(st.kind === 'newer' ? `The saved timeline was saved by a newer version of Agent Typewriter (history version ${st.version}, this one reads up to ${HISTORY_VERSION}). Starting empty.` : `Could not read the saved timeline (${st.why}). Starting empty.`);
@@ -168,11 +184,11 @@ export class TimelineStore {
       // A migration that never wrote its first state, or an earlier version
       // saved after this one (a downgrade): start over from its file.
       if (st.kind !== 'ok' || legacySaved > st.state.savedAt) {
-        fs.rmSync(this.path, { recursive: true, force: true });
+        this.discardLogs();
         return this.loadLegacy();
       }
       // Migrated, but removing the earlier file did not happen.
-      fs.rmSync(legacy, { force: true });
+      removeQuietly(legacy);
     }
     if (st.kind === 'damaged') this.log(`The saved timeline's state could not be read (${st.why}); its changes are restored as pending.`);
     const state = st.kind === 'ok' ? st.state : undefined;
@@ -253,34 +269,43 @@ export class TimelineStore {
 
   /**
    * Reads every segment, oldest first per lane, checking each change's text.
-   * A damaged change ends its lane's log there. Undefined when a segment was
+   * A damaged change ends its segment there. Undefined when a segment was
    * written by a newer version.
    */
   private scanLogs(): LoadedRecord[] | undefined {
     let names: string[];
     try {
       names = fs.readdirSync(this.path);
-    } catch {
-      return [];
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      // Without the file names, new segments could land on old ones.
+      throw err;
     }
     const byLane = new Map<string, Array<{ file: string; n: number; scan: SegmentScan }>>();
     for (const name of names) {
       const file = path.join(this.path, name);
       if (name.endsWith('.tmp')) {
-        fs.rmSync(file, { force: true });
+        removeQuietly(file);
         continue;
       }
       const m = SEGMENT_NAME.exec(name);
       if (!m) continue;
-      const scan = scanSegment(file);
+      const n = Number(m[2]);
+      this.segmentNumbers.set(m[1], Math.max(this.segmentNumbers.get(m[1]) ?? 1, n + 1));
+      let scan: SegmentScan;
+      try {
+        scan = scanSegment(file);
+      } catch (err) {
+        // Left for a later load; its number stays taken, so nothing is appended to it.
+        this.log(`Could not read ${name} of the saved timeline (${errorText(err)}); its changes are left out this time.`);
+        continue;
+      }
       if (scan.newer !== undefined) {
         this.log(`The saved timeline was saved by a newer version of Agent Typewriter (log version ${scan.newer}, this one reads up to ${LOG_VERSION}). Starting empty.`);
         this.forget();
         this.setAside(this.historyAside());
         return undefined;
       }
-      const n = Number(m[2]);
-      this.segmentNumbers.set(m[1], Math.max(this.segmentNumbers.get(m[1]) ?? 1, n + 1));
       if (scan.lane === undefined) {
         // Not even its header was written: it holds no change.
         this.doomed.push(file);
@@ -295,33 +320,32 @@ export class TimelineStore {
       list.sort((a, b) => a.n - b.n);
       const log: LaneLog = { id, key: laneKey(id), segments: [] };
       let lost = 0;
-      let damage: string | undefined;
+      let why: string | undefined;
       let last = -Infinity;
       for (const { file, n, scan } of list) {
-        if (damage !== undefined) {
-          // Its changes came after the lost ones.
-          lost += scan.records.length;
-          this.doomed.push(file);
-          continue;
-        }
+        // Damage cuts its own segment short; later segments hold changes saved after it, complete ones.
         let records = scan.records;
         let end = scan.end;
-        damage = scan.damage;
+        let damage = scan.damage;
+        lost += scan.dropped;
         const disordered = records.findIndex((r, i) => r.o <= (i > 0 ? records[i - 1].o : last));
         if (disordered !== -1) {
           damage = 'its changes are out of order';
           end = records[disordered].start;
+          lost += records.length - disordered;
           records = records.slice(0, disordered);
         }
+        let sealed = false;
         if (damage !== undefined) {
-          lost++;
+          why ??= damage;
           try {
             fs.truncateSync(file, end);
           } catch (err) {
+            sealed = true;
             this.log(`Could not cut the damaged end off ${path.basename(file)}: ${errorText(err)}`);
           }
         }
-        const segment: Segment = { file, n, bytes: end, holders: records.map(() => undefined) };
+        const segment: Segment = { file, n, bytes: end, holders: records.map(() => undefined), ...(sealed && { sealed }) };
         log.segments.push(segment);
         records.forEach((r, index) => {
           last = r.o;
@@ -329,7 +353,7 @@ export class TimelineStore {
           out.push({ o: r.o, lane: id, fields: r.fields, holder, segment, index });
         });
       }
-      if (damage !== undefined) this.log(`The saved timeline was cut short (${damage}); left out ${lost} change(s) that were not completely saved.`);
+      if (why !== undefined) this.log(`The saved timeline was cut short (${why}); left out ${lost} change(s) that were not completely saved.`);
       this.lanes.set(id, log);
     }
     this.removeDoomed();
@@ -361,6 +385,20 @@ export class TimelineStore {
       this.setAside(aside);
       return undefined;
     }
+  }
+
+  /**
+   * Gets rid of the log, as a migration from the earlier file starts over.
+   * Order and segment numbers stay taken, so a file that cannot be deleted yet
+   * is never mistaken for a newer one.
+   */
+  private discardLogs(): void {
+    const records = this.scanLogs() ?? [];
+    this.next = records.reduce((n, r) => Math.max(n, r.o + 1), this.next);
+    for (const log of this.lanes.values()) for (const s of log.segments) this.doomed.push(s.file);
+    this.lanes.clear();
+    this.removeDoomed();
+    removeQuietly(path.join(this.path, STATE));
   }
 
   private historyAside(): { move: () => boolean; name: string } {
@@ -435,12 +473,13 @@ export class TimelineStore {
     this.forget();
     this.aside = undefined;
     this.migrating = false;
-    for (const f of [DIR, ASIDE, LEGACY, LEGACY + '.tmp', LEGACY + '.sync.tmp', LEGACY_UNREADABLE]) {
-      try {
-        fs.rmSync(path.join(this.folder, f), { recursive: true, force: true });
-      } catch {
-        // Nothing to remove.
-      }
+    for (const f of [DIR, ASIDE, LEGACY, LEGACY + '.tmp', LEGACY + '.sync.tmp', LEGACY_UNREADABLE]) removeQuietly(path.join(this.folder, f));
+    // A segment another process holds open stays behind: delete it on a later save. Its
+    // changes' orders are below any written from now on, so a load leaves them out.
+    try {
+      for (const name of fs.readdirSync(this.path)) if (SEGMENT_NAME.test(name)) this.doomed.push(path.join(this.path, name));
+    } catch {
+      // Nothing left.
     }
   }
 
@@ -475,7 +514,7 @@ export class TimelineStore {
     fs.mkdirSync(this.path, { recursive: true });
     if (this.markGone(events)) this.rewriteAll();
     const appended = this.append(events.filter((e) => !this.orders.has(textHolder(e))));
-    this.compact();
+    this.markEmpty();
     const state = this.stateOf(events);
     const { savedAt, ...rest } = state;
     const json = JSON.stringify(rest);
@@ -485,8 +524,10 @@ export class TimelineStore {
       fs.renameSync(file + '.tmp', file);
       this.lastState = json;
     }
+    // Only once the state says where the buffer starts, so a crash before it leaves the old records counted.
+    this.removeDoomed();
     if (this.migrating) {
-      fs.rmSync(path.join(this.folder, LEGACY), { force: true });
+      removeQuietly(path.join(this.folder, LEGACY));
       this.migrating = false;
     }
   }
@@ -524,7 +565,12 @@ export class TimelineStore {
     return broken;
   }
 
-  /** Writes every lane again from scratch: the kept changes' text comes back into memory and every segment goes. */
+  /**
+   * Writes every lane again from scratch: the kept changes' text comes back
+   * into memory and every segment goes. Every lane, because orders run across
+   * lanes: a change written out of turn in one lane would sort wrongly against
+   * the others on load.
+   */
   private rewriteAll(): void {
     for (const h of this.orders.keys()) h.pin();
     for (const log of this.lanes.values()) for (const s of log.segments) this.doomed.push(s.file);
@@ -536,21 +582,22 @@ export class TimelineStore {
   private append(events: readonly ChangeEvent[]): number {
     if (events.length === 0) return 0;
     const batches = new Map<Segment, { parts: Buffer[]; size: number; isNew: boolean; records: Array<{ holder: TextHolder; order: number; at: number; b: number; a: number; crc: number }> }>();
-    const batchOf = (segment: Segment, isNew: boolean) => {
-      let batch = batches.get(segment);
-      if (!batch) batches.set(segment, (batch = { parts: [], size: segment.bytes, isNew, records: [] }));
-      return batch;
-    };
+    const fresh = new Set<Segment>();
     for (const e of events) {
       const log = this.laneLog(laneOf(e));
       let segment = log.segments[log.segments.length - 1];
-      let batch = segment && batchOf(segment, false);
-      if (!segment || batch.size >= this.segmentBytes) {
+      if (!segment || segment.sealed || (batches.get(segment)?.size ?? segment.bytes) >= this.segmentBytes) {
         segment = this.newSegment(log);
-        batch = batchOf(segment, true);
-        const header = Buffer.from(JSON.stringify({ format: LOG_FORMAT, version: LOG_VERSION, lane: log.id }) + '\n', 'utf8');
-        batch.parts.push(header);
-        batch.size += header.length;
+        fresh.add(segment);
+      }
+      let batch = batches.get(segment);
+      if (!batch) {
+        batches.set(segment, (batch = { parts: [], size: segment.bytes, isNew: fresh.has(segment), records: [] }));
+        if (batch.isNew) {
+          const header = Buffer.from(JSON.stringify({ format: LOG_FORMAT, version: LOG_VERSION, lane: log.id }) + '\n', 'utf8');
+          batch.parts.push(header);
+          batch.size += header.length;
+        }
       }
       const order = this.next++;
       const rec = encodeRecord(order, e);
@@ -562,19 +609,22 @@ export class TimelineStore {
     let failure: unknown;
     for (const [segment, batch] of batches) {
       try {
-        fs.appendFileSync(segment.file, Buffer.concat(batch.parts));
+        // A new segment never lands on a file already there.
+        fs.appendFileSync(segment.file, Buffer.concat(batch.parts), { flag: batch.isNew ? 'wx' : 'a' });
       } catch (err) {
         failure ??= err;
-        // Leave no partial record for later appends to follow.
-        try {
-          if (batch.isNew) fs.rmSync(segment.file, { force: true });
-          else fs.truncateSync(segment.file, segment.bytes);
-        } catch {
-          // Load cuts a damaged end off.
-        }
         if (batch.isNew) {
+          // Whatever part of it was written goes; one that was already there is not ours.
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') this.doomed.push(segment.file);
           const log = [...this.lanes.values()].find((l) => l.segments.includes(segment));
           if (log) log.segments.splice(log.segments.indexOf(segment), 1);
+        } else {
+          // Leave no partial record for later appends to follow; if it stays, append elsewhere.
+          try {
+            fs.truncateSync(segment.file, segment.bytes);
+          } catch {
+            segment.sealed = true;
+          }
         }
         continue;
       }
@@ -592,8 +642,8 @@ export class TimelineStore {
     return written;
   }
 
-  /** Deletes segments with no change left in the buffer, and forgets lanes with no segment left. */
-  private compact(): void {
+  /** Marks segments with no change left in the buffer for deletion, and forgets lanes with no segment left. */
+  private markEmpty(): void {
     for (const [id, log] of this.lanes) {
       log.segments = log.segments.filter((s) => {
         if (s.holders.some((h) => h !== undefined)) return true;
@@ -602,7 +652,6 @@ export class TimelineStore {
       });
       if (log.segments.length === 0) this.lanes.delete(id);
     }
-    this.removeDoomed();
   }
 
   private removeDoomed(): void {
@@ -653,13 +702,16 @@ export class TimelineStore {
     };
   }
 
-  /** Forgets what is known about the log on disk. */
+  /**
+   * Forgets what is known about the log on disk. The next order and segment
+   * numbers are kept, so nothing written later can be mistaken for what was
+   * there before.
+   */
   private forget(): void {
     this.lanes.clear();
     this.orders.clear();
     this.doomed = [];
     this.lastState = '';
-    this.next = 1;
   }
 }
 
@@ -697,6 +749,8 @@ interface SegmentScan {
   end: number;
   /** Why the segment ends early, if it does. */
   damage?: string;
+  /** How many changes the damage is known to leave out: the damaged one and any complete ones after it. */
+  dropped: number;
   /** The log version, when it is newer than this one reads. */
   newer?: number;
 }
@@ -710,8 +764,8 @@ function scanSegment(file: string): SegmentScan {
   } catch {
     // Treated as missing below.
   }
-  if (!isObject(head) || head.format !== LOG_FORMAT || typeof head.lane !== 'string' || !isInt(head.version)) return { records: [], end: 0 };
-  if ((head.version as number) > LOG_VERSION) return { records: [], end: 0, newer: head.version as number };
+  if (!isObject(head) || head.format !== LOG_FORMAT || typeof head.lane !== 'string' || !isInt(head.version)) return { records: [], end: 0, dropped: 0 };
+  if ((head.version as number) > LOG_VERSION) return { records: [], end: 0, dropped: 0, newer: head.version as number };
   const records: ScannedRecord[] = [];
   let pos = nl + 1;
   let damage: string | undefined;
@@ -744,7 +798,29 @@ function scanSegment(file: string): SegmentScan {
     records.push({ ...rec, start: pos, at });
     pos = end;
   }
-  return { lane: head.lane as string, records, end: pos, ...(damage !== undefined && { damage }) };
+  return { lane: head.lane as string, records, end: pos, dropped: damage === undefined ? 0 : 1 + countAfter(buf, pos), ...(damage !== undefined && { damage }) };
+}
+
+/**
+ * Complete records after the damaged one at `pos`, when its own length can
+ * still be read: changes the damage leaves out too, as far as can be told.
+ */
+function countAfter(buf: Buffer, pos: number): number {
+  // The damaged record itself is not counted.
+  let n = -1;
+  for (;;) {
+    const hl = buf.indexOf(10, pos);
+    let rec: Omit<ScannedRecord, 'start' | 'at'> | undefined;
+    try {
+      rec = hl < 0 ? undefined : parseRecordHeader(JSON.parse(buf.toString('utf8', pos, hl)));
+    } catch {
+      rec = undefined;
+    }
+    if (!rec) return Math.max(n, 0);
+    pos = hl + 1 + rec.b + rec.a;
+    if (pos > buf.length) return Math.max(n, 0);
+    n++;
+  }
 }
 
 const KINDS: readonly ChangeKind[] = ['create', 'modify', 'delete', 'rename'];
@@ -818,6 +894,15 @@ function readText(file: string, at: number, b: number, a: number, crc: number): 
   }
   if (crc32(buf) !== crc) throw new Error(`${path.basename(file)} changed since it was saved`);
   return { before: buf.toString('utf8', 0, b), after: buf.toString('utf8', b) };
+}
+
+/** Removes a file or folder, leaving it for later if that fails. */
+function removeQuietly(p: string): void {
+  try {
+    fs.rmSync(p, { recursive: true, force: true });
+  } catch {
+    // Another process may hold it; it is tried again next time.
+  }
 }
 
 /** When `file` was last written, or undefined when it does not exist. */

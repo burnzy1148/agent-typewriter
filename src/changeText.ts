@@ -64,10 +64,13 @@ export class ReadCache {
 export const readCache = new ReadCache(READ_CACHE_CHARS);
 
 let reportReadError: (message: string) => void = () => {};
+/** A failed read was reported; the first one says it all, so later ones stay quiet. */
+let reported = false;
 
-/** Where a change whose saved text cannot be read is reported. */
+/** Where the first change whose saved text cannot be read is reported. */
 export function onTextReadError(report: (message: string) => void): void {
   reportReadError = report;
+  reported = false;
 }
 
 /**
@@ -80,7 +83,6 @@ export class TextHolder {
   private reader: TextReader | undefined;
   /** Whoever keeps the saved copy, while there is one. */
   private keeper: unknown;
-  private reported = false;
   readonly chars: number;
 
   constructor(before: string, after: string);
@@ -113,8 +115,8 @@ export class TextHolder {
     try {
       text = this.reader!();
     } catch (err) {
-      if (!this.reported) reportReadError(`Could not read a saved change's text: ${err instanceof Error ? err.message : String(err)}`);
-      this.reported = true;
+      if (!reported) reportReadError(`Could not read a saved change's text, so it reads as empty: ${err instanceof Error ? err.message : String(err)}`);
+      reported = true;
       return EMPTY;
     }
     readCache.put(this, text);
@@ -171,4 +173,35 @@ export function textHolder(e: ChangeText): TextHolder {
 /** Characters of before and after text, without reading saved text. */
 export function textChars(e: ChangeText): number {
   return holders.get(e)?.chars ?? e.before.length + e.after.length;
+}
+
+export type TextSide = 'before' | 'after';
+/** Reads one side of a change's text. */
+export type ReadText = (e: ChangeText, side: TextSide) => string;
+
+export const readSide: ReadText = (e, side) => e[side];
+
+/**
+ * Reads for passes that go over the same changes' text again and again, like
+ * the highlight passes. Each pass keeps what it read and reuses what the pass
+ * before it read, so the text a pass needs stays in memory however much of it
+ * there is, and nothing only an older pass needed does.
+ */
+export class TextPasses {
+  private last = new Map<TextHolder, { before?: string; after?: string }>();
+
+  run<T>(pass: (read: ReadText) => T): T {
+    const now = new Map<TextHolder, { before?: string; after?: string }>();
+    const read: ReadText = (e, side) => {
+      const holder = textHolder(e);
+      let kept = now.get(holder);
+      if (!kept) now.set(holder, (kept = {}));
+      return (kept[side] ??= this.last.get(holder)?.[side] ?? e[side]);
+    };
+    try {
+      return pass(read);
+    } finally {
+      this.last = now;
+    }
+  }
 }

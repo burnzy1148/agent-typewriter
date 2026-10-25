@@ -306,7 +306,7 @@ test('a torn change at the end is left out, and saving carries on after the last
   }
 });
 
-test('changes in later segments of a lane cut short are left out too', async () => {
+test('damage cuts only its own segment short; later segments of the lane are kept', async () => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10, 50);
@@ -321,9 +321,9 @@ test('changes in later segments of a lane cut short are left out too', async () 
   const second = path.join(historyOf(dir), segments[1]);
   fs.truncateSync(second, fs.statSync(second).size - 3);
   const logs: string[] = [];
-  assert.deepEqual(reload(dir, logs).timeline.all().map((e) => e.relPath), ['a']);
-  assert.match(logs.join('\n'), /left out 3 change/);
-  assert.deepEqual(logsOf(dir), segments.slice(0, 2));
+  assert.deepEqual(reload(dir, logs).timeline.all().map((e) => e.relPath), ['a', 'c', 'd']);
+  assert.match(logs.join('\n'), /left out 1 change/);
+  assert.deepEqual(logsOf(dir), segments);
 });
 
 test('records newer than the state load as pending; leftover temp files go', async () => {
@@ -551,5 +551,150 @@ test('stop and deleteSaved leave nothing saved', async () => {
   store.stop();
   store.deleteSaved();
   await store.flush();
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+const busy = (what: string) => Object.assign(new Error(`EBUSY: resource busy or locked, '${what}'`), { code: 'EBUSY' });
+
+test('a segment that cannot be read is left out without failing the load, and comes back later', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  start(store);
+  tl.push(ev('a.ts', '', 'one', 'main'));
+  tl.push(ev('b.ts', '', 'two', 'feat'));
+  await store.flush();
+  store.stop();
+  const [locked] = logsOf(dir).map((f) => path.join(historyOf(dir), f));
+  const real = nodeFs.readFileSync;
+  t.mock.method(nodeFs, 'readFileSync', (p: fs.PathOrFileDescriptor, o?: unknown) => {
+    if (p === locked) throw busy(String(p));
+    return real(p, o as undefined);
+  });
+  const logs: string[] = [];
+  const first = reload(dir, logs);
+  assert.equal(first.timeline.all().length, 1);
+  assert.match(logs.join('\n'), /Could not read .*\.log .*EBUSY.*left out this time/);
+  t.mock.restoreAll();
+  assert.deepEqual(reload(dir).timeline.all().map((e) => e.relPath).sort(), ['a.ts', 'b.ts']);
+});
+
+test('a history folder that cannot be listed does not fail the load and is not saved over', (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(historyOf(dir));
+  const real = nodeFs.readdirSync;
+  t.mock.method(nodeFs, 'readdirSync', (p: fs.PathLike, o?: unknown) => {
+    if (String(p) === historyOf(dir)) throw busy(String(p));
+    return real(p, o as undefined);
+  });
+  t.mock.method(nodeFs, 'renameSync', () => {
+    throw busy('rename');
+  });
+  const logs: string[] = [];
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, (l) => logs.push(l), 10);
+  assert.equal(store.load(), undefined);
+  assert.match(logs.join('\n'), /Could not restore the saved timeline \(EBUSY/);
+  start(store);
+  tl.push(ev('a', '', '1'));
+  store.flushSync();
+  t.mock.restoreAll();
+  assert.ok(!fs.existsSync(path.join(historyOf(dir), 'state.json')));
+});
+
+test('turning persistence off and on with a segment left behind restores the new changes', async () => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  start(store);
+  tl.push(ev('old1.ts', '', 'old1'));
+  tl.push(ev('old2.ts', '', 'old2'));
+  await store.flush();
+  const [seg] = logsOf(dir);
+  const kept = fs.readFileSync(path.join(historyOf(dir), seg));
+  store.stop();
+  store.deleteSaved();
+  // As if another process held the segment open, so deleting it failed.
+  fs.mkdirSync(historyOf(dir), { recursive: true });
+  fs.writeFileSync(path.join(historyOf(dir), seg), kept);
+  tl.clear();
+  start(store);
+  tl.push(ev('new1.ts', '', 'new1'));
+  tl.push(ev('new2.ts', '', 'new2'));
+  await store.flush();
+  store.stop();
+  const logs: string[] = [];
+  assert.deepEqual(reload(dir, logs).timeline.all().map((e) => e.relPath), ['new1.ts', 'new2.ts']);
+  assert.deepEqual(logs, []);
+});
+
+test('when a damaged end cannot be cut off, new changes go to a new segment and survive', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  start(store);
+  tl.push(ev('a.ts', '', 'one'));
+  await store.flush();
+  store.stop();
+  const seg = path.join(historyOf(dir), logsOf(dir)[0]);
+  fs.appendFileSync(seg, '{"o":9,"uri":"x"');
+  t.mock.method(nodeFs, 'truncateSync', () => {
+    throw busy(seg);
+  });
+  const r = reload(dir);
+  t.mock.restoreAll();
+  start(r.store);
+  const e = r.timeline.push(ev('b.ts', 'bb', 'BB'));
+  await r.store.flush();
+  r.store.stop();
+  readCache.clear();
+  assert.equal(e.after, 'BB');
+  assert.equal(logsOf(dir).length, 2);
+  assert.deepEqual(reload(dir).timeline.all().map((x) => `${x.relPath}=${x.after}`), ['a.ts=one', 'b.ts=BB']);
+});
+
+test('a full segment that is locked does not stop new changes from being saved', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10, 50);
+  start(store);
+  tl.push(ev('a.ts', '', 'x'.repeat(60)));
+  await store.flush();
+  const [full] = logsOf(dir).map((f) => path.join(historyOf(dir), f));
+  const real = nodeFs.appendFileSync;
+  t.mock.method(nodeFs, 'appendFileSync', (p: fs.PathOrFileDescriptor, d: string | Uint8Array, o?: fs.WriteFileOptions) => {
+    if (p === full) throw busy(String(p));
+    real(p, d, o);
+  });
+  tl.push(ev('b.ts', '', 'two'));
+  await store.flush();
+  store.stop();
+  t.mock.restoreAll();
+  assert.deepEqual(reload(dir).timeline.all().map((x) => x.relPath), ['a.ts', 'b.ts']);
+});
+
+test('damage in the middle of a segment counts every change it leaves out', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  start(store);
+  for (const f of ['a', 'b', 'c', 'd']) t.push(ev(f, '', f.repeat(5)));
+  await store.flush();
+  store.stop();
+  const file = path.join(historyOf(dir), logsOf(dir)[0]);
+  const bytes = fs.readFileSync(file);
+  // Spoil b's text: its checksum no longer matches, and c and d come after it.
+  const at = bytes.indexOf('bbbbb');
+  bytes[at] = 'X'.charCodeAt(0);
+  fs.writeFileSync(file, bytes);
+  const logs: string[] = [];
+  assert.deepEqual(reload(dir, logs).timeline.all().map((e) => e.relPath), ['a']);
+  assert.match(logs.join('\n'), /checksum\); left out 3 change/);
+});
+
+test('temp files an earlier version left behind are removed on load', () => {
+  const dir = tempDir();
+  for (const f of ['timeline.json.gz.tmp', 'timeline.json.gz.sync.tmp']) fs.writeFileSync(path.join(dir, f), 'code text');
+  assert.equal(loadFrom(dir), undefined);
   assert.deepEqual(fs.readdirSync(dir), []);
 });

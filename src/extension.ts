@@ -970,6 +970,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   // player is waiting on the empty timeline, so pausing it first means restored
   // queued changes are not typed until the user resumes.
   const historyRestored = repoFile.ready.then(() => {
+    try {
+      restoreHistory();
+    } catch (err) {
+      // Recording and playback start either way.
+      log.appendLine(`Could not restore the saved timeline: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    historyLoaded = true;
+    applyPersistHistory();
+  });
+  function restoreHistory(): void {
     if (store && readSettings().persistHistory) {
       const saved = store.load();
       if (saved && saved.events.length > 0) {
@@ -984,9 +994,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     } else if (store) {
       store.deleteSaved();
     }
-    historyLoaded = true;
-    applyPersistHistory();
-  });
+  }
   // Mirror files live in memory, so after a restart the tabs VS Code reopens
   // have nothing behind them. Refill each recorded file's mirror from the
   // restored timeline, then let reads through; the backstop lets them through

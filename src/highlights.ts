@@ -1,4 +1,5 @@
 import { diffWordsWithSpace } from 'diff';
+import { readSide, type ReadText } from './changeText';
 import { LINE_DIFF_MAX_EDITS, planHunks, type Hunk } from './planner';
 import type { ChangeEvent } from './timeline';
 
@@ -344,6 +345,7 @@ export function baselines(
   through: number,
   clears: HighlightClears,
   heldBack?: { seq: number; paths: readonly string[] },
+  read: ReadText = readSide,
 ): Map<string, string> {
   // Which change and side holds each text; read once at the end, so saved text is read once per file.
   type TextOf = { e: ChangeEvent; side: 'before' | 'after' };
@@ -377,6 +379,6 @@ export function baselines(
   }
   applyClears(Infinity);
   const out = new Map<string, string>();
-  for (const [relPath, { e, side }] of base) out.set(relPath, e[side]);
+  for (const [relPath, { e, side }] of base) out.set(relPath, read(e, side));
   return out;
 }

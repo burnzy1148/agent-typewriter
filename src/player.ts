@@ -183,8 +183,10 @@ export class Player implements vscode.Disposable {
       let newest: ChangeEvent | undefined;
       for (const e of latest) {
         if (this.disposed) return;
-        if (!newest || e.seq > newest.seq) newest = e;
-        await this.settle(e);
+        // Text read once per change, as for playback.
+        const change: ChangeEvent = { ...e };
+        if (!newest || change.seq > newest.seq) newest = change;
+        await this.settle(change);
       }
       if (newest && !this.disposed) {
         this.setPlaybackPath(newest.relPath);
@@ -227,11 +229,13 @@ export class Player implements vscode.Disposable {
       const token = this.timeline.begin(next.seq);
       this.finishNow = false;
       const epoch = this.epoch;
-      this.inFlight = this.play(next, epoch).catch(async (err) => {
-        this.log.appendLine(`Playback of ${next.relPath} failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Its text, read once: the change can leave the buffer, and its saved copy with it, while it is typed.
+      const change: ChangeEvent = { ...next };
+      this.inFlight = this.play(change, epoch).catch(async (err) => {
+        this.log.appendLine(`Playback of ${change.relPath} failed: ${err instanceof Error ? err.message : String(err)}`);
         // The change is marked played either way, so its mirror must not keep older text.
-        if (this.live(epoch)) await this.settle(next).catch(() => undefined);
-        if (this.live(epoch) && next.fromRelPath !== undefined) await this.retireMirror(next.fromRelPath).catch(() => undefined);
+        if (this.live(epoch)) await this.settle(change).catch(() => undefined);
+        if (this.live(epoch) && change.fromRelPath !== undefined) await this.retireMirror(change.fromRelPath).catch(() => undefined);
       });
       await this.inFlight;
       this.liveRelPath = undefined;

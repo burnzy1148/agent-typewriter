@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { TextPasses, readSide, type ReadText } from './changeText';
 import type { Settings } from './config';
 import { baselines, diffMarks, highlightPair, lineMarks, removedPreview, renderAction, renderWait, type HighlightPair, type HighlightState, type LineMarks } from './highlights';
 import { MirrorFileSystem, MIRROR_SCHEME } from './mirrorFs';
@@ -32,6 +33,8 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   private readonly lastCost = new Map<string, number>();
   /** Each file's last marks, reused while its baseline and text stay the same. */
   private readonly cache = new Map<string, { baseline: string; text: string; marks: LineMarks }>();
+  /** The text the last highlight pass read, for the next one. */
+  private readonly passes = new TextPasses();
   /** Marks drawn per mirror URI, after the settings. For tests. */
   readonly drawn = new Map<string, LineMarks>();
   /** For marks drawn on the player's text mid-change: that change's token, so they are kept only during it. */
@@ -151,7 +154,8 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   }
 
   private state(): HighlightState {
-    return highlightState(this.timeline, (relPath) => this.player.liveText(relPath) !== undefined);
+    // Each pass reuses the text the last one read, so saved text is not read from disk again and again.
+    return this.passes.run((read) => highlightState(this.timeline, (relPath) => this.player.liveText(relPath) !== undefined, read));
   }
 
   /** The file's marks for `pair`, worked out once per baseline and text. */
@@ -287,7 +291,7 @@ function removedHover(texts: readonly string[], language: string): vscode.Markdo
  * mirror path, so their baselines merge. `isLive` tells whether the player
  * holds live text for a path, which a rename being typed moves.
  */
-export function highlightState(timeline: Timeline, isLive: (relPath: string) => boolean): HighlightState {
+export function highlightState(timeline: Timeline, isLive: (relPath: string) => boolean, read: ReadText = readSide): HighlightState {
   const playing = timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined;
   const all = timeline.all();
   const clears = timeline.highlightClears;
@@ -301,7 +305,7 @@ export function highlightState(timeline: Timeline, isLive: (relPath: string) => 
     const laneClears = clears.filter((c) => laneOf(c) === lane);
     // The change being typed counts, so its file's baseline is ready for its live text.
     if (playing && laneOf(playing) === lane) {
-      for (const [path, base] of baselines(events, playing.seq + 1, laneClears)) bases.set(path, base);
+      for (const [path, base] of baselines(events, playing.seq + 1, laneClears, undefined, read)) bases.set(path, base);
       continue;
     }
     // Any lane's next change may have been typing when a clear was made, then
@@ -309,10 +313,10 @@ export function highlightState(timeline: Timeline, isLive: (relPath: string) => 
     const first = timeline.firstPending(lane);
     const laneNext = first === undefined ? undefined : timeline.get(first);
     const held = laneNext && { seq: laneNext.seq, paths: [laneNext.relPath, ...(laneNext.fromRelPath !== undefined ? [laneNext.fromRelPath] : [])] };
-    for (const [path, base] of baselines(events, laneNext ? laneNext.seq : timeline.cursorOf(lane), laneClears, held)) bases.set(path, base);
+    for (const [path, base] of baselines(events, laneNext ? laneNext.seq : timeline.cursorOf(lane), laneClears, held, read)) bases.set(path, base);
   }
   const activeClears = clears.filter((c) => laneOf(c) === active);
-  const st: HighlightState = { bases, texts: timeline.mirrorStates(), clears: activeClears };
+  const st: HighlightState = { bases, texts: timeline.mirrorStates(read), clears: activeClears };
   if (next) st.next = { seq: next.seq, relPath: next.relPath, fromRelPath: next.fromRelPath };
   if (playing) {
     st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
@@ -322,6 +326,8 @@ export function highlightState(timeline: Timeline, isLive: (relPath: string) => 
         all.filter((e) => laneOf(e) === active),
         playing.seq,
         activeClears,
+        undefined,
+        read,
       );
     }
   }

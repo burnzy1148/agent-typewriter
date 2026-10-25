@@ -1,4 +1,4 @@
-import { rebind, textChars } from './changeText';
+import { readSide, rebind, textChars, type ReadText } from './changeText';
 import type { HighlightClear, HighlightClears } from './highlights';
 
 export type ChangeKind = 'create' | 'modify' | 'delete' | 'rename';
@@ -471,9 +471,9 @@ export class Timeline {
    * its newest played change, or the before text of its earliest change when
    * none was played. A played rename leaves no mirror at its old path; a
    * queued one leaves its before text there and no mirror yet at its new path.
-   * Used to refill mirrors after a reload.
+   * Used to refill mirrors after a reload. `read` reads the text, once per file.
    */
-  mirrorStates(): Map<string, { text: string; eol: ChangeEvent['eol'] }> {
+  mirrorStates(read: ReadText = readSide): Map<string, { text: string; eol: ChangeEvent['eol'] }> {
     /** The change and side whose text each mirror shows; read once at the end, so saved text is read once per file. */
     const shown = new Map<string, { e: ChangeEvent; side: 'before' | 'after' }>();
     /** Paths with no mirror at the cursor: renamed away, or not yet renamed to. */
@@ -498,7 +498,7 @@ export class Timeline {
       } else decide(e.relPath, e);
     }
     const out = new Map<string, { text: string; eol: ChangeEvent['eol'] }>();
-    for (const [relPath, { e, side }] of shown) out.set(relPath, { text: e[side], eol: e.eol });
+    for (const [relPath, { e, side }] of shown) out.set(relPath, { text: read(e, side), eol: e.eol });
     return out;
   }
 
