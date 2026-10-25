@@ -27,5 +27,5 @@ Replay types every change strictly top to bottom. A person writing a new block d
 - `test/planner.test.ts`: unit tests for the patterns and the fuzz test extended to random block-structured text in authoring order.
 - `src/player.ts`: applies `authoringOrder` when the setting is on, and navigates to continuation pieces without the read pause or a scroll.
 - `src/config.ts`, `src/repoSettings.ts`, `package.json`, `schemas/agent-typewriter.schema.json`: the new setting. The site's settings page is generated from `package.json`.
-- CHANGELOG.
+- CHANGELOG, and the "Diff planning" part of the site's How it works page.
 - `it/runTest.ts` turns the setting off in the general integration workspaces so their timing stays as before; `it/suite.ts` gets a section that turns it on.

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { MirrorFileSystem, mirrorBytes } from './mirrorFs';
 import { baseCharsPerMinute } from './pace';
-import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
+import { authoringOrder, lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
 import { readPauseLeft } from './readPause';
 import { SCROLL_FRAME_MS, centeredTop, scrollSteps } from './scroll';
 import { caretPath } from './caretPath';
@@ -280,7 +280,8 @@ export class Player implements vscode.Disposable {
       return;
     }
 
-    const hunks = planHunks(e.before, e.after);
+    const planned = planHunks(e.before, e.after);
+    const hunks = s.naturalOrder ? authoringOrder(planned, e.after) : planned;
     const inserted = hunks.reduce((n, h) => n + h.insertText.length, 0);
     if (inserted > s.maxAnimatedChars) {
       await this.edit(editor.document, 0, this.expected.length, e.after);
@@ -357,7 +358,7 @@ export class Player implements vscode.Disposable {
       ? h.offset + h.deleteText.length
       : h.offset;
 
-    const ed = await this.navigate(relPath, editor, caretOffset, smooth, epoch);
+    const ed = await this.navigate(relPath, editor, caretOffset, smooth, h.continues === true, epoch);
     if (!ed) return;
     editor = ed;
     // The text to delete shows as such from when the caret arrives until it is gone.
@@ -380,15 +381,17 @@ export class Player implements vscode.Disposable {
   /**
    * Moves the caret to LF offset `offset`. Close by and in view, it walks
    * there with arrow keys; otherwise the edit is brought into view and the
-   * caret clicked there. Undefined once the change was interrupted.
+   * caret clicked there. A move that `continues` within the text being typed
+   * is brought into view at once, without the read pause or a scroll.
+   * Undefined once the change was interrupted.
    */
-  private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
+  private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, continues: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
     const s = this.settings();
     const from = editor.document.validatePosition(editor.selection.active);
     const to = posAt(editor.document, offset);
     // One visible range holds the whole walk, so the caret never enters a folded region and unfolds it.
     const walk = smooth && s.arrowNavigation && !this.finishNow && inView(editor, Math.min(from.line, to.line), Math.max(from.line, to.line));
-    let ed = await this.scrollTo(relPath, editor, to.line, smooth, epoch);
+    let ed = await this.scrollTo(relPath, editor, to.line, smooth && !continues, epoch);
     if (!ed) return undefined;
     const doc = ed.document;
     const keys = walk ? caretPath((n) => doc.lineAt(n).text, from, to, ARROW_MAX_KEYS) : undefined;

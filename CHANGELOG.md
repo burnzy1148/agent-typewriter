@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Changes are typed in the order a person writes them: a new block gets its closing line right after its opening line, then its body is filled in between, and a function's signature comes before its body, even with its parameters on several lines (`naturalOrder`, default on). Moving back into the block and past its closing line never waits for the read pause or scrolls. Edits in different places are still typed top to bottom.
 - Docs moved to [agent-typewriter.com](https://agent-typewriter.com), with search and a settings reference generated from the extension, and the Marketplace listing links there. The README keeps install and quick start.
 - Replay waits for a read pause before the view leaves what it just typed: before scrolling or jumping to an off-screen edit, and before switching to another file, while the old file is still in view (`readPauseSeconds`, default 1.5). Time already passed counts, so a change that arrives after an idle gap switches at once. Seeks, skips and catch up skip it; finish current ends it.
 - `fileSwitchDelayMs`, the pause on the new file before its first edit, now defaults to 1000 (was 600) and is capped at 15000.

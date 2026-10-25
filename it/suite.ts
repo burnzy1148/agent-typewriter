@@ -1231,6 +1231,31 @@ export async function run(): Promise<void> {
     assert.deepEqual(visited(clicked.seen.seen, 16, 22), [17, 18, 19, 20, 21], `arrowNavigation off still walked: ${clicked.seen.seen.join(',')}`);
     console.log('[it] arrow keys to nearby edits ok');
 
+    // A new block is typed outside in: its closing line appears before its body (at-mfk.3).
+    await setting('agentTypewriter', 'naturalOrder', true);
+    const orderBlock = (name: string) => `function ${name}(a: number, b: number) {\n  const sum = a + b;\n  return sum;\n}\n`;
+    const natural = record('play/order.ts');
+    const ordered = await play('play/order.ts', '', orderBlock('total'));
+    natural.dispose();
+    assert.equal(mirrorText('play/order.ts'), ordered.after);
+    assert.ok(
+      natural.texts.some((t) => t.includes('{\n}') && !t.includes('return')),
+      `the closing brace was not typed before the body: ${JSON.stringify(natural.texts.slice(0, 6))}`,
+    );
+    await setting('agentTypewriter', 'naturalOrder', false);
+    const topDown = record('play/order.ts');
+    const unordered = await play('play/order.ts', ordered.after, ordered.after + '\n' + orderBlock('other'));
+    topDown.dispose();
+    assert.equal(mirrorText('play/order.ts'), unordered.after);
+    assert.ok(
+      topDown.texts.every((t) => {
+        const added = t.indexOf('function other');
+        return added === -1 || !t.slice(added).includes('\n}') || t.slice(added).includes('return sum');
+      }),
+      'naturalOrder off typed the closing brace before the body',
+    );
+    console.log('[it] natural authoring order ok');
+
     // A rename shows the old name, moves the mirror, then types the edit (at-kbn.2).
     await setting('agentTypewriter', 'charsPerMinute', 3600);
     const mirrorTabs = (rel: string) =>

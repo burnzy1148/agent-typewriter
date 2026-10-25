@@ -53,7 +53,7 @@ A block's header SHALL be typed in full before its body, including any block ins
 
 #### Scenario: Parameters on several lines
 - **WHEN** a change adds `function f(`, `  a,`, `  b,`, `) {`, `  return a + b;` and `}`
-- **THEN** replay types `function f(` and `) {`, then the parameter lines, then the final `}`, then the `return` line
+- **THEN** replay types `function f(` and `)`, then the parameter lines, then ` {` with the final `}` below it, then the `return` line
 
 #### Scenario: Language without brackets for blocks
 - **WHEN** a change adds a Python function `def f(a, b):` with an indented body

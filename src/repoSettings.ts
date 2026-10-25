@@ -30,6 +30,7 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   scrollLinesPerSecond: 'number',
   arrowNavigation: 'boolean',
   arrowKeysPerSecond: 'number',
+  naturalOrder: 'boolean',
   debounceMs: 'number',
   reorderWindowMs: 'stringOrNumber',
   maxFileSizeKB: 'number',

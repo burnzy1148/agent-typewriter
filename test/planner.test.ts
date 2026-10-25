@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyHunks, countChanges, normalizeEol, planHunks } from '../src/planner';
+import { applyHunks, authoringOrder, countChanges, normalizeEol, planHunks, type Hunk } from '../src/planner';
 
 function roundTrip(before: string, after: string) {
   const hunks = planHunks(before, after);
@@ -192,5 +192,175 @@ test('fuzz: 3000 random edits round trip', () => {
     const before = randomText(r, Math.floor(r() * 80));
     const after = mutate(r, before);
     roundTrip(before, after);
+    naturalRoundTrip(before, after);
   }
+});
+
+// ------------------------------------------------------------ authoring order
+
+/** Plans in authoring order, asserting the round trip and that the caret never leaves the text its edit typed. */
+function naturalRoundTrip(before: string, after: string): Hunk[] {
+  const plain = planHunks(before, after);
+  const hunks = authoringOrder(plain, after);
+  assert.equal(applyHunks(before, hunks), after);
+  assert.equal(hunks.filter((h) => !h.continues).length, plain.length, 'each planned hunk starts one run of pieces');
+  // Who typed each character: -1 for text that was already there, else the index of the run.
+  let owner: number[] = Array.from(before, () => -1);
+  let doc = before;
+  let run = -1;
+  let caret = 0;
+  for (const h of hunks) {
+    if (h.continues) {
+      assert.equal(h.deleteText, '', 'a continuing piece deletes nothing');
+      const [from, to] = caret <= h.offset ? [caret, h.offset] : [h.offset, caret];
+      assert.ok(owner.slice(from, to).every((o) => o === run), `piece at ${h.offset} crossed text its edit did not type`);
+      if (h.offset < caret) assert.ok(doc.slice(from, to).split('\n').length - 1 <= 2, 'moved back more than two lines');
+    } else {
+      run++;
+    }
+    doc = doc.slice(0, h.offset) + h.insertText + doc.slice(h.offset + h.deleteText.length);
+    owner = [...owner.slice(0, h.offset), ...Array.from(h.insertText, () => run), ...owner.slice(h.offset + h.deleteText.length)];
+    caret = h.offset + h.insertText.length;
+  }
+  return hunks;
+}
+
+/** The inserted text of each piece, in typing order. */
+function typedOrder(before: string, after: string): string[] {
+  return naturalRoundTrip(before, after).map((h) => h.insertText);
+}
+
+test('authoring order: a new function gets its closing brace before its body', () => {
+  assert.deepEqual(typedOrder('', 'function f() {\n  return 1;\n}\n'), ['function f() {\n}\n', '\n  return 1;']);
+});
+
+test('authoring order: the closing line is typed whole, with what follows the bracket', () => {
+  assert.deepEqual(typedOrder('', 'const o = {\n  a: 1,\n};\nnext();\n'), ['const o = {\n};\n', '\n  a: 1,', 'next();\n']);
+});
+
+test('authoring order: an empty block is typed top to bottom', () => {
+  assert.deepEqual(typedOrder('', 'f() {\n}\n'), ['f() {\n}\n']);
+});
+
+test('authoring order: a closer that does not match, or a line at the same indentation first, opens no block', () => {
+  assert.deepEqual(typedOrder('', 'x = (\n  1,\n]\n'), ['x = (\n  1,\n]\n']);
+  const sw = 'switch (x) {\ncase 1:\n  y();\n}\n';
+  assert.deepEqual(typedOrder('', sw), [sw]);
+});
+
+test('authoring order: lines added inside an existing block are typed top to bottom', () => {
+  const before = 'function f() {\n  a();\n}\n';
+  const after = 'function f() {\n  a();\n  b();\n  c();\n}\n';
+  assert.deepEqual(typedOrder(before, after), ['  b();\n  c();\n']);
+});
+
+test('authoring order: nested blocks are each typed outside in when reached', () => {
+  const after = 'function f() {\n  if (x) {\n    y();\n  }\n  z();\n}\n';
+  assert.deepEqual(typedOrder('', after), ['function f() {\n}\n', '\n  if (x) {\n  }\n', '\n    y();', '  z();']);
+});
+
+test('authoring order: the first of two blocks is finished before the second starts', () => {
+  const after = 'a() {\n  x;\n}\n\nb() {\n  y;\n}\n';
+  assert.deepEqual(typedOrder('', after), ['a() {\n}\n', '\n  x;', '\nb() {\n}\n', '\n  y;']);
+});
+
+test('authoring order: an else branch opens its own block on the closing line', () => {
+  const after = 'if (a) {\n  x();\n} else {\n  y();\n}\n';
+  assert.deepEqual(typedOrder('', after), ['if (a) {\n}', '\n  x();', ' else {\n}\n', '\n  y();']);
+});
+
+test('authoring order: parameters on several lines come before the body', () => {
+  const after = 'function f(\n  a,\n  b,\n) {\n  return a + b;\n}\n';
+  assert.deepEqual(typedOrder('', after), ['function f(\n)', '\n  a,\n  b,', ' {\n}\n', '\n  return a + b;']);
+});
+
+test('authoring order: Python and one-line calls are typed top to bottom, left to right', () => {
+  const py = 'def f(a, b):\n    return a + b\n';
+  assert.deepEqual(typedOrder('', py), [py]);
+  assert.deepEqual(typedOrder('x\n', 'x\nprint(total)\n'), ['print(total)\n']);
+});
+
+test('authoring order: a replaced block deletes first, then types outside in', () => {
+  const hunks = naturalRoundTrip('a();\n', 'if (c) {\n  a();\n}\n');
+  assert.deepEqual(hunks.map((h) => [h.deleteText, h.insertText]), [['a();\n', 'if (c) {\n}\n'], ['', '\n  a();']]);
+});
+
+test('authoring order: an edit that starts mid-line takes its indentation from the line', () => {
+  const after = '  x = foo({\n    a: 1,\n  });\n';
+  const hunk: Hunk = { offset: 6, deleteText: '', insertText: 'foo({\n    a: 1,\n  });\n' };
+  const hunks = authoringOrder([hunk], after);
+  assert.deepEqual(hunks.map((h) => h.insertText), ['foo({\n  });\n', '\n    a: 1,']);
+  assert.equal(applyHunks('  x = ', hunks), after);
+  // Without that indentation the closing line is deeper than the opening one, so no block.
+  const flat = 'x = foo({\n    a: 1,\n  });\n';
+  assert.equal(authoringOrder([{ ...hunk, offset: 4 }], flat).length, 1);
+});
+
+test('authoring order: edits stay in document order, and other hunks pass through unchanged', () => {
+  const before = 'top\nmiddle\nbottom\n';
+  const after = 'top\nf() {\n  x;\n}\nmiddle\nBOTTOM\n';
+  const plain = planHunks(before, after);
+  const hunks = naturalRoundTrip(before, after);
+  assert.deepEqual(hunks[hunks.length - 1], plain[plain.length - 1]);
+  assert.ok(hunks.slice(0, -1).every((h) => h.offset < plain[plain.length - 1].offset));
+});
+
+test('authoring order: a large new file is cut quickly', () => {
+  const fn = (i: number) => `function f${i}(a, b) {\n  if (a) {\n    return [\n      a,\n      b,\n    ];\n  }\n  return {\n    a,\n  };\n}\n\n`;
+  const after = Array.from({ length: 3000 }, (_, i) => fn(i)).join('');
+  const t0 = performance.now();
+  const hunks = authoringOrder(planHunks('', after), after);
+  assert.ok(performance.now() - t0 < 2000, 'took too long');
+  assert.equal(applyHunks('', hunks), after);
+  // Six pieces a function, and the blank line at the end.
+  assert.equal(hunks.length, 3000 * 6 + 1);
+});
+
+// Random code shaped like an agent writes it: indented blocks of every bracket kind, with odd cases mixed in.
+function randomCode(r: () => number, indent: string, depth: number): string {
+  let s = '';
+  const lines = 1 + Math.floor(r() * 5);
+  for (let i = 0; i < lines; i++) {
+    const pick = r();
+    if (depth < 4 && pick < 0.35) {
+      const [open, close] = (['{}', '[]', '()'] as const)[Math.floor(r() * 3)];
+      const tail = ['', ';', ',', ')', ' else {'][Math.floor(r() * 5)];
+      s += `${indent}head${depth} ${open}\n` + (r() < 0.9 ? randomCode(r, indent + '  ', depth + 1) : '');
+      if (r() < 0.08) s += `${indent}oops\n`;
+      s += `${indent}${r() < 0.95 ? close : '}'}${tail}\n`;
+      if (tail === ' else {') s += randomCode(r, indent + '  ', depth + 1) + `${indent}}\n`;
+    } else if (pick < 0.45) {
+      s += '\n';
+    } else {
+      s += `${indent}${tokens[Math.floor(r() * tokens.length)].trim() || 'x'}${Math.floor(r() * 9)}\n`;
+    }
+  }
+  return s;
+}
+
+/** Inserts, deletes and replaces whole lines, sometimes with new blocks. */
+function mutateLines(r: () => number, text: string): string {
+  const lines = text.split(/(?<=\n)/);
+  const ops = 1 + Math.floor(r() * 4);
+  for (let k = 0; k < ops; k++) {
+    const at = Math.floor(r() * (lines.length + 1));
+    const choice = r();
+    const indent = '  '.repeat(Math.floor(r() * 3));
+    if (choice < 0.5) lines.splice(at, 0, randomCode(r, indent, 0));
+    else if (choice < 0.75) lines.splice(at, 1 + Math.floor(r() * 4));
+    else lines.splice(at, 1, randomCode(r, indent, 1));
+  }
+  return lines.join('');
+}
+
+test('fuzz: 3000 block-shaped edits round trip in authoring order', () => {
+  const r = rng(7);
+  let reordered = 0;
+  for (let i = 0; i < 3000; i++) {
+    const before = r() < 0.2 ? '' : randomCode(r, '', 0);
+    const after = r() < 0.7 ? mutateLines(r, before) : mutate(r, mutateLines(r, before));
+    const hunks = naturalRoundTrip(before, after);
+    if (hunks.some((h, k) => k > 0 && h.continues && h.offset < hunks[k - 1].offset + hunks[k - 1].insertText.length)) reordered++;
+  }
+  assert.ok(reordered > 1000, `only ${reordered} plans were reordered`);
 });

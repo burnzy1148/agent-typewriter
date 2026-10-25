@@ -36,6 +36,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     scrollLinesPerSecond: 60,
     arrowNavigation: false,
     arrowKeysPerSecond: 15,
+    naturalOrder: false,
     debounceMs: 50,
     reorderWindowMs: 0,
     maxFileSizeKB: 512,
