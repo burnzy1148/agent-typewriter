@@ -20,7 +20,7 @@ import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
 import { Timeline, laneOf, sessionClears, sessionLanes, toSession, type LaneInfo } from './timeline';
 import { ChangeItem, laneName, TimelineView } from './timelineView';
-import { CheckoutRow, CheckoutsView, type FolderCheckoutsModel } from './checkoutsView';
+import { CheckoutRow, CheckoutsView, followingHeader, type FolderCheckoutsModel } from './checkoutsView';
 import { LaneDecorations } from './laneDecorations';
 import { AutoFollow } from './autoFollow';
 import { MAX_LANES } from './lanes';
@@ -197,6 +197,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     scrubber.refresh();
     mirrorControls.refresh();
     tree.description = shown.description;
+    // Which lane is followed, at the top of the Checkouts view, while there is a choice.
+    checkoutsTree.description = followingHeader(timeline);
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
       tree.message = `${lastDropped} queued change(s) were dropped because the buffer is full (historyLimit).`;

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import type { LaneInfo, Timeline } from './timeline';
+import { laneOf, type LaneInfo, type Timeline } from './timeline';
 import { laneIcon, laneName } from './timelineView';
 import { laneKey, pathKey } from './worktrees';
 
@@ -18,6 +18,51 @@ export interface CheckoutActions {
   add(folder: vscode.WorkspaceFolder, checkoutPath: string): Promise<void>;
   remove(folder: vscode.WorkspaceFolder, checkoutPath: string): Promise<void>;
   error(message: string): void;
+}
+
+/** URI scheme of the followed row's `resourceUri`, which the lane decorations tint and badge. */
+export const FOLLOWED_SCHEME = 'agent-typewriter-followed';
+
+/** The `resourceUri` that marks a lane's row as the followed one. */
+export function followedRowUri(lane: string): vscode.Uri {
+  return vscode.Uri.from({ scheme: FOLLOWED_SCHEME, path: '/' + encodeURIComponent(lane) });
+}
+
+/** What the followed lane is doing, as its row says it. */
+export type Following = 'typing' | 'caught up' | { queued: number };
+
+/**
+ * How the lane's row is marked as followed, or undefined when it is not the
+ * followed lane or there is only one lane: with nothing to choose between,
+ * nothing is marked.
+ */
+export function followingState(timeline: Timeline, lane: string): Following | undefined {
+  if (timeline.followed !== lane || timeline.laneList().length < 2) return undefined;
+  const playing = timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined;
+  if (playing && laneOf(playing) === lane) return 'typing';
+  const queued = timeline.pendingCount(lane);
+  return queued > 0 ? { queued } : 'caught up';
+}
+
+/** The Checkouts view's header while there is more than one lane: which one is followed. */
+export function followingHeader(timeline: Timeline): string | undefined {
+  const lanes = timeline.laneList();
+  if (lanes.length < 2) return undefined;
+  const followed = lanes.find((l) => l.id === timeline.followed);
+  return followed && `Following: ${laneName(followed)}`;
+}
+
+/** The description words for a lane's queue: what the followed one is doing, else how many are queued. */
+function queueText(following: Following | undefined, queued: number): string {
+  if (following === undefined) return queued > 0 ? `${queued} queued` : '';
+  return typeof following === 'string' ? following : `${following.queued} queued`;
+}
+
+/** Marks the followed row: an eye in the lane's color, and the tint and badge its `resourceUri` gets. */
+function markFollowed(item: vscode.TreeItem, lane: LaneInfo, following: Following | undefined): void {
+  if (following === undefined) return;
+  item.iconPath = lane.color > 0 ? new vscode.ThemeIcon('eye', new vscode.ThemeColor(`agentTypewriter.lane${lane.color}`)) : new vscode.ThemeIcon('eye');
+  item.resourceUri = followedRowUri(lane.id);
 }
 
 /** A workspace folder's node, shown only in a multi-root workspace. */
@@ -40,7 +85,9 @@ export class CheckoutRow extends vscode.TreeItem {
     own: boolean,
     recorded: boolean,
     info: LaneInfo | undefined,
+    /** It is the followed lane, even when it is the only one. */
     followed: boolean,
+    following: Following | undefined,
     queued: number,
   ) {
     super(name || folder.name, vscode.TreeItemCollapsibleState.None);
@@ -48,11 +95,11 @@ export class CheckoutRow extends vscode.TreeItem {
     this.checkboxState = recorded ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
     const rel = path.relative(folder.uri.fsPath, checkoutPath);
     const where = own ? 'this folder' : rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : checkoutPath;
-    this.description = [where, info && queued > 0 ? `${queued} queued` : '', followed ? 'following' : '', info && !info.recording ? 'stopped' : '']
-      .filter(Boolean)
-      .join('  ·  ');
-    this.tooltip = `${name || folder.name}\n${checkoutPath}${recorded ? '\nRecorded' : ''}`;
+    this.description = [where, info ? queueText(following, queued) : '', info && !info.recording ? 'stopped' : ''].filter(Boolean).join('  ·  ');
+    this.tooltip = `${name || folder.name}\n${checkoutPath}${recorded ? '\nRecorded' : ''}${following !== undefined ? '\nFollowed: its changes are the ones typed' : ''}`;
     this.iconPath = info ? laneIcon(info) : new vscode.ThemeIcon('circle-large-outline');
+    if (info) markFollowed(this, info, following);
+    // The followed lane offers no follow action.
     this.contextValue = !info ? 'checkout' : followed ? 'lane.followed' : 'lane';
   }
 }
@@ -62,13 +109,15 @@ export class LaneRow extends vscode.TreeItem {
   constructor(
     readonly lane: LaneInfo,
     followed: boolean,
+    following: Following | undefined,
     queued: number,
   ) {
     super(laneName(lane), vscode.TreeItemCollapsibleState.None);
     this.id = `lane-row:${lane.id}`;
-    this.description = [queued > 0 ? `${queued} queued` : '', followed ? 'following' : ''].filter(Boolean).join('  ·  ');
-    this.tooltip = `${laneName(lane)}${lane.root ? `\n${lane.root}` : ''}\nNot recording`;
+    this.description = queueText(following, queued);
+    this.tooltip = `${laneName(lane)}${lane.root ? `\n${lane.root}` : ''}\nNot recording${following !== undefined ? '\nFollowed: its changes are the ones typed' : ''}`;
     this.iconPath = laneIcon(lane);
+    markFollowed(this, lane, following);
     this.contextValue = followed ? 'lane.followed' : 'lane';
   }
 }
@@ -145,7 +194,8 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
       const lane = laneKey(folderKey, c.own, c.path);
       const info = this.timeline.laneInfo(lane);
       const followed = info !== undefined && this.timeline.followed === lane;
-      return new CheckoutRow(model.folder, c.path, lane, c.name, c.own, recorded.has(pathKey(c.path)), info, followed, info ? this.timeline.pendingCount(lane) : 0);
+      const following = info && followingState(this.timeline, lane);
+      return new CheckoutRow(model.folder, c.path, lane, c.name, c.own, recorded.has(pathKey(c.path)), info, followed, following, info ? this.timeline.pendingCount(lane) : 0);
     });
   }
 
@@ -155,7 +205,7 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
     return this.timeline
       .laneList()
       .filter((l) => !listed.has(l.id) && inBuffer.has(l.id))
-      .map((l) => new LaneRow(l, l.id === this.timeline.followed, this.timeline.pendingCount(l.id)));
+      .map((l) => new LaneRow(l, l.id === this.timeline.followed, followingState(this.timeline, l.id), this.timeline.pendingCount(l.id)));
   }
 
   private redrawSoon(): void {

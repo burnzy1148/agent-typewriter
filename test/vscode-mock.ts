@@ -310,6 +310,7 @@ export class TreeItem {
   contextValue?: string;
   command?: { command: string; title: string; arguments?: unknown[] };
   checkboxState?: TreeItemCheckboxState;
+  resourceUri?: Uri;
   constructor(
     public label: string,
     public collapsibleState: TreeItemCollapsibleState = TreeItemCollapsibleState.None,

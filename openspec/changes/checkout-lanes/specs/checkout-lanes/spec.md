@@ -123,6 +123,17 @@ An Agent Typewriter view SHALL list, per workspace folder, its checkout and ever
 - **WHEN** recording is off and the user ticks a worktree
 - **THEN** the choice is remembered and applies when recording starts
 
+### Requirement: The followed checkout is marked
+While more than one lane is recording or in the buffer, the followed lane's row in the Checkouts view SHALL show an eye icon in the lane's color, a tinted label with a play badge, and what it is doing: typing, caught up, or how many changes are queued. The view's header SHALL name the followed lane. With one lane, nothing SHALL be marked.
+
+#### Scenario: Two lanes, one typing
+- **WHEN** the main checkout and `feature` record, `feature` is followed, and one of its changes is being typed
+- **THEN** the `feature` row shows the eye, the tint and badge, and "typing", the main row shows its colored dot, and the header reads "Following: feature"
+
+#### Scenario: Follow another lane
+- **WHEN** the user follows the main checkout's lane
+- **THEN** the mark and the header move to the main row
+
 ### Requirement: Changes view groups by lane
 While the buffer holds more than one lane, the Changes view SHALL show one node per lane, labeled and colored as the lane, with its queued count, holding that lane's changes newest first. The followed lane's node SHALL come first and be expanded.
 
