@@ -529,7 +529,12 @@ export async function run(): Promise<void> {
   const atProfile = timeline.all().length;
   write('src/profiled.ts', 'export const profiled = 1;\n');
   write('docs/guide.md', '# Guide\n');
-  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).length === 1, 20000);
+  // Linux can report a file in a just-created directory with only a change
+  // event, which takes a baseline instead of recording a create. An edit after
+  // either is recorded.
+  await until('docs/guide.md seen', () => api.recorder.hasBaseline(uriOf('docs/guide.md')), 20000);
+  write('docs/guide.md', '# Guide\n\nMore.\n');
+  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).some((e) => e.kind === 'modify'), 20000);
   await sleep(1000);
   assert.equal(eventsFor('src/profiled.ts', atProfile).length, 0, 'a path outside the active profile was recorded');
 
