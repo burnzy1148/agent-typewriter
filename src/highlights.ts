@@ -345,8 +345,10 @@ export function baselines(
   clears: HighlightClears,
   heldBack?: { seq: number; paths: readonly string[] },
 ): Map<string, string> {
-  const base = new Map<string, string>();
-  const text = new Map<string, string>();
+  // Which change and side holds each text; read once at the end, so saved text is read once per file.
+  type TextOf = { e: ChangeEvent; side: 'before' | 'after' };
+  const base = new Map<string, TextOf>();
+  const text = new Map<string, TextOf>();
   // Clears in the order they take effect: before the first change at or after their seq.
   const early = heldBack && heldBack.seq === through ? heldBack.seq + 1 : undefined;
   const pending = clears.filter((c) => c.seq <= through || c.seq === early).sort((a, b) => a.seq - b.seq);
@@ -364,15 +366,17 @@ export function baselines(
     if (e.seq >= through) break;
     applyClears(e.seq);
     if (e.fromRelPath !== undefined) {
-      const carried = base.get(e.fromRelPath) ?? e.before;
+      const carried = base.get(e.fromRelPath) ?? { e, side: 'before' as const };
       base.delete(e.fromRelPath);
       text.delete(e.fromRelPath);
       base.set(e.relPath, carried);
     } else if (!base.has(e.relPath)) {
-      base.set(e.relPath, e.before);
+      base.set(e.relPath, { e, side: 'before' });
     }
-    text.set(e.relPath, e.after);
+    text.set(e.relPath, { e, side: 'after' });
   }
   applyClears(Infinity);
-  return base;
+  const out = new Map<string, string>();
+  for (const [relPath, { e, side }] of base) out.set(relPath, e[side]);
+  return out;
 }

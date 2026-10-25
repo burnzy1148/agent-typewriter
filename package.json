@@ -775,12 +775,18 @@
           "type": "number",
           "default": 500,
           "minimum": 10,
-          "description": "How many changes to keep in the buffer for replay. Oldest are dropped first."
+          "description": "How many changes to keep in the buffer for replay. Oldest are dropped first. The buffer also keeps at most historySizeMB of change text."
+        },
+        "agentTypewriter.historySizeMB": {
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "description": "Megabytes of change text (before and after text, a character counted as a byte) to keep in the buffer for replay. Oldest changes are dropped first, and the newest is always kept. With persistHistory on, this is also about what the saved history takes on disk."
         },
         "agentTypewriter.persistHistory": {
           "type": "boolean",
           "default": true,
-          "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Up to 64 MB of change text is kept, newest first. Turning this off deletes the saved history."
+          "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Saved change text is read back when it is needed rather than kept in memory. Turning this off deletes the saved history."
         },
         "agentTypewriter.ignoreOwnSaves": {
           "type": "boolean",

@@ -36,6 +36,7 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   gitBaselines: 'boolean',
   baselineBudgetMB: 'number',
   historyLimit: 'number',
+  historySizeMB: 'number',
   persistHistory: 'boolean',
   ignoreOwnSaves: 'boolean',
   ignoreGitOperations: 'boolean',

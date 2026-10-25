@@ -47,6 +47,8 @@ export interface Settings extends FilterSettings {
   /** Size budget for in-memory baselines. */
   baselineBudgetMB: number;
   historyLimit: number;
+  /** Megabytes of change text the buffer keeps, a character counted as a byte. */
+  historySizeMB: number;
   /** Keep the timeline in workspace storage across reloads. */
   persistHistory: boolean;
   ignoreOwnSaves: boolean;
@@ -122,6 +124,7 @@ export function readSettings(): Settings {
     gitBaselines: c.get('gitBaselines', true),
     baselineBudgetMB: num('baselineBudgetMB', 256, 0),
     historyLimit: num('historyLimit', 500, 10),
+    historySizeMB: num('historySizeMB', 64, 1),
     persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     ignoreGitOperations: c.get('ignoreGitOperations', true),

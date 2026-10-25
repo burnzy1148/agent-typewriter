@@ -1,3 +1,4 @@
+import { rebind, textChars } from './changeText';
 import type { HighlightClear, HighlightClears } from './highlights';
 
 export type ChangeKind = 'create' | 'modify' | 'delete' | 'rename';
@@ -15,7 +16,10 @@ export interface ChangeEvent {
   /** Epoch millis when the change was recorded. */
   time: number;
   kind: ChangeKind;
-  /** LF-normalized text; see eol for the real file's line ending. */
+  /**
+   * LF-normalized text; see eol for the real file's line ending. In the
+   * timeline these read through the change's text holder (see changeText.ts).
+   */
   before: string;
   after: string;
   /** The real file's line ending when this change was recorded. */
@@ -92,8 +96,14 @@ export class Timeline {
   droppedUnplayed = 0;
   /** Every Clear Highlights still in effect, oldest first. A later clear never replaces an earlier one, so undoing it brings the earlier back. */
   private clears: HighlightClear[] = [];
+  /** Characters of before and after text in the buffer. */
+  private chars = 0;
 
-  constructor(private limit: number) {}
+  /** At most `limit` changes and `maxChars` characters of their text; the newest change is always kept. */
+  constructor(
+    private limit: number,
+    private maxChars = Infinity,
+  ) {}
 
   setLimit(limit: number): void {
     this.limit = Math.max(1, Math.floor(limit));
@@ -101,8 +111,20 @@ export class Timeline {
     this.emit();
   }
 
+  setSizeLimit(maxChars: number): void {
+    this.maxChars = Math.max(1, Math.floor(maxChars));
+    this.trim();
+    this.emit();
+  }
+
+  /** Characters of before and after text in the buffer. */
+  get textChars(): number {
+    return this.chars;
+  }
+
   push(e: NewChangeEvent): ChangeEvent {
-    const event: ChangeEvent = { ...e, seq: this.nextSeq++ };
+    // The text the recorder captured, kept as it is now.
+    const event = rebind(e as ChangeEvent, { seq: this.nextSeq++ });
     if (event.lane === '') delete event.lane;
     const lane = laneOf(event);
     if (!this.cursors.has(lane)) this.cursors.set(lane, event.seq);
@@ -110,6 +132,7 @@ export class Timeline {
     // A followed lane that is not recording and has been played out gives way to new changes.
     else if (lane !== this.followedLane && this.playedOut()) this.followedLane = lane;
     this.events.push(event);
+    this.chars += textChars(event);
     this.trim();
     this.emit();
     return event;
@@ -298,6 +321,7 @@ export class Timeline {
 
   clear(): void {
     this.events = [];
+    this.chars = 0;
     this.cursors.clear();
     this.generation++;
     this.playingSeq = undefined;
@@ -345,14 +369,16 @@ export class Timeline {
    * `saved.cursors`, so played events stay played, and so do highlight
    * `clears`. A clear at or before the first kept event changes nothing, so it
    * is dropped. One made while the saved cursor's change was typed sits just
-   * past the cursor and is kept. The current limit applies, newest kept.
+   * past the cursor and is kept. The current limits apply, newest kept.
    * Lanes still recording keep their place; saved lanes are added as stopped.
+   * Each change keeps its text holder, so saved text is not read.
    */
   restore(events: readonly ChangeEvent[], cursor: number, clears?: HighlightClears, saved: LaneRestore = {}): void {
-    const kept = events.slice(Math.max(0, events.length - this.limit));
+    const kept = events.slice(events.length - newestFitting(events, this.limit, this.maxChars));
     const first = this.nextSeq;
     const map = (seq: number) => first + kept.filter((e) => e.seq < seq).length;
-    this.events = kept.map((e, i) => ({ ...e, seq: first + i }));
+    this.events = kept.map((e, i) => rebind(e, { seq: first + i }));
+    this.chars = this.events.reduce((n, e) => n + textChars(e), 0);
     this.nextSeq = first + kept.length;
     const recording = [...this.laneInfos.values()].filter((l) => l.recording);
     this.laneInfos = new Map(recording.map((l) => [l.id, l]));
@@ -448,28 +474,31 @@ export class Timeline {
    * Used to refill mirrors after a reload.
    */
   mirrorStates(): Map<string, { text: string; eol: ChangeEvent['eol'] }> {
-    const out = new Map<string, { text: string; eol: ChangeEvent['eol'] }>();
+    /** The change and side whose text each mirror shows; read once at the end, so saved text is read once per file. */
+    const shown = new Map<string, { e: ChangeEvent; side: 'before' | 'after' }>();
     /** Paths with no mirror at the cursor: renamed away, or not yet renamed to. */
     const absent = new Set<string>();
-    const decide = (relPath: string, text: string | undefined, eol: ChangeEvent['eol']) => {
-      if (out.has(relPath) || absent.has(relPath)) return;
-      if (text === undefined) absent.add(relPath);
-      else out.set(relPath, { text, eol });
+    const decide = (relPath: string, e: ChangeEvent | undefined) => {
+      if (shown.has(relPath) || absent.has(relPath)) return;
+      if (e === undefined) absent.add(relPath);
+      else shown.set(relPath, { e, side: 'before' });
     };
     for (const e of this.events) {
       const from = e.fromRelPath;
       if (e.seq < this.cursorOf(laneOf(e))) {
         if (from !== undefined) {
-          out.delete(from);
+          shown.delete(from);
           absent.add(from);
         }
-        out.set(e.relPath, { text: e.after, eol: e.eol });
+        shown.set(e.relPath, { e, side: 'after' });
         absent.delete(e.relPath);
       } else if (from !== undefined) {
-        decide(from, e.before, e.eol);
-        decide(e.relPath, undefined, e.eol);
-      } else decide(e.relPath, e.before, e.eol);
+        decide(from, e);
+        decide(e.relPath, undefined);
+      } else decide(e.relPath, e);
     }
+    const out = new Map<string, { text: string; eol: ChangeEvent['eol'] }>();
+    for (const [relPath, { e, side }] of shown) out.set(relPath, { text: e[side], eol: e.eol });
     return out;
   }
 
@@ -500,8 +529,12 @@ export class Timeline {
   }
 
   private trim(): void {
-    const overflow = this.events.length - this.limit;
+    let overflow = Math.max(0, this.events.length - this.limit);
+    let chars = this.chars;
+    for (let i = 0; i < overflow; i++) chars -= textChars(this.events[i]);
+    while (chars > this.maxChars && overflow < this.events.length - 1) chars -= textChars(this.events[overflow++]);
     if (overflow <= 0) return;
+    this.chars = chars;
     const dropped = this.events.splice(0, overflow);
     for (const e of dropped) {
       if (e.seq >= this.cursorOf(laneOf(e)) && e.seq !== this.playingSeq) this.droppedUnplayed++;
@@ -529,6 +562,41 @@ export class Timeline {
       }
     }
   }
+}
+
+/**
+ * How many of the newest `events` fit in `limit` changes and `maxChars`
+ * characters of text. At least one, when there are any.
+ */
+export function newestFitting(events: readonly ChangeEvent[], limit: number, maxChars: number): number {
+  let n = 0;
+  let chars = 0;
+  for (let i = events.length - 1; i >= 0 && n < limit; i--) {
+    chars += textChars(events[i]);
+    if (chars > maxChars && n > 0) break;
+    n++;
+  }
+  return n;
+}
+
+/** Characters the historySizeMB setting counts as one megabyte. */
+export const MB_CHARS = 1024 * 1024;
+
+/**
+ * How many of the newest `events` fit `historyLimit` and `historySizeMB`, and
+ * the smallest values of both that would fit every one of them.
+ */
+export function fitLimits(
+  events: readonly ChangeEvent[],
+  historyLimit: number,
+  historySizeMB: number,
+): { fits: number; historyLimit: number; historySizeMB: number } {
+  const chars = events.reduce((n, e) => n + textChars(e), 0);
+  return {
+    fits: newestFitting(events, historyLimit, historySizeMB * MB_CHARS),
+    historyLimit: Math.max(historyLimit, events.length),
+    historySizeMB: Math.max(historySizeMB, Math.ceil(chars / MB_CHARS)),
+  };
 }
 
 // ------------------------------------------------------------------ sessions
@@ -580,7 +648,7 @@ export function toSession(timeline: Timeline, maxTextChars = Infinity): { sessio
   let used = 0;
   while (start > 0) {
     const e = events[start - 1];
-    used += e.before.length + e.after.length;
+    used += textChars(e);
     if (used > maxTextChars) break;
     start--;
   }

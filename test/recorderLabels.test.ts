@@ -44,6 +44,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     gitBaselines: true,
     baselineBudgetMB: 256,
     historyLimit: 500,
+    historySizeMB: 64,
     persistHistory: false,
     ignoreOwnSaves: true,
     ignoreGitOperations: true,

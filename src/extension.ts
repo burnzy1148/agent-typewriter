@@ -18,11 +18,12 @@ import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
-import { Timeline, laneOf, sessionClears, sessionLanes, toSession, type LaneInfo } from './timeline';
+import { fitLimits, MB_CHARS, Timeline, laneOf, sessionClears, sessionLanes, toSession, type ChangeEvent, type LaneInfo } from './timeline';
 import { ChangeItem, laneName, TimelineView } from './timelineView';
 import { CheckoutRow, CheckoutsView, followingHeader, type FolderCheckoutsModel } from './checkoutsView';
 import { LaneDecorations } from './laneDecorations';
 import { AutoFollow } from './autoFollow';
+import { onTextReadError } from './changeText';
 import { FollowedMemory } from './followedMemory';
 import { MAX_LANES } from './lanes';
 
@@ -52,8 +53,9 @@ let finalSave: (() => void) | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<AgentTypewriterApi> {
   const log = vscode.window.createOutputChannel('Agent Typewriter');
+  onTextReadError((line) => log.appendLine(line));
   const repoFile = new RepoSettingsFile(log);
-  const timeline = new Timeline(readSettings().historyLimit);
+  const timeline = new Timeline(readSettings().historyLimit, readSettings().historySizeMB * MB_CHARS);
   const mirror = new MirrorFileSystem();
   // Without a folder there is no workspace storage; choices then last for the session.
   const choices: CheckoutChoices = context.storageUri
@@ -202,7 +204,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     checkoutsTree.description = followingHeader(timeline);
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
-      tree.message = `${lastDropped} queued change(s) were dropped because the buffer is full (historyLimit).`;
+      tree.message = `${lastDropped} queued change(s) were dropped because the buffer is full (historyLimit or historySizeMB).`;
     } else if (timeline.droppedUnplayed === 0) {
       lastDropped = 0;
       tree.message = undefined;
@@ -378,23 +380,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   });
 
   /**
-   * When `count` changes from `name` exceed historyLimit: interactively, lets
-   * the user raise the limit or keep the newest; otherwise warns that only the
-   * newest are kept. False when the user cancels.
+   * When the changes from `name` exceed historyLimit or historySizeMB:
+   * interactively, lets the user raise the limits or keep the newest that fit;
+   * otherwise warns that only those are kept. False when the user cancels.
    */
-  const fitHistoryLimit = async (count: number, name: string, interactive: boolean): Promise<boolean> => {
-    const limit = readSettings().historyLimit;
-    if (count <= limit) return true;
-    const raise = `Raise historyLimit to ${count}`;
+  const fitHistoryLimit = async (events: readonly ChangeEvent[], name: string, interactive: boolean): Promise<boolean> => {
+    const s = readSettings();
+    const need = fitLimits(events, s.historyLimit, s.historySizeMB);
+    if (need.fits === events.length) return true;
+    const raises = [
+      ...(need.historyLimit > s.historyLimit ? [{ key: 'historyLimit', from: s.historyLimit, to: need.historyLimit }] : []),
+      ...(need.historySizeMB > s.historySizeMB ? [{ key: 'historySizeMB', from: s.historySizeMB, to: need.historySizeMB }] : []),
+    ];
+    const raise = `Raise ${raises.map((r) => `${r.key} to ${r.to}`).join(' and ')}`;
+    const size = need.historySizeMB > s.historySizeMB ? ` (${need.historySizeMB} MB of text)` : '';
     const pick = interactive
-      ? await vscode.window.showWarningMessage(`${name} has ${count} changes but historyLimit is ${limit}.`, { modal: true }, raise, `Load newest ${limit}`)
+      ? await vscode.window.showWarningMessage(
+          `${name} has ${events.length} changes${size} but ${raises.map((r) => `${r.key} is ${r.from}`).join(' and ')}.`,
+          { modal: true },
+          raise,
+          `Load newest ${need.fits}`,
+        )
       : undefined;
     if (interactive && !pick) return false;
     if (pick === raise) {
-      await updateSetting('historyLimit', count);
-      timeline.setLimit(count);
+      for (const r of raises) await updateSetting(r.key, r.to);
+      timeline.setLimit(need.historyLimit);
+      timeline.setSizeLimit(need.historySizeMB * MB_CHARS);
     } else if (!interactive) {
-      vscode.window.showWarningMessage(`Agent Typewriter: loaded the newest ${limit} of ${count} changes (historyLimit).`);
+      vscode.window.showWarningMessage(`Agent Typewriter: loaded the newest ${need.fits} of ${events.length} changes (${raises.map((r) => r.key).join(', ')}).`);
     }
     return true;
   };
@@ -426,7 +440,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       );
       if (pick !== replace) return;
     }
-    if (!(await fitHistoryLimit(session.events.length, name, interactive))) return;
+    if (!(await fitHistoryLimit(session.events, name, interactive))) return;
     // Loaded sessions start paused at their first change; the user resumes when ready.
     player.setPaused(true);
     // Live edits would replay into the same mirrors as the loaded changes, from another starting text.
@@ -571,7 +585,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       );
       if (pick !== replayIt) return;
     }
-    if (!(await fitHistoryLimit(events.length, range, interactive))) return;
+    if (!(await fitHistoryLimit(events as ChangeEvent[], range, interactive))) return;
     // Paused before stopping: stopping adds held live changes, which must not start typing.
     player.setPaused(true);
     // Live edits would start from the disk, not from the replayed history.
@@ -901,6 +915,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
   const applySettingsChange = async (affects: (key: string) => boolean) => {
     if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
+    if (affects('historySizeMB')) timeline.setSizeLimit(readSettings().historySizeMB * MB_CHARS);
     if (affects('profiles') || affects('activeProfile')) noteUnknownProfile();
     if (affects('charsPerMinute') || affects('charsPerSecond')) noteDeprecatedSpeed();
     if (affects('readPauseSeconds') || affects('scrollPauseMs')) noteDeprecatedReadPause();
