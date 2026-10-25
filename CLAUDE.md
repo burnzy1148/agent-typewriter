@@ -7,6 +7,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `npm test`: unit tests plus a fuzz test of the planner.
 - `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
 - `npm run package`: builds the .vsix.
+- `npm run dev` / `npm run build` in `site/`: the docs site (separate npm project; run `npm install` there first).
 
 ## Architecture
 
@@ -19,6 +20,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `src/timelineView.ts`: tree view listing recorded changes and their played/playing/pending state.
 - `src/config.ts`: reads and updates the `agentTypewriter.*` settings.
 - `src/extension.ts`: activation; wires recorder, timeline, player, mirror filesystem, view, and commands together.
+- `site/`: the agent-typewriter.com docs site (Astro + Starlight), deployed to Firebase Hosting from `main` by `.github/workflows/site.yml`. Its settings page is generated from `package.json`.
 
 ## Rules that must not break
 
@@ -33,5 +35,5 @@ A VS Code extension that watches files change on disk and replays each change as
 - Each feature or behavior change is one OpenSpec change: explore, propose, apply, archive. The `/opsx:*` commands and `openspec-*` skills in `.claude/` drive each step. Fixes that do not change specified behavior need no change.
 - Implementation tasks live in the change's `tasks.md`.
 - Work lands through a PR to `develop`, the default branch, squash-merged. CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows. Archive the OpenSpec change on the PR branch before merging, once its tasks are done and CI is green, so the updated specs land on `develop` with the code.
-- `main` is the release branch. The Release workflow (`.github/workflows/release.yml`) promotes `develop` through a `release/v<version>` PR into `main`, merged with a merge commit, never squashed. The merge tags `main`, publishes, and opens a PR syncing `main` back into `develop`, also merged with a merge commit. Never commit to `main` directly.
+- `main` is the release branch. The Release workflow (`.github/workflows/release.yml`) first bumps the version through a `bump/v<version>` PR into `develop` and tags its merge `v<version>`, then promotes that tagged commit through a `release/v<version>` PR into `main`, merged with a merge commit, never squashed. The merge to `main` publishes the tag. No sync from `main` back into `develop` is needed. Never commit to `main` directly.
 - Maintainers may keep personal workflow notes (issue tracker, review automation) in `CLAUDE.local.md`, which is gitignored.

@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main, develop]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -12,8 +11,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A PR that changes only the site (site/ and site.yml) skips the extension's
+  # steps below. The test and package jobs still run and pass, so the required
+  # checks report under their usual names. Other events always run everything,
+  # and so does a missing output: the steps skip only on an explicit 'false'.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      extension: ${{ steps.classify.outputs.extension }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: classify
+        # A failure here leaves the output unset, which runs everything.
+        continue-on-error: true
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The PR merge commit's first parent is the base branch. --no-renames
+            # lists both sides of a rename, so a file moved into site/ still counts.
+            # -z gives exact, unquoted paths separated by NUL.
+            git diff -z --name-only --no-renames HEAD^1 HEAD | node scripts/ci-changes.mjs
+          else
+            echo "extension=true" | tee -a "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,58 +51,69 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
+        if: needs.changes.outputs.extension != 'false'
         with:
           node-version: 22
           cache: npm
 
       - run: npm ci
+        if: needs.changes.outputs.extension != 'false'
 
       - name: Typecheck
+        if: needs.changes.outputs.extension != 'false'
         run: npm run typecheck
 
       - name: Unit tests
+        if: needs.changes.outputs.extension != 'false'
         run: npm test
 
       - name: Cache VS Code test download
+        if: needs.changes.outputs.extension != 'false'
         uses: actions/cache@v6
         with:
           path: .vscode-test
           key: vscode-test-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Install xvfb
-        if: runner.os == 'Linux'
+        if: needs.changes.outputs.extension != 'false' && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Integration tests
+        if: needs.changes.outputs.extension != 'false'
         run: npm run it
 
   package:
     name: Package .vsix
-    needs: test
+    needs: [changes, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
+        if: needs.changes.outputs.extension != 'false'
         with:
           node-version: 22
           cache: npm
 
       - run: npm ci
+        if: needs.changes.outputs.extension != 'false'
 
       - name: Build .vsix
+        if: needs.changes.outputs.extension != 'false'
         run: npm run package
 
       - uses: actions/upload-artifact@v7
+        if: needs.changes.outputs.extension != 'false'
         with:
           name: agent-typewriter-vsix
           path: '*.vsix'
           if-no-files-found: error
 
   # A run on a tag like v0.1.0 publishes the tested .vsix to the Marketplace and
-  # attaches it to a GitHub release. release.yml starts that run after a release
-  # PR merges; pushing the tag by hand does the same. Needs the VSCE_PAT
-  # repository secret.
+  # attaches it to a GitHub release. Pushing a tag doesn't start one, since tags
+  # go on develop before the release reaches main: release.yml dispatches it
+  # after a release PR merges, or run `gh workflow run ci.yml --ref v<version>`.
+  # Needs the VSCE_PAT repository secret.
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')

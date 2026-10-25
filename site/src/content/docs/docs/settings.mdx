@@ -1,0 +1,26 @@
+---
+title: Settings
+description: Every Agent Typewriter setting, with its type, default and what it does.
+---
+
+import SettingsReference from '../../../components/SettingsReference.astro';
+
+Settings live under `agentTypewriter.*` in VS Code's settings. A repository can also set any of them for everyone who opens it with a [repository settings file](/docs/repository-settings/).
+
+**Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
+
+:::caution[Upgrading from before 0.3.0]
+Typing speeds are now in characters per minute. Multiply any `languageSpeeds` values you set before 0.3.0 by 60 to keep the same speed. The deprecated `charsPerSecond` is converted for you.
+:::
+
+## All settings
+
+This list is generated from the extension's manifest, so it always matches the version these docs describe.
+
+<SettingsReference />
+
+## A note on `ignoreOwnSaves`
+
+A save is skipped only when the file on disk holds exactly what your editor saved. If something else writes the file right after your save, as the Claude Code VS Code extension does when it saves your unsaved edits before applying its own, only that later write is replayed, starting from the text you saved.
+
+Claude Code in a terminal writes straight to disk, which is what this extension expects. If an agent instead edits VS Code's own editor buffers and then saves them, those saves look like yours and get skipped. Turn `ignoreOwnSaves` off in that case.

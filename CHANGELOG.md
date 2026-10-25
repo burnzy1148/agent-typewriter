@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Docs moved to [agent-typewriter.com](https://agent-typewriter.com), with search and a settings reference generated from the extension, and the Marketplace listing links there. The README keeps install and quick start.
 - Replay waits for a read pause before the view leaves what it just typed: before scrolling or jumping to an off-screen edit, and before switching to another file, while the old file is still in view (`readPauseSeconds`, default 1.5). Time already passed counts, so a change that arrives after an idle gap switches at once. Seeks, skips and catch up skip it; finish current ends it.
 - `fileSwitchDelayMs`, the pause on the new file before its first edit, now defaults to 1000 (was 600) and is capped at 15000.
 - `scrollPauseMs` is deprecated but still honored, divided by 1000, wherever `readPauseSeconds` is not set. The output channel says when it is in effect.
