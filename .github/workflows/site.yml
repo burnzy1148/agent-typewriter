@@ -4,7 +4,8 @@ name: Site
 #
 # - Every PR and push that touches the site builds it; broken internal links fail the build.
 # - PRs from branches in this repository get a preview channel, and the URL is posted on
-#   the PR. PRs from forks only build, since their runs cannot read secrets.
+#   the PR. PRs from forks and Dependabot PRs only build, since their runs cannot read
+#   secrets (and dependency updates should not reach the Firebase credentials).
 # - Production deploys from main only, so the site matches the released extension. Merging
 #   a release PR that touches the site deploys it; workflow_dispatch on main re-deploys.
 #
@@ -61,7 +62,10 @@ jobs:
   preview:
     name: Deploy preview
     needs: build
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -16,7 +16,7 @@
 ## 3. Hosting and deploy
 
 - [x] 3.1 Add `site/firebase.json` (`public: dist`, `cleanUrls`, `trailingSlash: true`, long cache on `/_astro/**`, short cache on HTML) and `site/.firebaserc` with default project `agent-typewriter-web`. Verify with `npx firebase-tools emulators:start --only hosting` from `site/` that `/docs/settings/` and `/docs/settings` both serve the page and an unknown path serves the 404 page
-- [x] 3.2 Add `.github/workflows/site.yml` with `build` (PR and push to `develop`/`main`, path-filtered, uploads `dist`), `preview` (same-repository PRs only, channel per PR, `expires: 7d`, posts the URL) and `deploy` (push to `main` and `workflow_dispatch` on `main`, `live` channel), using the `FIREBASE_SERVICE_ACCOUNT` secret. Verify on this change's PR that `build` passes and a preview URL is posted, and that `deploy` shows as skipped
+- [x] 3.2 Add `.github/workflows/site.yml` with `build` (PR and push to `develop`/`main`, path-filtered, uploads `dist`), `preview` (same-repository PRs only, except Dependabot, channel per PR, `expires: 7d`, posts the URL) and `deploy` (push to `main` and `workflow_dispatch` on `main`, `live` channel), using the `FIREBASE_SERVICE_ACCOUNT` secret. Verify on this change's PR that `build` passes and a preview URL is posted, and that `deploy` shows as skipped
 
 ## 4. CI shortcut for site-only PRs
 

@@ -61,7 +61,7 @@ Production SHALL be deployed from `main` only, after a release merges. Changes m
 - **THEN** the production site is rebuilt and deployed from that commit
 
 ### Requirement: Pull request previews
-A pull request from a branch in this repository that changes the site SHALL get a preview deployment, and its URL SHALL be posted on the pull request. A pull request from a fork SHALL get the build check only. Preview deployments SHALL expire on their own.
+A pull request from a branch in this repository that changes the site SHALL get a preview deployment, and its URL SHALL be posted on the pull request. A pull request from a fork, or one opened by Dependabot, SHALL get the build check only, because its runs cannot read the deploy secret. Preview deployments SHALL expire on their own.
 
 #### Scenario: Same-repository PR
 - **WHEN** a maintainer opens a PR from a branch in this repository that changes `site/`
@@ -69,6 +69,10 @@ A pull request from a branch in this repository that changes the site SHALL get 
 
 #### Scenario: Fork PR
 - **WHEN** a contributor opens a PR from a fork that changes `site/`
+- **THEN** the site build check runs and reports pass or fail, and no preview is deployed
+
+#### Scenario: Dependabot PR
+- **WHEN** Dependabot opens a PR that changes `site/package.json`, the root `package.json` or `.github/workflows/site.yml`
 - **THEN** the site build check runs and reports pass or fail, and no preview is deployed
 
 ### Requirement: Site changes are checked in CI
