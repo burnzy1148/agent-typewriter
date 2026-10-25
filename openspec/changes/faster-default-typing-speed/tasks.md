@@ -4,6 +4,7 @@
 
 - [x] 1.1 Set `DEFAULT_CHARS_PER_MINUTE` in `src/pace.ts` to 1000, and the `charsPerMinute` default in `package.json` and `schemas/agent-typewriter.schema.json` to 1000; verify `npm test`
 - [x] 1.2 Change the `languageSpeeds` description example in `package.json` and `schemas/agent-typewriter.schema.json` to `{ "markdown": 1500, "json": 1200 }`
+- [x] 1.3 Add a unit test that the `package.json` and schema `charsPerMinute` defaults equal `DEFAULT_CHARS_PER_MINUTE`
 
 ## 2. Tests
 
@@ -12,4 +13,4 @@
 
 ## 3. Docs
 
-- [x] 3.1 Update the `charsPerMinute` value in the site repository-settings example, and add a CHANGELOG entry under Unreleased
+- [x] 3.1 Use a non-default `charsPerMinute` (600) in the site repository-settings example, and add a CHANGELOG entry under Unreleased

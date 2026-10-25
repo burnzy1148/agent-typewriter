@@ -21,7 +21,7 @@ None.
 
 - `src/pace.ts`: `DEFAULT_CHARS_PER_MINUTE`.
 - `package.json` and `schemas/agent-typewriter.schema.json`: the `charsPerMinute` default and the `languageSpeeds` example.
-- The site docs: the repository settings example. The settings reference is generated from `package.json`.
+- The site docs: the repository settings example uses a non-default speed. The settings reference is generated from `package.json`.
 - `test/pace.test.ts`, `test/repoSettings.test.ts` and `it/suite.ts`: the expected default and example values.
 - CHANGELOG.
 - Bead `at-mfk.6`.
