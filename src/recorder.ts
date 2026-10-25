@@ -1843,7 +1843,7 @@ export class Recorder implements vscode.Disposable {
         // Its `.git` may just not be gone yet: wait until deletes there stop.
         if (!isDir && previous !== undefined) {
           this.snapshots.delete(key);
-          const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, undefined, s.reorderWindowMs + 1000);
+          const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, await removedAt(uri, scope?.root));
           try {
             if (dropped()) return;
             if (git.op) return this.skipGitWrite(git.op, scope, uri, relPath, false);
@@ -1861,7 +1861,7 @@ export class Recorder implements vscode.Disposable {
       if (previous !== undefined) {
         this.snapshots.delete(key);
         // Keyed by its own delete event: earlier writes in the burst were before it.
-        const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, undefined, s.reorderWindowMs + 1000);
+        const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, await removedAt(uri, scope?.root));
         try {
           if (dropped()) return;
           if (scope && git.op) return this.skipGitWrite(git.op, scope, uri, relPath, false);
@@ -2014,16 +2014,16 @@ export class Recorder implements vscode.Disposable {
    * for one in progress to settle. Only while it has to wait are later
    * changes held back, so this one keeps its place at `writtenAt`; an answer
    * from a stat alone holds nothing. End the verdict once the change is
-   * recorded or skipped. `at` is the file's own mtime, unclamped, since
-   * git's span is on the filesystem's clock; a delete has none, so it passes
-   * when its watcher event came and `lateMs` for how late that may be.
+   * recorded or skipped. `at` is when the filesystem says the write
+   * happened, unclamped, since git's span is on the filesystem's clock: the
+   * file's mtime, or for a delete the mtime of the directory it left.
    */
-  private async gitVerdict(scope: Scope | undefined, uri: vscode.Uri, writtenAt: number, exists: boolean, at = writtenAt, lateMs = 0): Promise<GitVerdict> {
+  private async gitVerdict(scope: Scope | undefined, uri: vscode.Uri, writtenAt: number, exists: boolean, at = writtenAt): Promise<GitVerdict> {
     const watch = scope && this.settings().ignoreGitOperations ? this.gitWatches.get(scope.key) : undefined;
     if (!scope || !watch) return { key: () => writtenAt, end: () => {} };
     let hold: OrderHold | undefined;
     try {
-      const op = await watch.classify(this.relOf(scope, uri), at, exists, lateMs, () => (hold = this.reorder.hold(writtenAt, GIT_HOLD_MAX_MS)));
+      const op = await watch.classify(this.relOf(scope, uri), at, exists, () => (hold = this.reorder.hold(writtenAt, GIT_HOLD_MAX_MS)));
       if (watch.failure) this.noteGitOpsOff(watch.failure);
       this.noteGitProblem(watch, scope);
       return { op, key: () => hold?.key() ?? writtenAt, end: () => hold?.end() };
@@ -2444,6 +2444,23 @@ export interface FolderCheckouts {
 }
 
 /** One checkout a workspace folder records: one lane. */
+/**
+ * When the filesystem says a file was removed: the mtime of the nearest
+ * directory above it that still exists, which the removal stamped (git
+ * removes a directory it emptied). Undefined when none can be read up to `root`.
+ */
+async function removedAt(uri: vscode.Uri, root: vscode.Uri | undefined): Promise<number | undefined> {
+  let dir = path.dirname(uri.fsPath);
+  const top = root?.fsPath;
+  for (;;) {
+    const st = await fs.promises.stat(dir).catch(() => undefined);
+    if (st) return st.mtimeMs;
+    const up = path.dirname(dir);
+    if (up === dir || (top !== undefined && !up.startsWith(top))) return undefined;
+    dir = up;
+  }
+}
+
 /** A recorded checkout as the output channel names it: the folder, with the checkout for a chosen worktree. */
 function laneName(scope: Scope): string {
   return scope.own ? scope.folder.name : `${scope.folder.name} (${scope.name})`;

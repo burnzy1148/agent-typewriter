@@ -9,10 +9,13 @@ import {
   DEFAULT_TIMING,
   digestIndex,
   findGitWrite,
+  discardsConflicts,
+  dropResolutions,
   GitOperationWatch,
   groupEntries,
   operationLabel,
   reflogLabel,
+  reflogLabels,
   writesNoFiles,
   stashChange,
   type GitOperation,
@@ -60,7 +63,7 @@ test('buildOperation: clean, dirty, unmerged, removed and popped paths', () => {
 });
 
 test('findGitWrite: span edges and whether the file exists', () => {
-  const op: GitOperation = { label: 'checkout', from: 100, to: 200, present: new Set(['a.ts']), absent: new Set(['b.ts']), blobs: new Map(), blobAt: new Map(), skipped: 0 };
+  const op: GitOperation = { label: 'checkout', from: 100, to: 200, touched: new Set(['a.ts', 'b.ts']), present: new Set(['a.ts']), absent: new Set(['b.ts']), blobs: new Map(), blobAt: new Map(), skipped: 0 };
   assert.equal(findGitWrite([op], 'a.ts', 100, true), op);
   assert.equal(findGitWrite([op], 'a.ts', 200, true), op);
   assert.equal(findGitWrite([op], 'a.ts', 99, true), undefined);
@@ -71,7 +74,7 @@ test('findGitWrite: span edges and whether the file exists', () => {
 });
 
 test('findGitWrite: a blob made after the write was taken in by git, not written by it', () => {
-  const op: GitOperation = { label: 'commit', from: 100, to: 200, present: new Set(['a.ts', 'b.ts']), absent: new Set(), blobs: new Map(), blobAt: new Map([['a.ts', 160], ['b.ts', 120]]), skipped: 0 };
+  const op: GitOperation = { label: 'commit', from: 100, to: 200, touched: new Set(['a.ts', 'b.ts']), present: new Set(['a.ts', 'b.ts']), absent: new Set(), blobs: new Map(), blobAt: new Map([['a.ts', 160], ['b.ts', 120]]), skipped: 0 };
   assert.equal(findGitWrite([op], 'a.ts', 150, true), undefined);
   assert.equal(findGitWrite([op], 'a.ts', 160, true), op);
   assert.equal(findGitWrite([op], 'b.ts', 150, true), op);
@@ -87,12 +90,34 @@ test('operationLabel: a state file that appeared, else the reflog only when it m
     lock: false,
     mtimes: new Map(Object.entries(m)),
     goneAt: new Map(Object.entries(gone)),
+    reflogSize: undefined,
   });
-  const tail = `${SHA_A} ${SHA_B} T <t@e> 1700000000 +0000\tcommit: earlier\n`;
-  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, MERGE_HEAD: 2 }), tail), 'merge');
-  assert.equal(operationLabel(look({}), look({ 'rebase-merge': 2, 'logs/HEAD': 3 }), tail), 'rebase');
-  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 2 }), tail), 'commit');
-  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, ORIG_HEAD: 2 }), tail), 'git operation');
+  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, MERGE_HEAD: 2 }), []), 'merge');
+  assert.equal(operationLabel(look({}), look({ 'rebase-merge': 2, 'logs/HEAD': 3 }), ['rebase (start)']), 'rebase');
+  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 2 }), ['checkout', 'commit']), 'commit');
+  assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, ORIG_HEAD: 2 }), []), 'git operation');
+});
+
+test('reflogLabels: every line, oldest first; partial and empty lines skipped', () => {
+  const line = (msg: string) => `${SHA_A} ${SHA_B} T <t@e> 1700000000 +0000\t${msg}\n`;
+  assert.deepEqual(reflogLabels(line('checkout: moving from a to b') + line('commit: x') + 'trunc'), ['checkout', 'commit']);
+  assert.deepEqual(reflogLabels(''), []);
+});
+
+test('discardsConflicts: aborts and resets, not continues', () => {
+  for (const l of ['reset', 'checkout', 'rebase (abort)']) assert.ok(discardsConflicts(l), l);
+  for (const l of ['rebase (continue)', 'rebase (finish)', 'cherry-pick', 'commit (merge)', 'merge feature']) assert.ok(!discardsConflicts(l), l);
+});
+
+test('dropResolutions: a conflict settled since the last look is not a candidate, unless git threw it away', () => {
+  const before = digestIndex(index(`100644 ${SHA_A} 1\tr.ts\n100644 ${SHA_B} 2\tr.ts\n100644 ${SHA_A} 0\to.ts\n100644 ${SHA_A} 1\tstill.ts\n100644 ${SHA_B} 3\tstill.ts`));
+  const after = digestIndex(index(`100644 ${SHA_B} 0\tr.ts\n100644 ${SHA_C} 0\to.ts\n100644 ${SHA_A} 1\tstill.ts\n100644 ${SHA_C} 3\tstill.ts`));
+  const kept = new Set(['r.ts', 'o.ts', 'still.ts']);
+  dropResolutions(kept, before, after, ['cherry-pick']);
+  assert.deepEqual([...kept].sort(), ['o.ts', 'still.ts']);
+  const aborted = new Set(['r.ts', 'o.ts']);
+  dropResolutions(aborted, before, after, ['reset']);
+  assert.deepEqual([...aborted].sort(), ['o.ts', 'r.ts']);
 });
 
 test('writesNoFiles: commits of every kind, nothing else', () => {
@@ -127,6 +152,7 @@ test('changeSpan: earliest and latest changed marker, ignoring unchanged and rem
     lock: false,
     mtimes: new Map(Object.entries(m)),
     goneAt: new Map(Object.entries(gone)),
+    reflogSize: undefined,
   });
   assert.deepEqual(changeSpan(look({ HEAD: 5, ORIG_HEAD: 1 }), look({ HEAD: 9, ORIG_HEAD: 1, MERGE_HEAD: 7 })), { earliest: 7, latest: 9 });
   assert.deepEqual(changeSpan(look({ MERGE_HEAD: 3 }), look({})), { earliest: undefined, latest: undefined });
@@ -161,13 +187,11 @@ async function watchOf(root: string, run: GitRunner = execGit): Promise<GitOpera
   return w;
 }
 
-/** How late a delete's watcher event may come after git's last marker, as the recorder allows with a 250 ms reorder window. */
-const DELETE_LATE_MS = 1250;
-
-/** Classifies the file's current state the way the recorder would: its mtime, or now and some lateness for a delete. */
+/** Classifies the file's current state the way the recorder would: its mtime, or for a delete its directory's. */
 async function gits(w: GitOperationWatch, rel: string): Promise<string | undefined> {
-  const st = fs.statSync(path.join(w.root, rel), { throwIfNoEntry: false });
-  return (await w.classify(rel, st?.mtimeMs ?? Date.now(), st !== undefined, st ? 0 : DELETE_LATE_MS))?.label;
+  const file = path.join(w.root, rel);
+  const st = fs.statSync(file, { throwIfNoEntry: false });
+  return (await w.classify(rel, (st ?? fs.statSync(path.dirname(file))).mtimeMs, st !== undefined))?.label;
 }
 
 test('watch: a fast-forward merge is git; an edit of an untouched file during it is not', { skip: noGit }, async () => {
@@ -419,6 +443,90 @@ test('watch: a failing refresh leaves writes unclaimed and does not run git agai
   assert.equal(await gits(w, 'c.ts'), undefined);
   assert.equal(calls, after);
   assert.equal(w.failure, undefined);
+});
+
+/** featureRepo with every object packed, as after a clone or gc, and a conflicting change to `a.ts` on main. */
+function packedConflictRepo(): string {
+  const repo = conflictRepo();
+  git(repo, 'gc', '-q');
+  return repo;
+}
+
+test('watch: with packed objects, a side chosen and continued after a conflict stays the agent\'s', { skip: noGit }, async () => {
+  const repo = packedConflictRepo();
+  const w = await watchOf(repo);
+  assert.throws(() => git(repo, 'cherry-pick', 'feature'));
+  assert.equal(await gits(w, 'a.ts'), 'cherry-pick');
+  await new Promise((r) => setTimeout(r, 120));
+  git(repo, 'checkout', '--theirs', 'a.ts');
+  git(repo, 'add', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'cherry-pick', '--continue');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: with packed objects, merge --abort still restores files as git', { skip: noGit }, async () => {
+  const repo = packedConflictRepo();
+  const w = await watchOf(repo);
+  assert.throws(() => git(repo, 'merge', '-q', 'feature'));
+  await gits(w, 'a.ts');
+  git(repo, 'merge', '--abort');
+  assert.ok(await gits(w, 'a.ts'));
+});
+
+test('watch: a squash merge and its commit in one go are git; the label is the last entry', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  git(repo, 'merge', '-q', '--squash', 'feature');
+  git(repo, 'commit', '-qm', 'squash');
+  assert.equal(await gits(w, 'a.ts'), 'commit');
+  assert.equal(await gits(w, 'c.ts'), 'commit');
+});
+
+test('watch: deleting a file a stash pop just restored is not git', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  write(repo, 'u.ts', 'untracked\n');
+  git(repo, 'stash', 'push', '-u', '-q');
+  await gits(w, 'u.ts');
+  git(repo, 'stash', 'pop', '-q');
+  assert.equal(await gits(w, 'u.ts'), 'stash pop');
+  fs.rmSync(path.join(repo, 'u.ts'));
+  assert.equal(await gits(w, 'u.ts'), undefined);
+});
+
+test('watch: a file reset out of the index but left on disk, then deleted, is not git', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  write(repo, 'n.ts', 'new\n');
+  git(repo, 'add', 'n.ts');
+  git(repo, 'commit', '-qm', 'n');
+  const w = await watchOf(repo);
+  git(repo, 'reset', '-q', 'HEAD~1');
+  await new Promise((r) => setTimeout(r, 120));
+  fs.rmSync(path.join(repo, 'n.ts'));
+  assert.equal(await gits(w, 'n.ts'), undefined);
+});
+
+const reftable = (() => {
+  if (noGit) return noGit;
+  try {
+    git(tempDir('at-rt-probe-'), 'init', '-q', '--ref-format=reftable');
+    return undefined;
+  } catch {
+    return 'git has no reftable support';
+  }
+})();
+
+test('watch: in a reftable repository a removal then a commit is not git', { skip: reftable }, async () => {
+  const repo = tempDir('at-rt-');
+  git(repo, 'init', '-q', '-b', 'main', '--ref-format=reftable');
+  write(repo, 'a.ts', 'a\n');
+  write(repo, 'b.ts', 'b\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'one');
+  const w = await watchOf(repo);
+  git(repo, 'rm', '-q', 'a.ts');
+  git(repo, 'commit', '-qm', 'rm');
+  assert.equal(await gits(w, 'a.ts'), undefined);
 });
 
 test('watch: a folder outside git is not a repository', { skip: noGit }, async () => {

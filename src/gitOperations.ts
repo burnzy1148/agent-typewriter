@@ -128,6 +128,8 @@ export interface GitOperation {
   from: number;
   /** Writes after this are not the operation's. */
   to: number;
+  /** Every path the operation changed in the index or took from the stash, vouched for or not. */
+  touched: Set<string>;
   /** Paths whose write is git's when the file exists afterwards. */
   present: Set<string>;
   /** Paths whose write is git's when the file is gone afterwards. */
@@ -169,6 +171,7 @@ export function buildOperation(input: OperationInput): GitOperation {
     label: input.label,
     from: input.from,
     to: input.to,
+    touched: new Set([...input.candidates, ...(input.popped ?? [])]),
     present: new Set(),
     absent: new Set(),
     blobs: new Map(),
@@ -193,15 +196,17 @@ export function buildOperation(input: OperationInput): GitOperation {
 
 /**
  * The operation that made a write to `path` at `writtenAt`, leaving it
- * existing or not, if any did. `ops` are oldest first; spans can overlap
- * (a pop right after a push), so the newest that fits wins. `lateMs`
- * stretches the span's end, for a delete timed by when the watcher reported it.
+ * existing or not, if any did. `ops` are oldest first, and spans can
+ * overlap (a pop right after a push, or an edit committed right after an
+ * operation), so the newest operation whose span holds the write and that
+ * touched the path decides; an older one never claims what it declined.
  */
-export function findGitWrite(ops: readonly GitOperation[], path: string, writtenAt: number, exists: boolean, lateMs = 0): GitOperation | undefined {
+export function findGitWrite(ops: readonly GitOperation[], path: string, writtenAt: number, exists: boolean): GitOperation | undefined {
   for (let i = ops.length - 1; i >= 0; i--) {
     const op = ops[i];
-    if (writtenAt < op.from || writtenAt > op.to + lateMs || !(exists ? op.present : op.absent).has(path)) continue;
-    if (exists && (op.blobAt.get(path) ?? -Infinity) > writtenAt) continue;
+    if (writtenAt < op.from || writtenAt > op.to || !op.touched.has(path)) continue;
+    if (!(exists ? op.present : op.absent).has(path)) return undefined;
+    if (exists && (op.blobAt.get(path) ?? -Infinity) > writtenAt) return undefined;
     return op;
   }
   return undefined;
@@ -227,6 +232,8 @@ export interface MarkerLook {
    * thing an operation does (a pop drops `refs/stash` after restoring files).
    */
   goneAt: Map<string, number>;
+  /** Size of `logs/HEAD`, undefined without one (reftable, or reflogs off), so new entries can be read alone. */
+  reflogSize: number | undefined;
 }
 
 /**
@@ -262,15 +269,19 @@ export function stashChange(before: readonly string[], after: readonly string[])
   return {};
 }
 
+/** The operation that stopped between two looks, named by the state file it left; undefined when none appeared. */
+export function stoppedLabel(before: MarkerLook, after: MarkerLook): string | undefined {
+  for (const [marker, label] of STATE_LABELS) if (after.mtimes.has(marker) && !before.mtimes.has(marker)) return label;
+  return undefined;
+}
+
 /**
  * What git did between two looks: an operation that stopped names itself by
- * the state file it left, anything else by its reflog line, which is only
- * read when the reflog changed (a stopped merge writes none).
+ * the state file it left (a stopped merge writes no reflog entry), anything
+ * else by the newest of the reflog entries added since.
  */
-export function operationLabel(before: MarkerLook, after: MarkerLook, reflogTail: string): string {
-  for (const [marker, label] of STATE_LABELS) if (after.mtimes.has(marker) && !before.mtimes.has(marker)) return label;
-  const reflogMoved = after.mtimes.get('logs/HEAD') !== before.mtimes.get('logs/HEAD');
-  return (reflogMoved && reflogLabel(reflogTail)) || 'git operation';
+export function operationLabel(before: MarkerLook, after: MarkerLook, newEntries: readonly string[]): string {
+  return stoppedLabel(before, after) ?? newEntries.at(-1) ?? 'git operation';
 }
 
 /** A commit, amend or merge commit only records what is staged; it writes no working-tree files. */
@@ -278,13 +289,47 @@ export function writesNoFiles(label: string): boolean {
   return /^commit\b/.test(label);
 }
 
-/** What the last reflog line says git did, up to its first colon: `merge f`, `checkout`, `pull`, `reset`. */
-export function reflogLabel(tail: string): string | undefined {
-  const line = tail.split('\n').filter(Boolean).at(-1);
-  const message = line?.slice(line.indexOf('\t') + 1);
-  if (!message || message === line) return undefined;
+/** An entry that throws a stopped operation's conflicts away and has git rewrite the conflicted files. */
+export function discardsConflicts(label: string): boolean {
+  return /^(reset|checkout)\b|^rebase \(abort\)/.test(label);
+}
+
+/** The label of a reflog message: up to its first colon, as `merge f`, `checkout`, `pull`, `reset`. */
+export function messageLabel(message: string): string | undefined {
   const colon = message.indexOf(':');
   return (colon === -1 ? message : message.slice(0, colon)).trim() || undefined;
+}
+
+/** The labels of the reflog lines in `text`, oldest first; a partial first line is skipped by the caller. */
+export function reflogLabels(text: string): string[] {
+  const labels: string[] = [];
+  for (const line of text.split('\n')) {
+    const tab = line.indexOf('\t');
+    const label = tab === -1 ? undefined : messageLabel(line.slice(tab + 1));
+    if (label) labels.push(label);
+  }
+  return labels;
+}
+
+/** What the last reflog line says git did, up to its first colon: `merge f`, `checkout`, `pull`, `reset`. */
+export function reflogLabel(tail: string): string | undefined {
+  return reflogLabels(tail).at(-1);
+}
+
+/** True when an index digest holds conflict stages. */
+function unmerged(digest: string | undefined): boolean {
+  return digest !== undefined && digest.split(' ').some((part) => part[0] !== '0');
+}
+
+/**
+ * Leaves out of an operation's candidates the conflicts that were resolved
+ * since the previous look: a path conflicted then and not now was settled
+ * by whoever wrote it (an agent's `git add`, then `--continue` or a commit),
+ * unless the operation threw the conflicts away and git rewrote the files.
+ */
+export function dropResolutions(candidates: Set<string>, before: IndexDigest, after: IndexDigest, newEntries: readonly string[]): void {
+  if (newEntries.some(discardsConflicts)) return;
+  for (const path of [...candidates]) if (unmerged(before.get(path)) && !unmerged(after.get(path))) candidates.delete(path);
 }
 
 export type WatchStatus = 'ok' | 'not-repo' | 'unavailable';
@@ -340,17 +385,18 @@ export class GitOperationWatch {
   /**
    * The operation that made this write, after waiting for any operation in
    * progress to settle; undefined when it is not git's or git cannot tell.
-   * `writtenAt` is the file's mtime, `exists` whether the file is there now,
-   * and `lateMs` how much later than git's last marker `writtenAt` may be.
-   * `onWait` hears, once, that the answer will take a wait or a git call.
+   * `writtenAt` is the file's mtime, or for a removed file the mtime of the
+   * directory it was in, which the removal stamped; `exists` is whether the
+   * file is there now. `onWait` hears, once, that the answer will take a wait
+   * or a git call.
    */
-  async classify(path: string, writtenAt: number, exists: boolean, lateMs = 0, onWait?: () => void): Promise<GitOperation | undefined> {
+  async classify(path: string, writtenAt: number, exists: boolean, onWait?: () => void): Promise<GitOperation | undefined> {
     if ((await this.ready) !== 'ok' || this.disposed) return undefined;
     await this.settle(onWait);
     if (!this.state) return undefined;
     const cutoff = this.clock.now() - this.timing.retainMs;
     this.ops = this.ops.filter((op) => op.to >= cutoff);
-    return findGitWrite(this.ops, path, writtenAt, exists, lateMs);
+    return findGitWrite(this.ops, path, writtenAt, exists);
   }
 
   private async init(): Promise<WatchStatus> {
@@ -437,15 +483,16 @@ export class GitOperationWatch {
       look = await this.look(true);
       if (look.markers === prev.look.markers) return;
       const stashMoved = look.stash !== prev.look.stash;
-      const [byPath, dirtyOut, stash, labelTail] = await Promise.all([
+      const [byPath, dirtyOut, stash, entries] = await Promise.all([
         this.readIndex(),
         this.run(['diff', '--name-only', '--relative', '-z'], this.root),
         stashMoved ? this.readStash() : Promise.resolve(prev.stash),
-        this.reflogTail(),
+        this.newReflogEntries(prev.look, look),
       ]);
       if (this.disposed || this.state !== prev) return;
       const index = digestIndex(byPath);
       const candidates = changedPaths(prev.index, index);
+      dropResolutions(candidates, prev.index, index, entries);
       // The stash is shared by every worktree; a push or pop writes the index of the one it ran in.
       const { pushed, popped } = stashMoved && look.index !== prev.look.index ? stashChange(prev.stash, stash) : {};
       if (pushed) for (const p of await this.stashPaths(pushed)) candidates.add(p);
@@ -455,7 +502,11 @@ export class GitOperationWatch {
       const span = changeSpan(prev.look, look);
       const start = Math.min(this.lockSeenAt ?? Infinity, span.earliest ?? now) - this.timing.leadMs;
       const end = Math.max(span.latest ?? 0, look.index !== prev.look.index ? look.indexMtime : 0) || now;
-      const label = pushed ? 'stash push' : popped ? 'stash pop' : operationLabel(prev.look, look, labelTail);
+      const label = pushed ? 'stash push' : popped ? 'stash pop' : operationLabel(prev.look, look, entries);
+      // Commits alone write no files: what they took in stays the agent's. Files they
+      // keep are already guarded by blob age (a squash merge before the commit wrote
+      // those); a removal has no such guard, so none is git's.
+      const commitsOnly = !pushed && !popped && !stoppedLabel(prev.look, look) && entries.length > 0 && entries.every(writesNoFiles);
       const op = buildOperation({
         label,
         from: Math.max(prev.takenAt, start) - this.timing.skewMs,
@@ -465,7 +516,10 @@ export class GitOperationWatch {
         dirty: new Set(dirtyOut.toString('utf8').split('\0').filter(Boolean)),
         popped: poppedPaths,
       });
-      if (!writesNoFiles(label) && (op.present.size > 0 || op.absent.size > 0)) {
+      if (commitsOnly) op.absent.clear();
+      await this.keepGone(op);
+      if (this.disposed || this.state !== prev) return;
+      if (op.present.size > 0 || op.absent.size > 0) {
         await this.stampBlobs(op);
         if (this.disposed || this.state !== prev) return;
         this.ops.push(op);
@@ -479,6 +533,18 @@ export class GitOperationWatch {
       this.problem = String((err as Error).message ?? err);
       this.state = { ...prev, look };
       this.lockSeenAt = undefined;
+    }
+  }
+
+  /** Keeps in `op.absent` only the paths that are gone now: git leaves a popped or unstaged file on disk. */
+  private async keepGone(op: GitOperation): Promise<void> {
+    const paths = [...op.absent];
+    for (let i = 0; i < paths.length; i += 256) {
+      await Promise.all(
+        paths.slice(i, i + 256).map(async (p) => {
+          if (await statOf(nodePath.join(this.root, p))) op.absent.delete(p);
+        }),
+      );
     }
   }
 
@@ -512,17 +578,33 @@ export class GitOperationWatch {
     return [...changed.toString('utf8').split('\0'), ...untracked.toString('utf8').split('\0')].filter(Boolean);
   }
 
-  /** The last few KB of `logs/HEAD`, or '' without a reflog. */
-  private async reflogTail(): Promise<string> {
-    const file = nodePath.join(this.gitDir, 'logs', 'HEAD');
-    const handle = await fsp.open(file, 'r').catch(() => undefined);
-    if (!handle) return '';
+  /**
+   * Labels of the HEAD reflog entries added between two looks, oldest first.
+   * `logs/HEAD` only grows, so they are the bytes past its old size; when it
+   * shrank (expired), only its newest entry. Without the file (reftable, or
+   * reflogs off) git is asked for the newest entry.
+   */
+  private async newReflogEntries(before: MarkerLook, after: MarkerLook): Promise<string[]> {
+    if (after.reflogSize === undefined) {
+      const out = await this.run(['reflog', 'show', '-n', '1', '--format=%gs', 'HEAD'], this.root).catch(() => Buffer.alloc(0));
+      const label = messageLabel(out.toString('utf8').trim());
+      return label ? [label] : [];
+    }
+    if (after.mtimes.get('logs/HEAD') === before.mtimes.get('logs/HEAD') && after.reflogSize === before.reflogSize) return [];
+    const grew = before.reflogSize !== undefined && after.reflogSize >= before.reflogSize;
+    const start = grew ? before.reflogSize! : Math.max(0, after.reflogSize - 4096);
+    // A burst of operations adds a few lines; more than this keeps the newest.
+    const length = Math.min(after.reflogSize - start, 256 * 1024);
+    const handle = await fsp.open(nodePath.join(this.gitDir, 'logs', 'HEAD'), 'r').catch(() => undefined);
+    if (!handle) return [];
     try {
-      const { size } = await handle.stat();
-      const length = Math.min(size, 4096);
       const buf = Buffer.alloc(length);
-      await handle.read(buf, 0, length, size - length);
-      return buf.toString('utf8');
+      await handle.read(buf, 0, length, after.reflogSize - length);
+      let text = buf.toString('utf8');
+      // Starting mid-line (a cap, or a shrunk file): drop the partial first line.
+      if (!grew || after.reflogSize - length !== start) text = text.slice(text.indexOf('\n') + 1);
+      const labels = reflogLabels(text);
+      return grew ? labels : labels.slice(-1);
     } finally {
       await handle.close();
     }
@@ -576,8 +658,10 @@ export class GitOperationWatch {
     const mtimes = new Map<string, number>();
     const markers: string[] = [];
     const stash: string[] = [];
+    let reflogSize: number | undefined;
     names.forEach(([name], i) => {
       const s = stats[i];
+      if (name === 'logs/HEAD') reflogSize = s?.size;
       const fp = s ? `${name}:${s.mtimeMs}:${s.size}` : `${name}:-`;
       markers.push(fp);
       if (STASH_MARKERS.has(name)) stash.push(fp);
@@ -592,6 +676,7 @@ export class GitOperationWatch {
       lock: lock !== undefined,
       mtimes,
       goneAt,
+      reflogSize,
     };
   }
 }
