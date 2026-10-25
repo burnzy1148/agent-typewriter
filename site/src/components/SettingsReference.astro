@@ -1,0 +1,145 @@
+---
+// Lists every setting the extension contributes, read from its package.json at
+// build time, so the docs cannot miss a setting or show a stale default.
+import pkg from '../../../package.json';
+
+const PREFIX = 'agentTypewriter.';
+
+type Setting = {
+  type?: string | string[];
+  default?: unknown;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  description?: string;
+  markdownDescription?: string;
+  deprecationMessage?: string;
+  markdownDeprecationMessage?: string;
+};
+
+const properties = pkg.contributes.configuration.properties as Record<string, Setting>;
+
+const escape = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const anchor = (name: string) => name.slice(PREFIX.length);
+
+// The manifest's Markdown descriptions use only code spans, bold and VS Code's
+// #setting.id# links, so a full Markdown renderer is not needed.
+function inline(md: string): string {
+  return md
+    .split(/(`[^`]*`)/)
+    .map((part) => {
+      if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
+        return `<code>${escape(part.slice(1, -1))}</code>`;
+      }
+      return escape(part)
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/#(agentTypewriter\.\w+)#/g, (_, id) => `<a href="#${anchor(id)}"><code>${anchor(id)}</code></a>`);
+    })
+    .join('')
+    .replace(/<code>#(agentTypewriter\.\w+)#<\/code>/g, (_, id) => `<a href="#${anchor(id)}"><code>${anchor(id)}</code></a>`);
+}
+
+const show = (v: unknown) => JSON.stringify(v);
+
+const settings = Object.entries(properties).map(([name, s]) => {
+  const type = Array.isArray(s.type) ? s.type.join(' or ') : (s.type ?? '');
+  const range =
+    s.minimum !== undefined && s.maximum !== undefined
+      ? `${s.minimum} to ${s.maximum}`
+      : s.minimum !== undefined
+        ? `at least ${s.minimum}`
+        : s.maximum !== undefined
+          ? `at most ${s.maximum}`
+          : '';
+  const deprecated = s.markdownDeprecationMessage ?? s.deprecationMessage;
+  return {
+    id: anchor(name),
+    name,
+    type,
+    default: 'default' in s ? show(s.default) : undefined,
+    values: s.enum?.map(show).join(', '),
+    range,
+    description: inline(s.markdownDescription ?? s.description ?? ''),
+    deprecated: deprecated ? inline(deprecated) : undefined,
+  };
+});
+---
+
+<p class="settings-count">{settings.length} settings in version {pkg.version}.</p>
+
+<dl class="settings-reference">
+  {
+    settings.map((s) => (
+      <div class="setting" id={s.id}>
+        <dt>
+          <a class="setting-name" href={`#${s.id}`}>
+            <code>{s.name}</code>
+          </a>
+          {s.deprecated && <span class="deprecated">Deprecated</span>}
+        </dt>
+        <dd>
+          <p class="setting-meta">
+            <span>Type: {s.type}</span>
+            {s.default !== undefined && (
+              <span>
+                Default: <code>{s.default}</code>
+              </span>
+            )}
+            {s.values && <span>Values: {s.values}</span>}
+            {s.range && <span>Range: {s.range}</span>}
+          </p>
+          <p set:html={s.description} />
+          {s.deprecated && <p set:html={s.deprecated} />}
+        </dd>
+      </div>
+    ))
+  }
+</dl>
+
+<style>
+  .settings-reference {
+    margin-top: 1.5rem;
+  }
+  .setting {
+    padding: 1rem 0;
+    border-top: 1px solid var(--sl-color-hairline);
+    scroll-margin-top: calc(var(--sl-nav-height) + 1rem);
+  }
+  .setting dt {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+  }
+  .setting-name {
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .setting dd {
+    margin: 0.5rem 0 0;
+  }
+  .setting dd p {
+    margin: 0.25rem 0 0;
+  }
+  .setting-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.25rem;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-gray-3);
+  }
+  .setting-meta code {
+    overflow-wrap: anywhere;
+  }
+  .deprecated {
+    font-size: var(--sl-text-xs);
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    background: var(--sl-color-orange-low);
+    color: var(--sl-color-orange-high);
+  }
+</style>

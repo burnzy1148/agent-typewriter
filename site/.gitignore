@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.astro/
+.firebase/
+firebase-debug.log
+
+# Copied from ../images by scripts/copy-assets.mjs
+public/images/
+src/assets/
