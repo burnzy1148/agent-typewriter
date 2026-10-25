@@ -26,7 +26,7 @@
 ## 5. Docs and integration
 
 - [x] 5.1 Update `site/` (how-it-works, limits, session-files) and `CHANGELOG.md` for the size bound, the log and the downgrade note; verify the pages read correctly and no longer mention the 64 MB saved-text cap
-- [ ] 5.2 Run `npm run typecheck`, `npm test` and, where it can run, `npm run it` (the reload check in `it/restore.ts` exercises the log end to end); verify all pass
+- [x] 5.2 Run `npm run typecheck`, `npm test` and, where it can run, `npm run it` (the reload check in `it/restore.ts` exercises the log end to end); verify all pass
 
 ## Workflow follow-up
 
