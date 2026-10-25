@@ -28,7 +28,7 @@ Alternative: an option on `planHunks`. Rejected because its only other caller mu
 
 ### Blocks found by indentation, not by a bracket stack
 
-An opener is `{`, `[` or `(` immediately followed by a line break in the hunk's `insertText`. Its line's indentation is that line's leading whitespace, read from `after` when the line starts before the hunk (hunks in document order make `after.slice(0, offset)` the text before the hunk). The opener's block closes at the first later non-blank line that is not deeper (deeper: longer leading whitespace that starts with the opener line's) when that line has exactly the same indentation and starts with the matching bracket. Anything else, or reaching the end of `insertText`, means no block.
+An opener is `{`, `[` or `(` followed by a line break in the hunk's `insertText`, with only spaces or tabs between. Its line's indentation is that line's leading whitespace, read from `after` when the line starts before the hunk (hunks in document order make `after.slice(0, offset)` the text before the hunk). The opener's block closes at the first later non-blank line that is not deeper (deeper: longer leading whitespace that starts with the opener line's) when that line has exactly the same indentation and starts with the matching bracket. Anything else, or reaching the end of `insertText`, means no block.
 
 One pass over the lines with a stack of open candidates finds every block: each non-blank line pops the candidates it is not deeper than, matching or failing each, and then pushes itself if it ends with an opener. It is linear in the text, and the blocks it finds nest properly.
 
@@ -47,7 +47,7 @@ Starting the closer piece at the line break keeps the closer on its own line whi
 
 Typing the rest of the closing line with the closer (`};`, `})`, `},` and the line break) matches what a person types when closing a block; a trailing `else {` starts its own block, so it is left out.
 
-Pieces 1 and 2 sit next to each other in the document when typed, so they become one hunk. Each other piece is its own hunk. A hunk's `deleteText` stays on its first piece. Empty bodies are not split.
+Pieces 1 and 2 sit next to each other in the document when typed, so they become one hunk. Each other piece is its own hunk. A hunk's `deleteText` stays on its first piece. Bodies that are empty or hold only blank lines are not split.
 
 ### Offsets in O(1) per piece
 

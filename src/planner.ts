@@ -213,39 +213,50 @@ interface Block {
  */
 function findBlocks(text: string, prefix: string): Block[] {
   const found: Array<{ open: number; close: number; closer: number }> = [];
-  const open: Array<{ at: number; indent: string; closer: string }> = [];
+  /** Where a found block's opening line ends, to spot a closing line that opens the next block. */
+  const openLineEnds = new Set<number>();
+  const stack: Array<{ at: number; lineEnd: number; indent: string; closer: string; filled: boolean }> = [];
+  const isBlank = (c: string) => c === ' ' || c === '\t';
   const prefixHasText = /[^ \t]/.test(prefix);
   for (let start = 0; start <= text.length; ) {
     const nl = text.indexOf('\n', start);
     const lineEnd = nl === -1 ? text.length : nl;
     let content = start;
-    while (content < lineEnd && (text[content] === ' ' || text[content] === '\t')) content++;
+    while (content < lineEnd && isBlank(text[content])) content++;
     const first = start === 0;
-    const indent = first ? (prefixHasText ? /^[ \t]*/.exec(prefix)![0] : prefix + text.slice(0, content)) : text.slice(start, content);
+    let indent = text.slice(start, content);
+    if (first) indent = prefixHasText ? /^[ \t]*/.exec(prefix)![0] : prefix + indent;
     if (content < lineEnd || (first && prefixHasText)) {
       // Blocks this line is not indented deeper than end here: closed by it, or not blocks at all.
-      while (open.length > 0) {
-        const top = open[open.length - 1];
+      while (stack.length > 0) {
+        const top = stack[stack.length - 1];
         if (indent.length > top.indent.length && indent.startsWith(top.indent)) break;
-        open.pop();
-        // A closer must start its own line inside the text, after a body.
-        if (!first && indent === top.indent && text[content] === top.closer && start - 1 > top.at + 1) {
+        stack.pop();
+        // A closer must start its own line inside the text, after a body that is not all blank.
+        if (!first && top.filled && indent === top.indent && text[content] === top.closer) {
           found.push({ open: top.at, close: start - 1, closer: content });
+          openLineEnds.add(top.lineEnd);
         }
       }
-      const last = text[lineEnd - 1];
-      if (nl !== -1 && lineEnd > start && last in BLOCK_CLOSERS) open.push({ at: lineEnd - 1, indent, closer: BLOCK_CLOSERS[last] });
+      // Every line inside the top block is inside the ones under it too, so marking the top is enough.
+      if (stack.length > 0) stack[stack.length - 1].filled = true;
+      let last = lineEnd;
+      while (last > start && isBlank(text[last - 1])) last--;
+      const bracket = text[last - 1];
+      if (nl !== -1 && last > start && bracket in BLOCK_CLOSERS) {
+        stack.push({ at: last - 1, lineEnd, indent, closer: BLOCK_CLOSERS[bracket], filled: false });
+      }
     }
     if (nl === -1) break;
     start = nl + 1;
   }
-  const opens = new Set(found.map((b) => b.open));
   return found
     .map(({ open, close, closer }) => {
       const nl = text.indexOf('\n', closer);
       const lineEnd = nl === -1 ? text.length : nl;
       // `} else {` keeps its new block for later; anything else on the line is typed with the closer.
-      const end = opens.has(lineEnd - 1) ? closer + 1 : nl === -1 ? text.length : nl + 1;
+      let end = nl === -1 ? text.length : nl + 1;
+      if (openLineEnds.has(lineEnd)) end = closer + 1;
       return { open, close, end };
     })
     .sort((a, b) => a.open - b.open);
@@ -257,13 +268,15 @@ function cutInPieces(h: Hunk, blocks: Block[]): Hunk[] {
   const out: Hunk[] = [];
   // Characters of `text` typed so far, and how many of them come after the caret: open blocks' closing pieces.
   let typed = 0;
-  let after = 0;
+  let closersAhead = 0;
   const piece = (from: number, to: number) => {
     if (from >= to) return;
-    const offset = h.offset + typed - after;
+    const offset = h.offset + typed - closersAhead;
+    const insertText = text.slice(from, to);
     const last = out[out.length - 1];
-    if (last && last.offset + last.insertText.length === offset) last.insertText += text.slice(from, to);
-    else out.push(out.length === 0 ? { offset, deleteText: h.deleteText, insertText: text.slice(from, to) } : { offset, deleteText: '', insertText: text.slice(from, to), continues: true });
+    if (last && last.offset + last.insertText.length === offset) last.insertText += insertText;
+    else if (out.length === 0) out.push({ offset, deleteText: h.deleteText, insertText });
+    else out.push({ offset, deleteText: '', insertText, continues: true });
     typed += to - from;
   };
   let next = 0;
@@ -274,9 +287,9 @@ function cutInPieces(h: Hunk, blocks: Block[]): Hunk[] {
       const end = Math.min(b.end, to);
       piece(at, b.open + 1);
       piece(b.close, end);
-      after += end - b.close;
+      closersAhead += end - b.close;
       typeRange(b.open + 1, b.close);
-      after -= end - b.close;
+      closersAhead -= end - b.close;
       at = end;
     }
     piece(at, to);

@@ -238,8 +238,14 @@ test('authoring order: the closing line is typed whole, with what follows the br
   assert.deepEqual(typedOrder('', 'const o = {\n  a: 1,\n};\nnext();\n'), ['const o = {\n};\n', '\n  a: 1,', 'next();\n']);
 });
 
-test('authoring order: an empty block is typed top to bottom', () => {
+test('authoring order: an empty block, or one with only blank lines inside, is typed top to bottom', () => {
   assert.deepEqual(typedOrder('', 'f() {\n}\n'), ['f() {\n}\n']);
+  assert.deepEqual(typedOrder('', 'f() {\n\n  \n}\n'), ['f() {\n\n  \n}\n']);
+});
+
+test('authoring order: spaces after the opening bracket still end its line', () => {
+  const after = 'if (a) {  \n  x();\n} else { \n  y();\n}\n';
+  assert.deepEqual(typedOrder('', after), ['if (a) {\n}', '  \n  x();', ' else {\n}\n', ' \n  y();']);
 });
 
 test('authoring order: a closer that does not match, or a line at the same indentation first, opens no block', () => {
@@ -325,7 +331,8 @@ function randomCode(r: () => number, indent: string, depth: number): string {
     if (depth < 4 && pick < 0.35) {
       const [open, close] = (['{}', '[]', '()'] as const)[Math.floor(r() * 3)];
       const tail = ['', ';', ',', ')', ' else {'][Math.floor(r() * 5)];
-      s += `${indent}head${depth} ${open}\n` + (r() < 0.9 ? randomCode(r, indent + '  ', depth + 1) : '');
+      const trailing = r() < 0.15 ? ' \t' : '';
+      s += `${indent}head${depth} ${open}${trailing}\n` + (r() < 0.9 ? randomCode(r, indent + '  ', depth + 1) : r() < 0.5 ? '\n' : '');
       if (r() < 0.08) s += `${indent}oops\n`;
       s += `${indent}${r() < 0.95 ? close : '}'}${tail}\n`;
       if (tail === ' else {') s += randomCode(r, indent + '  ', depth + 1) + `${indent}}\n`;

@@ -18,8 +18,12 @@ With `agentTypewriter.naturalOrder` on, when one edit types a whole block, repla
 - **THEN** the line `};` is typed whole right after `const o = {`, before `  a: 1,`
 
 #### Scenario: Empty block
-- **WHEN** a change adds `{` followed directly by `}` on the next line
-- **THEN** both lines are typed top to bottom
+- **WHEN** a change adds `{` followed by `}`, with nothing or only blank lines between them
+- **THEN** the lines are typed top to bottom
+
+#### Scenario: Spaces after the opening bracket
+- **WHEN** a change adds `if (a) {` with trailing spaces, `  x();` and `}`
+- **THEN** the block is typed outside in, as without the spaces
 
 #### Scenario: Closing bracket that does not match
 - **WHEN** a line ending in `(` is followed by deeper-indented lines and then a line at its indentation starting with `]`

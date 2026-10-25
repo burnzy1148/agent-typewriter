@@ -1242,6 +1242,51 @@ export async function run(): Promise<void> {
       natural.texts.some((t) => t.includes('{\n}') && !t.includes('return')),
       `the closing brace was not typed before the body: ${JSON.stringify(natural.texts.slice(0, 6))}`,
     );
+
+    // The caret walks back into the block with arrow keys, and moving past its
+    // closing line skips the read pause and the scroll, even off-screen.
+    const navRel = 'play/order-nav.ts';
+    const navBase = Array.from({ length: 120 }, (_, i) => `const n${i} = ${i};`).join('\n') + '\n';
+    await play(navRel, '', navBase);
+    await setting('agentTypewriter', 'arrowNavigation', true);
+    await setting('agentTypewriter', 'readPauseSeconds', 6);
+    // Slow enough that the pause below lands while the body's last line is still being typed.
+    await setting('agentTypewriter', 'charsPerMinute', 1200);
+    const navCarets = caretLines(navRel);
+    const navEdits: Array<{ at: number; text: string }> = [];
+    let pausedMidBody = false;
+    const navSub = vscode.workspace.onDidChangeTextDocument((ev) => {
+      if (!isMirror(ev.document, navRel) || ev.contentChanges.length === 0) return;
+      const text = ev.document.getText();
+      navEdits.push({ at: Date.now(), text });
+      if (!pausedMidBody && text.includes('\n  r') && !text.includes('return a;')) {
+        pausedMidBody = true;
+        void vscode.commands.executeCommand('agentTypewriter.togglePause');
+      }
+    });
+    const navChange = push(navRel, navBase, navBase + 'function f() {\n  const a = 1;\n  return a;\n}\nconst after = 1;\n');
+    await until('the block body to be part typed', () => pausedMidBody);
+    await sleep(300);
+    assert.ok(!mirrorText(navRel)!.includes('return a;'), 'the block body finished before the pause landed');
+    // With the view at the top, the text after the closing line is off-screen.
+    await toTop(navRel);
+    const navTops = tops(navRel);
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('the block playback', playedNow(navChange.seq));
+    navSub.dispose();
+    navCarets.dispose();
+    navTops.dispose();
+    assert.equal(mirrorText(navRel), navChange.after);
+    const bodyDone = navEdits.find((x) => x.text.includes('return a;'))!.at;
+    const pastClose = navEdits.find((x) => x.text.includes('}\nc'))!.at;
+    assert.ok(pastClose - bodyDone < 3000, `moving past the closing line waited ${pastClose - bodyDone} ms`);
+    assert.ok(new Set(navTops.seen).size <= 2, `moving past the closing line scrolled: ${navTops.seen.join(',')}`);
+    // After typing `function f() {` and `}` on lines 120 and 121, the caret is on line 122.
+    const walkedBack = navCarets.seen.some((l, i) => l === 122 && navCarets.seen[i + 1] === 121 && navCarets.seen[i + 2] === 120);
+    assert.ok(walkedBack, `the caret did not walk back into the block line by line: ${navCarets.seen.join(',')}`);
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await setting('agentTypewriter', 'readPauseSeconds', 0);
+    await setting('agentTypewriter', 'arrowNavigation', false);
     await setting('agentTypewriter', 'naturalOrder', false);
     const topDown = record('play/order.ts');
     const unordered = await play('play/order.ts', ordered.after, ordered.after + '\n' + orderBlock('other'));
