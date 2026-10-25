@@ -4,7 +4,8 @@
  * File watchers do not always report writes in the order they happened
  * (Windows can lag by seconds), and the timeline is append-only, so order has
  * to be settled before a change is pushed. Each item waits until `window` ms
- * after its write time, then items go out sorted by write time.
+ * after its write time (or after it was reported, when given and later),
+ * then items go out sorted by write time.
  */
 
 export interface Scheduler {
