@@ -1,10 +1,10 @@
-# Spec Delta
+# project-site Specification
 
 ## Purpose
 
 The public site at agent-typewriter.com: a landing page and documentation for the extension, kept in this repository so contributors edit it through pull requests and it ships with the released version.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Site served at the project domain
 The site SHALL be served over HTTPS at https://agent-typewriter.com. Requests to https://www.agent-typewriter.com and to plain HTTP SHALL redirect permanently to the same path on https://agent-typewriter.com.
@@ -25,7 +25,7 @@ The page at `/` SHALL show a one-line description of the extension, the demo ani
 - **THEN** they see the `code --install-extension burnzy1148.agent-typewriter` command and a link to the Marketplace listing without scrolling past the demo
 
 ### Requirement: Documentation pages
-The site SHALL have documentation pages for getting started, how replay works, highlights, the panels, session files, replaying git history, filtering (including the repository settings file, filter profiles and worktrees), settings, and limits. The settings page SHALL list every setting the extension contributes, with its type, default and description, taken from the extension's manifest so it cannot fall out of date.
+The site SHALL have documentation pages for getting started, how replay works, highlights, the panels, session files, replaying git history, filtering (including the repository settings file, filter profiles and worktrees), lanes, settings, and limits. The settings page SHALL list every setting the extension contributes, with its type, default and description, taken from the extension's manifest so it cannot fall out of date.
 
 #### Scenario: Settings page is complete
 - **WHEN** the extension contributes a setting under `agentTypewriter.*`
