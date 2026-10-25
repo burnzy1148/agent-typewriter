@@ -179,8 +179,8 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
   private models: FolderCheckoutsModel[] = [];
-  /** Each model's checkouts as listed by the last reload, so redraws read nothing from disk. */
-  private listed = new Map<FolderCheckoutsModel, ListedCheckout[]>();
+  /** Each folder's checkouts as listed by the last reload, by folder URI, so redraws read nothing from disk. */
+  private listed = new Map<string, ListedCheckout[]>();
   private pending: NodeJS.Timeout | undefined;
   private loads = 0;
   private readonly sub: { dispose(): void };
@@ -200,7 +200,7 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
     const listed = await Promise.all(models.map(listCheckouts));
     if (n !== this.loads) return;
     this.models = models;
-    this.listed = new Map(models.map((m, i) => [m, listed[i]]));
+    this.listed = new Map(models.map((m, i) => [m.folder.uri.toString(), listed[i]]));
     this.emitter.fire();
   }
 
@@ -229,7 +229,7 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
   }
 
   private rows(model: FolderCheckoutsModel): CheckoutRow[] {
-    return (this.listed.get(model) ?? []).map((c) => {
+    return (this.listed.get(model.folder.uri.toString()) ?? []).map((c) => {
       const info = this.timeline.laneInfo(c.lane);
       const followed = info !== undefined && this.timeline.followed === c.lane;
       const following = info && followingState(this.timeline, c.lane);

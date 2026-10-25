@@ -221,7 +221,10 @@ function realPath(p: string): string {
   }
 }
 
-/** `realPath` without blocking: the same path, read asynchronously. */
+/**
+ * `realPath` without blocking. `fs.promises.realpath` is the native realpath,
+ * as `realpathSync.native` is, so both give the same path.
+ */
 export async function realPathAsync(p: string): Promise<string> {
   const resolved = path.resolve(p);
   try {
