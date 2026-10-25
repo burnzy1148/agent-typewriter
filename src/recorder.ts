@@ -2443,7 +2443,6 @@ export interface FolderCheckouts {
   recorded: string[];
 }
 
-/** One checkout a workspace folder records: one lane. */
 /**
  * When the filesystem says a file was removed: the mtime of the nearest
  * directory above it that still exists, which the removal stamped (git
@@ -2466,6 +2465,7 @@ function laneName(scope: Scope): string {
   return scope.own ? scope.folder.name : `${scope.folder.name} (${scope.name})`;
 }
 
+/** One checkout a workspace folder records: one lane. */
 interface Scope {
   /**
    * Lane id, and the key of every per-scope map: the folder URI for the

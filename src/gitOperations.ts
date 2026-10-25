@@ -30,6 +30,7 @@ export const GIT_DIR_MARKERS = [
   'AUTO_MERGE',
   'rebase-merge',
   'rebase-apply',
+  'SQUASH_MSG',
 ] as const;
 
 /** Markers in the repository's common git directory; the branch HEAD names is added per look. */
@@ -45,7 +46,11 @@ const STATE_LABELS: ReadonlyArray<[string, string]> = [
   ['REBASE_HEAD', 'rebase'],
   ['rebase-merge', 'rebase'],
   ['rebase-apply', 'rebase'],
+  ['SQUASH_MSG', 'merge --squash'],
 ];
+
+/** Reads of one refresh, before it takes what it has though git keeps moving. */
+const REFRESH_ATTEMPTS = 3;
 
 export interface GitWatchTiming {
   /** How often a held write looks again while `index.lock` exists. */
@@ -269,6 +274,16 @@ export function stashChange(before: readonly string[], after: readonly string[])
   return {};
 }
 
+/** True when a state file of a stopped operation appeared or was rewritten between two looks: an operation stopped (again). */
+export function stopped(before: MarkerLook, after: MarkerLook): boolean {
+  return STATE_LABELS.some(([marker]) => after.mtimes.has(marker) && after.mtimes.get(marker) !== before.mtimes.get(marker));
+}
+
+/** True when a look shows an operation stopped on a conflict, or a squash merge waiting for its commit. */
+export function inStoppedOperation(look: MarkerLook): boolean {
+  return STATE_LABELS.some(([marker]) => look.mtimes.has(marker));
+}
+
 /** The operation that stopped between two looks, named by the state file it left; undefined when none appeared. */
 export function stoppedLabel(before: MarkerLook, after: MarkerLook): string | undefined {
   for (const [marker, label] of STATE_LABELS) if (after.mtimes.has(marker) && !before.mtimes.has(marker)) return label;
@@ -339,6 +354,8 @@ interface WatchState {
   look: MarkerLook;
   index: IndexDigest;
   stash: string[];
+  /** The commit HEAD named, undefined on an unborn branch. */
+  head: string | undefined;
 }
 
 /**
@@ -410,9 +427,9 @@ export class GitOperationWatch {
     }
     try {
       const look = await this.look(true);
-      const [entries, stash] = await Promise.all([this.readIndex(), this.readStash()]);
+      const [entries, stash, head] = await Promise.all([this.readIndex(), this.readStash(), this.readHead()]);
       if (this.disposed) return 'ok';
-      this.state = { takenAt: this.clock.now(), look, index: digestIndex(entries), stash };
+      this.state = { takenAt: this.clock.now(), look, index: digestIndex(entries), stash, head };
       return 'ok';
     } catch (err) {
       if (this.failed(err)) return 'unavailable';
@@ -480,18 +497,35 @@ export class GitOperationWatch {
     if (!prev) return;
     let look: MarkerLook | undefined;
     try {
-      look = await this.look(true);
-      if (look.markers === prev.look.markers) return;
+      // Git may still be moving: a rebase's next step, or the reset a stash push
+      // runs after storing the stash. A read that git overtook is read again, so
+      // the state kept never mixes two moments.
+      let reads;
+      for (let attempt = 1; ; attempt++) {
+        look = await this.look(true);
+        if (look.markers === prev.look.markers) return;
+        const stashMoved = look.stash !== prev.look.stash;
+        reads = await Promise.all([
+          this.readIndex(),
+          // Plumbing: porcelain `git diff` refreshes and rewrites the index even
+          // with --no-optional-locks. A stat-dirty but unchanged file reads as dirty
+          // here, which only keeps git from vouching for it.
+          this.run(['diff-files', '--name-only', '--relative', '-z'], this.root),
+          stashMoved ? this.readStash() : Promise.resolve(prev.stash),
+          this.newReflogEntries(prev.look, look),
+          this.readHead(),
+        ]);
+        if (this.disposed || this.state !== prev) return;
+        const after = await this.look(true);
+        const settled = !after.lock && after.markers === look.markers && after.index === look.index;
+        if (settled || attempt >= REFRESH_ATTEMPTS) break;
+        await this.clock.sleep(this.timing.pollMs);
+      }
+      const [byPath, dirtyOut, stash, entries, head] = reads;
       const stashMoved = look.stash !== prev.look.stash;
-      const [byPath, dirtyOut, stash, entries] = await Promise.all([
-        this.readIndex(),
-        this.run(['diff', '--name-only', '--relative', '-z'], this.root),
-        stashMoved ? this.readStash() : Promise.resolve(prev.stash),
-        this.newReflogEntries(prev.look, look),
-      ]);
-      if (this.disposed || this.state !== prev) return;
       const index = digestIndex(byPath);
-      const candidates = changedPaths(prev.index, index);
+      const candidates = await this.candidatesOf(prev, look, index, head, entries);
+      if (this.disposed || this.state !== prev) return;
       dropResolutions(candidates, prev.index, index, entries);
       // The stash is shared by every worktree; a push or pop writes the index of the one it ran in.
       const { pushed, popped } = stashMoved && look.index !== prev.look.index ? stashChange(prev.stash, stash) : {};
@@ -503,10 +537,8 @@ export class GitOperationWatch {
       const start = Math.min(this.lockSeenAt ?? Infinity, span.earliest ?? now) - this.timing.leadMs;
       const end = Math.max(span.latest ?? 0, look.index !== prev.look.index ? look.indexMtime : 0) || now;
       const label = pushed ? 'stash push' : popped ? 'stash pop' : operationLabel(prev.look, look, entries);
-      // Commits alone write no files: what they took in stays the agent's. Files they
-      // keep are already guarded by blob age (a squash merge before the commit wrote
-      // those); a removal has no such guard, so none is git's.
-      const commitsOnly = !pushed && !popped && !stoppedLabel(prev.look, look) && entries.length > 0 && entries.every(writesNoFiles);
+      // Commits alone write no files: whatever they took in stays the agent's.
+      const commitsOnly = !pushed && !popped && !stopped(prev.look, look) && entries.length > 0 && entries.every(writesNoFiles);
       const op = buildOperation({
         label,
         from: Math.max(prev.takenAt, start) - this.timing.skewMs,
@@ -516,15 +548,14 @@ export class GitOperationWatch {
         dirty: new Set(dirtyOut.toString('utf8').split('\0').filter(Boolean)),
         popped: poppedPaths,
       });
-      if (commitsOnly) op.absent.clear();
       await this.keepGone(op);
       if (this.disposed || this.state !== prev) return;
-      if (op.present.size > 0 || op.absent.size > 0) {
+      if (!commitsOnly && (op.present.size > 0 || op.absent.size > 0)) {
         await this.stampBlobs(op);
         if (this.disposed || this.state !== prev) return;
         this.ops.push(op);
       }
-      this.state = { takenAt: now, look, index, stash };
+      this.state = { takenAt: now, look, index, stash, head };
       this.lockSeenAt = undefined;
     } catch (err) {
       if (this.failed(err) || !look || this.state !== prev) return;
@@ -534,6 +565,40 @@ export class GitOperationWatch {
       this.state = { ...prev, look };
       this.lockSeenAt = undefined;
     }
+  }
+
+  /**
+   * Paths an operation may have written: those that differ between the commits
+   * HEAD named before and after it (nothing for a new branch on the same
+   * commit); when it stopped on a conflict or staged a squash merge, those it
+   * staged against HEAD (merge, cherry-pick and revert start only from a clean
+   * index); and when it threw a stopped operation away, every path whose index
+   * entry changed. A path that became conflicted is always one: only git makes
+   * conflict stages (a stash pop or apply that conflicts moves no ref and leaves
+   * no state file). What an agent stages itself is none of these.
+   */
+  private async candidatesOf(prev: WatchState, look: MarkerLook, index: IndexDigest, head: string | undefined, entries: readonly string[]): Promise<Set<string>> {
+    const paths = new Set<string>();
+    const add = (out: Buffer) => {
+      for (const p of out.toString('utf8').split('\0')) if (p) paths.add(p);
+    };
+    if (head !== prev.head && head) {
+      add(
+        prev.head
+          ? await this.run(['diff-tree', '-r', '--name-only', '--relative', '-z', prev.head, head], this.root)
+          : await this.run(['ls-tree', '-r', '--name-only', '-z', head], this.root),
+      );
+    }
+    if (head && stopped(prev.look, look)) add(await this.run(['diff-index', '--cached', '--name-only', '--relative', '-z', head], this.root));
+    if (inStoppedOperation(prev.look) && entries.some(discardsConflicts)) for (const p of changedPaths(prev.index, index)) paths.add(p);
+    for (const [p, digest] of index) if (unmerged(digest) && !unmerged(prev.index.get(p))) paths.add(p);
+    return paths;
+  }
+
+  /** The commit HEAD names, or undefined on an unborn branch. */
+  private async readHead(): Promise<string | undefined> {
+    const out = await this.run(['rev-parse', '-q', '--verify', 'HEAD^{commit}'], this.root).catch(() => undefined);
+    return out?.toString('utf8').trim() || undefined;
   }
 
   /** Keeps in `op.absent` only the paths that are gone now: git leaves a popped or unstaged file on disk. */

@@ -349,6 +349,19 @@ test('watch: only reads; status and the index are unchanged', { skip: noGit }, a
   assert.equal(fs.statSync(path.join(repo, '.git', 'index')).mtimeMs, indexMtime);
 });
 
+test('watch: never rewrites the index, even when a file is stat-dirty but unchanged', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  git(repo, 'switch', '-qc', 'other');
+  // Past the index's own mtime second, so git trusts the entry's stat and would refresh it.
+  await new Promise((r) => setTimeout(r, 1100));
+  // Same text, new mtime: a refreshing git command would rewrite the index for it.
+  write(repo, 'b.ts', 'b1\n');
+  const indexMtime = fs.statSync(path.join(repo, '.git', 'index')).mtimeMs;
+  await gits(w, 'b.ts');
+  assert.equal(fs.statSync(path.join(repo, '.git', 'index')).mtimeMs, indexMtime);
+});
+
 test('watch: a stale index.lock delays a write by the cap, not forever', { skip: noGit }, async () => {
   const repo = featureRepo();
   const w = await watchOf(repo);
@@ -473,13 +486,92 @@ test('watch: with packed objects, merge --abort still restores files as git', { 
   assert.ok(await gits(w, 'a.ts'));
 });
 
-test('watch: a squash merge and its commit in one go are git; the label is the last entry', { skip: noGit }, async () => {
+test('watch: a squash merge is git', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  git(repo, 'merge', '-q', '--squash', 'feature');
+  assert.equal(await gits(w, 'a.ts'), 'merge --squash');
+  assert.equal(await gits(w, 'c.ts'), 'merge --squash');
+  assert.equal(await gits(w, 'b.ts'), 'merge --squash');
+});
+
+test('watch: a squash merge committed before it is read reads as the commit alone (a documented limit)', { skip: noGit }, async () => {
   const repo = featureRepo();
   const w = await watchOf(repo);
   git(repo, 'merge', '-q', '--squash', 'feature');
   git(repo, 'commit', '-qm', 'squash');
-  assert.equal(await gits(w, 'a.ts'), 'commit');
-  assert.equal(await gits(w, 'c.ts'), 'commit');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: what an agent stages, then a new branch on the same commit, stays the agent\'s', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  write(repo, 'z.ts', 'z\n');
+  git(repo, 'add', 'z.ts');
+  git(repo, 'commit', '-qm', 'z');
+  const w = await watchOf(repo);
+  git(repo, 'rm', '-q', 'b.ts');
+  git(repo, 'switch', '-qc', 'one');
+  assert.equal(await gits(w, 'b.ts'), undefined);
+  git(repo, 'mv', 'z.ts', 'y.ts');
+  git(repo, 'checkout', '-qb', 'two');
+  assert.equal(await gits(w, 'z.ts'), undefined);
+  assert.equal(await gits(w, 'y.ts'), undefined);
+  write(repo, 'a.ts', 'staged\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, 'restore', '--staged', '--worktree', 'a.ts');
+  git(repo, 'switch', '-qc', 'three');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a file taken from another branch and committed stays the agent\'s', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  git(repo, 'checkout', 'feature', '--', 'a.ts');
+  git(repo, 'commit', '-qm', 'take');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: reset --hard to the current commit with a staged change is recorded, as the spec says', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  write(repo, 'a.ts', 'staged\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, 'reset', '-q', '--hard');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a step git finishes while a refresh reads is read again, so its files are git\'s', { skip: noGit }, async () => {
+  const repo = tempRepo();
+  write(repo, 'base.ts', 'base\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'base');
+  git(repo, 'switch', '-qc', 'feature');
+  write(repo, 'x.ts', 'x\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'x');
+  write(repo, 'y.ts', 'y\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'y');
+  git(repo, 'switch', '-q', 'main');
+  let inject: (() => void) | undefined;
+  const run: GitRunner = (args, cwd) => {
+    if (inject && args[0] === 'ls-files') {
+      const step = inject;
+      inject = undefined;
+      step();
+    }
+    return execGit(args, cwd);
+  };
+  const w = await watchOf(repo, run);
+  git(repo, 'cherry-pick', 'feature~1');
+  inject = () => {
+    // Later than the span's end slack after the first step, as a slow step on Windows is.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+    git(repo, 'cherry-pick', 'feature');
+  };
+  assert.ok(await gits(w, 'x.ts'));
+  assert.ok(fs.existsSync(path.join(repo, 'y.ts')));
+  assert.ok(await gits(w, 'y.ts'));
 });
 
 test('watch: deleting a file a stash pop just restored is not git', { skip: noGit }, async () => {
