@@ -11,6 +11,8 @@ export class AutoFollow {
   private quietSince = Date.now();
   /** Whether a change was being typed at the last timeline change. */
   private wasPlaying = false;
+  /** The followed lane at the last timeline change. */
+  private seenFollowed: string;
   private timer: NodeJS.Timeout | undefined;
   private readonly sub: { dispose(): void };
 
@@ -18,6 +20,7 @@ export class AutoFollow {
     private readonly timeline: Timeline,
     private readonly enabled: () => boolean,
   ) {
+    this.seenFollowed = timeline.followed;
     this.sub = timeline.onDidChange(() => this.onChange());
   }
 
@@ -44,8 +47,11 @@ export class AutoFollow {
 
   private onChange(): void {
     const playing = this.timeline.playing !== undefined;
+    // A lane just followed (by hand, at start, or by this) gets its own quiet period before anything moves on from it.
+    const switched = this.timeline.followed !== this.seenFollowed;
+    this.seenFollowed = this.timeline.followed;
     // A change that just finished typing counts too: the quiet starts when typing ends, not when it began.
-    if (playing || this.wasPlaying || this.timeline.pendingCount() > 0) this.quietSince = Date.now();
+    if (switched || playing || this.wasPlaying || this.timeline.pendingCount() > 0) this.quietSince = Date.now();
     this.wasPlaying = playing;
     this.check();
   }

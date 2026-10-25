@@ -663,3 +663,19 @@ test('pendingTotal counts the queue of every lane', () => {
   assert.equal(t.pendingCount(), 1);
   assert.equal(t.pendingTotal(), 3);
 });
+
+test('following a played-out stopped lane by hand sticks when the change it interrupted completes', () => {
+  const t = new Timeline(100);
+  t.defineLane({ ...laneInfo('stopped'), recording: false });
+  t.defineLane(laneInfo('live'));
+  const s1 = t.push(lev('stopped', 's', '', '1'));
+  t.follow('stopped');
+  t.begin(s1.seq);
+  t.complete(s1.seq);
+  const r1 = t.push(lev('live', 'r', '', '1'));
+  assert.equal(t.followed, 'live');
+  const token = t.begin(r1.seq);
+  t.follow('stopped');
+  t.complete(r1.seq, token);
+  assert.equal(t.followed, 'stopped');
+});

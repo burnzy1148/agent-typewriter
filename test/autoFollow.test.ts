@@ -76,3 +76,21 @@ test('the quiet period starts when a long change finishes typing, not when it be
   assert.equal(tl.followed, 'feat');
   auto.dispose();
 });
+
+test('a lane followed by hand gets its own quiet period before auto-follow moves on', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const tl = new Timeline(100);
+  tl.defineLane({ id: 'a', label: 'a', root: '/a', color: 1, recording: true });
+  tl.defineLane({ id: 'c', label: 'c', root: '/c', color: 2, recording: true });
+  const on = new AutoFollow(tl, () => true);
+  // Lane a is followed with a change queued, and playback is paused for a minute.
+  tl.push(ev('a.ts', 'a'));
+  t.mock.timers.tick(60_000);
+  tl.follow('c');
+  assert.equal(tl.followed, 'c', 'the follow by hand was undone at once');
+  t.mock.timers.tick(AUTO_FOLLOW_IDLE_MS - 1);
+  assert.equal(tl.followed, 'c');
+  t.mock.timers.tick(1);
+  assert.equal(tl.followed, 'a', 'after its quiet period, auto-follow moves on as usual');
+  on.dispose();
+});

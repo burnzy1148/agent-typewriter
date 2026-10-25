@@ -23,6 +23,7 @@ import { ChangeItem, laneName, TimelineView } from './timelineView';
 import { CheckoutRow, CheckoutsView, followingHeader, type FolderCheckoutsModel } from './checkoutsView';
 import { LaneDecorations } from './laneDecorations';
 import { AutoFollow } from './autoFollow';
+import { FollowedMemory } from './followedMemory';
 import { MAX_LANES } from './lanes';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
@@ -197,7 +198,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     scrubber.refresh();
     mirrorControls.refresh();
     tree.description = shown.description;
-    // Which lane is followed, at the top of the Checkouts view, while there is a choice.
+    // Which lane is followed, at the top of the Checkouts view, once there is one.
     checkoutsTree.description = followingHeader(timeline);
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
@@ -208,20 +209,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
   };
   // The followed lane is remembered, so a reload follows it again once it records.
-  let followedSaved = timeline.followed;
-  /** Set while activation restores the saved timeline: the lane it falls back to is no choice of the user's. */
-  let restoringHistory = false;
-  const saveFollowed = () => {
-    if (restoringHistory) followedSaved = timeline.followed;
-    if (timeline.followed === followedSaved || timeline.lanesInBuffer().length === 0) return;
-    followedSaved = timeline.followed;
-    void Promise.resolve(choices.setFollowed?.(followedSaved)).catch(() => {});
+  const followedMemory = new FollowedMemory(
+    timeline,
+    (lane) => void Promise.resolve(choices.setFollowed?.(lane)).catch(() => {}),
     // The status bar names the followed lane's checkout.
-    void refreshCheckouts();
-  };
+    () => void refreshCheckouts(),
+  );
   context.subscriptions.push(
+    followedMemory,
     timeline.onDidChange(refreshStatus),
-    timeline.onDidChange(saveFollowed),
     highlights.onDidChangeHighlighted(refreshStatus),
     recorder.onDidChangeScope(() => void refreshCheckouts()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshCheckouts()),
@@ -441,7 +437,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     // Changes recorded while the prompts were open are replaced too.
     recorder.drainHeld();
     // Every lane starts at its first change; the lane followed when it was saved is followed again.
-    timeline.restore(session.events, session.events[0].seq, undefined, { ...sessionLanes(session), cursors: undefined });
+    followedMemory.quietly(() => timeline.restore(session.events, session.events[0].seq, undefined, { ...sessionLanes(session), cursors: undefined }));
     await player.interrupt();
     player.forgetPlaybackMirror();
     log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
@@ -585,11 +581,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
     // The replay is one lane, labeled with its range.
     const lane = replayLane(range);
-    timeline.restore(
-      events.map((e, i) => ({ ...e, seq: i + 1, lane: lane.id })),
-      1,
-      undefined,
-      { lanes: [lane], followed: lane.id },
+    followedMemory.quietly(() =>
+      timeline.restore(
+        events.map((e, i) => ({ ...e, seq: i + 1, lane: lane.id })),
+        1,
+        undefined,
+        { lanes: [lane], followed: lane.id },
+      ),
     );
     await player.interrupt();
     player.forgetPlaybackMirror();
@@ -950,12 +948,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       if (saved && saved.events.length > 0) {
         const pending = saved.events.filter((e) => e.seq >= (saved.cursors?.[laneOf(e)] ?? saved.cursor)).length;
         if (pending > 0) player.setPaused(true);
-        restoringHistory = true;
-        try {
-          timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved));
-        } finally {
-          restoringHistory = false;
-        }
+        followedMemory.quietly(() => timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved)));
         // Queued in every lane: any of them pauses playback.
         const queued = timeline.pendingTotal();
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);

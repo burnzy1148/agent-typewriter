@@ -52,6 +52,8 @@ test('badges are initials or the first two letters', () => {
   assert.equal(laneBadge('main'), 'MA');
   assert.equal(laneBadge('a1b2c3d'), 'A1');
   assert.equal(laneBadge('--'), '?');
+  assert.equal(laneBadge('ßa'), 'SS', 'never longer than two characters');
+  assert.equal(laneBadge('straße fix'), 'SF');
 });
 
 test('the first five folders record by default, the rest are named', () => {

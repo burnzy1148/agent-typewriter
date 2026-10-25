@@ -1060,3 +1060,17 @@ test('rotate in a workspace where every folder has one lane says no lane can mak
   await until('skip logged', () => logs.some((l) => l.includes('is not recorded')));
   assert.ok(logs.some((l) => l.includes("every lane is its folder's only one")), logs.join('\n'));
 });
+
+test('a worktree locked on purpose before start is never auto-recorded as new', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const kept = `${repo}-kept`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'kept', kept);
+  git(repo, 'worktree', 'lock', '--reason', 'on usb', kept);
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.refreshFilter('Filter changed');
+  await sleep(2500);
+  assert.equal(t.checkout()?.lanes, 1);
+  assert.ok(!t.logs.some((l) => l.includes('Recording the new worktree kept')), t.logs.join('\n'));
+  assert.ok(t.logs.filter((l) => l.startsWith('Worktrees changed')).length === 0, 'kept re-listing while it waited on a lock');
+});

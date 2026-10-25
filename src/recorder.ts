@@ -929,7 +929,8 @@ export class Recorder implements vscode.Disposable {
       if (!listed) continue;
       const known = this.knownWorktrees.get(key);
       // One `git worktree add` is still checking out stays new until it is done, so it is decided then.
-      const settled = listed.filter((w) => !stillInitializing(w) || known?.has(pathKey(w.path)));
+      // Everything in the first listing after start was there before: locked ones too (`git worktree lock`).
+      const settled = known ? listed.filter((w) => !stillInitializing(w) || known.has(pathKey(w.path))) : listed;
       this.knownWorktrees.set(key, new Set(settled.map((w) => pathKey(w.path))));
       if (!known || mode === 'off') continue;
       for (const w of listed) {

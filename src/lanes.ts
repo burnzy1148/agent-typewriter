@@ -90,8 +90,9 @@ export function laneLabel(checkoutName: string, folderName: string, multiRoot: b
 export function laneBadge(label: string): string {
   const words = label.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   if (words.length === 0) return '?';
-  const initials = words.length > 1 ? words[0][0] + words[1][0] : [...words[0]].slice(0, 2).join('');
-  return initials.toUpperCase();
+  const initials = words.length > 1 ? [...words[0]][0] + [...words[1]][0] : [...words[0]].slice(0, 2).join('');
+  // Upper case can grow a letter ('ß' to 'SS'); VS Code drops a badge longer than two characters.
+  return [...initials.toUpperCase()].slice(0, 2).join('');
 }
 
 /** Which workspace folders record their own checkout by default: the first MAX_LANES, and the names of the rest. */

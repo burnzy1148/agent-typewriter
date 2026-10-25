@@ -264,7 +264,8 @@ export class Timeline {
     const event = this.get(seq);
     const lane = event ? laneOf(event) : this.followedLane;
     if (!stale && this.cursorOf(lane) <= seq) this.cursors.set(lane, seq + 1);
-    this.giveWay();
+    // An overtaken change (a follow or seek moved on) hands nothing over: the user just chose where to be.
+    if (!stale) this.giveWay();
     this.emit();
   }
 
