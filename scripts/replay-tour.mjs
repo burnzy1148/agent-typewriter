@@ -77,7 +77,8 @@ The repository stays at ${repo} for more experiments; delete it when done.
 // ------------------------------------------------------------------ run
 
 function launch() {
-  const r = spawnSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
+  // On Windows npm is npm.cmd, which only a shell can run.
+  const r = spawnSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
   if (r.status !== 0) throw new Error('npm run build failed');
   // A VS Code terminal hands its children IPC variables that would send the
   // launch to the parent window instead of a new instance.
