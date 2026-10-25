@@ -1,0 +1,15 @@
+---
+title: Lanes
+description: "Record several checkouts at once, each in its own lane, and choose which one replays."
+---
+
+Agents often work side by side, each in its own worktree. Up to 5 checkouts can record at once, across all workspace folders. Each is a **lane**: its changes queue on their own, with their own playback position, a color and a name (the branch, or the short commit when detached). One lane is **followed**: only its changes are typed, in the replay editor, with the usual controls. The others keep recording and wait.
+
+- **Checkouts** (in the Agent Typewriter Activity Bar view) lists each folder's checkout and every other worktree git lists. Tick a box to record that checkout in its own lane, clear it to stop. Choose Checkout... is the same choice as a multi-select list.
+- Each row and lane node shows its queue. The followed checkout's row has an eye in its lane color, a tinted name with a ▶ badge, and says whether it is typing, caught up or how many changes wait; the view's header names it. Click the eye on another lane, or run **Follow Lane...**, to follow it. Following picks up where that lane was left and keeps playback paused or playing as it was. The status bar entry names the followed checkout and how many record.
+- **Auto-follow** (the eye in the Checkouts title bar, or `autoFollow`): once the followed lane is caught up and nothing has been typed for 3 seconds, playback follows the lane whose oldest queued change came first. It never switches in the middle of a change.
+- **Auto-record** (`autoRecordWorktrees`): `fill` gives each worktree added while recording its own lane while fewer than 5 record; `rotate` also makes room by stopping the lane idle longest, never the followed one or one that changed in the last 2 minutes. New worktrees outside the workspace folder are noticed too.
+- A lane that stops recording, because you cleared its box, rotation stopped it, or its worktree was removed, keeps its changes and can still be followed. Lanes the Checkouts view no longer lists show under **Not recording**.
+- While more than one lane is in the buffer, replay tabs are tinted in their lane's color with a two-letter badge, and the replay editor's status row starts with the lane's name. With one lane, everything looks as before. Lane colors are the theme colors `agentTypewriter.lane1` to `agentTypewriter.lane5`.
+- Two agents in the same checkout still share one lane: the file watcher cannot tell them apart.
+- **Multi-root workspaces:** each workspace folder records in its own lane, so only the followed folder replays. Earlier versions replayed every folder's changes on one timeline. To replay them all again without picking, turn on `autoFollow`: playback then moves to the next folder with queued changes whenever the followed one goes quiet.

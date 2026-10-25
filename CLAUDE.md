@@ -7,6 +7,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `npm test`: unit tests plus a fuzz test of the planner.
 - `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
 - `npm run package`: builds the .vsix.
+- `npm run dev` / `npm run build` in `site/`: the docs site (separate npm project; run `npm install` there first).
 
 ## Architecture
 
@@ -19,6 +20,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `src/timelineView.ts`: tree view listing recorded changes and their played/playing/pending state.
 - `src/config.ts`: reads and updates the `agentTypewriter.*` settings.
 - `src/extension.ts`: activation; wires recorder, timeline, player, mirror filesystem, view, and commands together.
+- `site/`: the agent-typewriter.com docs site (Astro + Starlight), deployed to Firebase Hosting from `main` by `.github/workflows/site.yml`. Its settings page is generated from `package.json`.
 
 ## Rules that must not break
 

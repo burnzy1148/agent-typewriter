@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Docs moved to [agent-typewriter.com](https://agent-typewriter.com), with search and a settings reference generated from the extension, and the Marketplace listing links there. The README keeps install and quick start.
+
 ## 0.3.0 (2026-10-24)
 
 - The caret walks to a nearby edit with arrow keys, a line at a time and then by words, instead of appearing there (`arrowNavigation`, `arrowKeysPerSecond`). Far edits are still scrolled to and clicked.

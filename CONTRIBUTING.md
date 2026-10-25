@@ -30,6 +30,23 @@ To try replay by hand, run `npm run tour`. It builds the extension, makes a thro
 
 The README demo (`images/demo.gif`) is recorded by `npm run demo` on macOS with ffmpeg installed. It plays a few of the tour's steps (defined once in `scripts/tour-scenarios.mjs`) into the tour's repository in a throwaway VS Code profile and screen-records the window. The header of `scripts/demo/record.mjs` lists options for choosing the display, and its `shot` list picks the steps. Re-record it when the UI in the shot changes.
 
+## The docs site
+
+The site at [agent-typewriter.com](https://agent-typewriter.com) is built from `site/` with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build). It is a separate npm project, so its dependencies never touch the extension's.
+
+```
+cd site
+npm install
+npm run dev       # live preview at http://localhost:4321
+npm run build     # static build in site/dist, fails on broken internal links
+```
+
+- Docs pages are Markdown files in `site/src/content/docs/docs/`, and the sidebar order is in `site/astro.config.mjs`. Every page has an "Edit this page" link to its file.
+- The settings reference is generated from `contributes.configuration` in the root `package.json`, so a new setting needs no docs edit. Describe it well in `package.json` instead.
+- The demo GIF, banner and icon are copied from `images/` at build time. Don't add copies under `site/`. The banner is also the preview image when a site link is shared.
+- PRs that change the site get a build check. PRs from branches in this repository also get a preview link posted on the PR; PRs from forks and Dependabot PRs don't, because their runs can't read the deploy secret. A PR that only changes `site/` skips the extension's tests.
+- Production follows releases: the site deploys when a release merges into `main`, so it always describes the published version.
+
 ## How the code fits together
 
 [CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
