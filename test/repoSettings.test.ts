@@ -20,7 +20,7 @@ test('valid values pass through', () => {
       extensions: [],
       charsPerMinute: 500,
       autoStart: true,
-      languageSpeeds: { markdown: 600 },
+      languageSpeeds: { markdown: 1500 },
       reorderWindowMs: 'auto',
       viewColumn: 'active',
     }),
@@ -31,7 +31,7 @@ test('valid values pass through', () => {
     extensions: [],
     charsPerMinute: 500,
     autoStart: true,
-    languageSpeeds: { markdown: 600 },
+    languageSpeeds: { markdown: 1500 },
     reorderWindowMs: 'auto',
     viewColumn: 'active',
   });

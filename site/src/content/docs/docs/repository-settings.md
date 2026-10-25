@@ -10,7 +10,7 @@ To share filters (or any other setting) with everyone who opens a repository, co
   "include": ["src/**", "docs/**"],
   "exclude": ["**/generated/**", "**/node_modules/**"],
   "extensions": ["ts", "md"],
-  "charsPerMinute": 350
+  "charsPerMinute": 1000
 }
 ```
 
