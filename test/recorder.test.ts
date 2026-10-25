@@ -639,6 +639,23 @@ for (const createFirst of [false, true]) {
   });
 }
 
+test('a rename of an old file whose create is reported just before its delete is one rename (at-u47)', async () => {
+  const dir = tempDir('at-rec-ren-');
+  write(dir, 'src/a.ts', 'export const a = 1;\n');
+  // A rename keeps the mtime, so the create's write time is from long before the window.
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(path.join(dir, 'src/a.ts'), old, old);
+  const t = recorderOn(settings({ reorderWindowMs: 300 }), dir);
+  await t.recorder.start();
+  fs.renameSync(path.join(dir, 'src/a.ts'), path.join(dir, 'src/b.ts'));
+  // VS Code fires a batch's creates before its deletes; a tick can fall between them.
+  mock.fire('create', path.join(dir, 'src/b.ts'));
+  await sleep(20);
+  mock.fire('delete', path.join(dir, 'src/a.ts'));
+  await t.settle();
+  assert.deepEqual(renames(t), ['rename src/a.ts -> src/b.ts']);
+});
+
 test('a rename with an edit is one rename from the old text to the new', async () => {
   const dir = tempDir('at-rec-ren-');
   const text = Array.from({ length: 10 }, (_, i) => `line ${i}\n`).join('');

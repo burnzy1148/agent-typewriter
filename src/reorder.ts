@@ -24,7 +24,7 @@ interface Held<T> {
   key: number;
   fileKey: string;
   seq: number;
-  /** Earliest release time: key + window, with the key capped at the add time. */
+  /** Earliest release time: key (or the report time, if later) + window, capped at the add time + window. */
   due: number;
   /**
    * Released by this time even if an earlier burst is still pending: 2 × window
@@ -76,14 +76,17 @@ export class ReorderBuffer<T> {
    * Holds `item` with write time `key`. A file's held changes never swap: a
    * key earlier than that file's latest held one is raised to match it.
    * Released changes are already in order. A key ahead of the clock waits no
-   * longer than one written now.
+   * longer than one written now. With `reportedAt`, it also waits a window
+   * after it was reported, so a change reported just after it still sorts
+   * ahead or pairs with it: a moved file keeps its old mtime, which leaves
+   * no wait otherwise.
    */
-  add(item: T, key: number, fileKey: string): void {
+  add(item: T, key: number, fileKey: string, reportedAt?: number): void {
     const now = this.now();
     let k = key;
     for (const h of this.held) if (h.fileKey === fileKey && h.key > k) k = h.key;
     const w = Math.max(0, this.window());
-    this.held.push({ item, key: k, fileKey, seq: this.nextSeq++, due: Math.min(k, now) + w, cap: now + 2 * w });
+    this.held.push({ item, key: k, fileKey, seq: this.nextSeq++, due: Math.min(Math.max(k, reportedAt ?? k), now) + w, cap: now + 2 * w });
     this.held.sort((a, b) => a.key - b.key || a.seq - b.seq);
     this.pump();
   }
