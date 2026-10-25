@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Jobs only read the repository by default; release adds what it needs to publish.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
