@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CheckoutRow, CheckoutsView, FOLLOWED_SCHEME, followedRowUri, followingHeader, FolderNode, LaneRow, OthersNode, type FolderCheckoutsModel } from '../src/checkoutsView';
+import { CheckoutRow, CheckoutsView, FOLLOWED_SCHEME, followedRowUri, followingHeader, FolderNode, LaneRow, OthersNode, pathInside, type FolderCheckoutsModel } from '../src/checkoutsView';
 import { LaneDecorations } from '../src/laneDecorations';
 import { Timeline } from '../src/timeline';
 import { laneKey } from '../src/worktrees';
@@ -139,4 +142,44 @@ test('with one lane the header names it; with none there is no header', () => {
   assert.equal(followingHeader(t), undefined);
   t.defineLane({ id: 'only', label: 'main', root: '/w', color: 1, recording: true });
   assert.equal(followingHeader(t), 'Following: main');
+});
+
+test('pathInside: strictly inside only, with forward slashes', () => {
+  const P = (...parts: string[]) => path.resolve('/', ...parts);
+  assert.equal(pathInside(P('repo'), P('repo', '.claude', 'worktrees', 'feat')), '.claude/worktrees/feat');
+  assert.equal(pathInside(P('repo'), P('repo')), undefined);
+  assert.equal(pathInside(P('repo'), P('repo-side')), undefined);
+  assert.equal(pathInside(P('repo', 'a'), P('repo')), undefined);
+  assert.equal(pathInside(P('repo'), P('repo', '..dots')), '..dots', 'a name starting with two dots is still inside');
+});
+
+// --- at-dd6: a workspace folder opened through a symlink, worktrees listed by their real paths.
+
+test('at-dd6 a folder opened through a symlink shows a nested worktree relative to it', async (ctx) => {
+  const real = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'at-cv-real-')));
+  fs.mkdirSync(path.join(real, '.claude', 'worktrees', 'coupons'), { recursive: true });
+  const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'at-cv-link-')), 'repo');
+  try {
+    fs.symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    return ctx.skip('cannot create a symlink here');
+  }
+  const f = { uri: vscode.Uri.file(link), name: 'repo', index: 0 } as unknown as vscode.WorkspaceFolder;
+  // Git reports every worktree by its real path.
+  const m: FolderCheckoutsModel = {
+    folder: f,
+    checkouts: [
+      { path: real, name: 'main', own: true },
+      { path: path.join(real, '.claude', 'worktrees', 'coupons'), name: 'coupons', own: false },
+      { path: `${real}-side`, name: 'side', own: false },
+    ],
+    recorded: [real],
+  };
+  const { view } = viewOf(new Timeline(100), [m]);
+  await view.reload();
+  assert.deepEqual(
+    (view.getChildren() as CheckoutRow[]).map((r) => r.description),
+    ['this folder', '.claude/worktrees/coupons', `${real}-side`],
+  );
+  view.dispose();
 });
