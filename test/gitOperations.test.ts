@@ -11,6 +11,7 @@ import {
   findGitWrite,
   discardsConflicts,
   dropResolutions,
+  messageLabel,
   GitOperationWatch,
   groupEntries,
   operationLabel,
@@ -104,6 +105,13 @@ test('reflogLabels: every line, oldest first; partial and empty lines skipped', 
   assert.deepEqual(reflogLabels(''), []);
 });
 
+test('messageLabel: up to the colon, without the options pull logs', () => {
+  assert.equal(messageLabel('pull -q --no-rebase: Fast-forward'), 'pull');
+  assert.equal(messageLabel('pull --rebase (finish): returning to refs/heads/main'), 'pull');
+  assert.equal(messageLabel('merge feature: Fast-forward'), 'merge feature');
+  assert.equal(messageLabel('rebase (finish): returning to refs/heads/f'), 'rebase (finish)');
+});
+
 test('discardsConflicts: aborts and resets, not continues', () => {
   for (const l of ['reset', 'checkout', 'rebase (abort)']) assert.ok(discardsConflicts(l), l);
   for (const l of ['rebase (continue)', 'rebase (finish)', 'cherry-pick', 'commit (merge)', 'merge feature']) assert.ok(!discardsConflicts(l), l);
@@ -130,7 +138,9 @@ test('stashChange: push, pop, and anything else', () => {
   assert.deepEqual(stashChange([], ['n']), { pushed: 'n' });
   assert.deepEqual(stashChange(['x', 'y'], ['y']), { popped: 'x' });
   assert.deepEqual(stashChange(['x'], []), { popped: 'x' });
-  assert.deepEqual(stashChange(['x', 'y'], ['x']), {});
+  assert.deepEqual(stashChange(['x', 'y'], ['x']), { popped: 'y' });
+  assert.deepEqual(stashChange(['x', 'y', 'z'], ['x', 'z']), { popped: 'y' });
+  assert.deepEqual(stashChange(['x', 'y'], ['y', 'x']), {});
   assert.deepEqual(stashChange([], []), {});
 });
 
@@ -598,6 +608,67 @@ test('watch: a file reset out of the index but left on disk, then deleted, is no
   assert.equal(await gits(w, 'n.ts'), undefined);
 });
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('watch: a stash drop read late, after an unrelated index write, is no pop', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  write(repo, 'a.ts', 'wip\n');
+  git(repo, 'stash', 'push', '-q');
+  await gits(w, 'a.ts');
+  await sleep(120);
+  git(repo, 'stash', 'apply', '-q');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+  git(repo, 'stash', 'drop', '-q');
+  await sleep(2200);
+  write(repo, 'a.ts', 'agent\n');
+  write(repo, 'n.ts', 'n\n');
+  git(repo, 'add', 'n.ts');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a delete long after reset HEAD~1, read after an unrelated index write, is not git', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  write(repo, 'x.ts', 'x\n');
+  git(repo, 'add', 'x.ts');
+  git(repo, 'commit', '-qm', 'x');
+  const w = await watchOf(repo);
+  git(repo, 'reset', '-q', 'HEAD~1');
+  await sleep(2200);
+  fs.rmSync(path.join(repo, 'x.ts'));
+  write(repo, 'n.ts', 'n\n');
+  git(repo, 'add', 'n.ts');
+  assert.equal(await gits(w, 'x.ts'), undefined);
+});
+
+test('watch: a stash in another worktree, then a status refresh here, is not this worktree\'s', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const wt = path.join(tempDir('at-wt-'), 'wt');
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', wt, 'main');
+  const linked = await watchOf(wt);
+  write(repo, 'a.ts', 'wip\n');
+  git(repo, 'stash', 'push', '-q');
+  await sleep(2200);
+  write(wt, 'a.ts', 'edit\n');
+  write(wt, 'a.ts', 'a1\n');
+  git(wt, 'status', '--porcelain');
+  assert.equal(await gits(linked, 'a.ts'), undefined);
+});
+
+test('watch: popping a stash that is not the newest is a pop', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const w = await watchOf(repo);
+  write(repo, 'a.ts', 'wip a\n');
+  git(repo, 'stash', 'push', '-q');
+  await gits(w, 'a.ts');
+  write(repo, 'b.ts', 'wip b\n');
+  git(repo, 'stash', 'push', '-q');
+  await gits(w, 'b.ts');
+  git(repo, 'stash', 'pop', '-q', 'stash@{1}');
+  assert.equal(fs.readFileSync(path.join(repo, 'a.ts'), 'utf8'), 'wip a\n');
+  assert.equal(await gits(w, 'a.ts'), 'stash pop');
+});
+
 const reftable = (() => {
   if (noGit) return noGit;
   try {
@@ -619,6 +690,27 @@ test('watch: in a reftable repository a removal then a commit is not git', { ski
   git(repo, 'rm', '-q', 'a.ts');
   git(repo, 'commit', '-qm', 'rm');
   assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: in a reftable repository a switch in a linked worktree is git', { skip: reftable }, async () => {
+  const repo = tempDir('at-rt-');
+  git(repo, 'init', '-q', '-b', 'main', '--ref-format=reftable');
+  write(repo, 'a.ts', 'a\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'one');
+  git(repo, 'branch', 'f2');
+  const wt = path.join(tempDir('at-rt-wt-'), 'wt');
+  git(repo, 'worktree', 'add', '-q', wt, 'f2');
+  git(wt, 'switch', '-qc', 'f3');
+  write(wt, 'a.ts', 'a3\n');
+  write(wt, 'c.ts', 'c\n');
+  git(wt, 'add', '.');
+  git(wt, 'commit', '-qm', 'f3');
+  git(wt, 'switch', '-q', 'f2');
+  const w = await watchOf(wt);
+  git(wt, 'switch', '-q', 'f3');
+  assert.equal(await gits(w, 'a.ts'), 'checkout');
+  assert.equal(await gits(w, 'c.ts'), 'checkout');
 });
 
 test('watch: a folder outside git is not a repository', { skip: noGit }, async () => {

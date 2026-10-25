@@ -49,6 +49,9 @@ const STATE_LABELS: ReadonlyArray<[string, string]> = [
   ['SQUASH_MSG', 'merge --squash'],
 ];
 
+/** How far from the markers an operation wrote the index may be and still be the operation's write. */
+const INDEX_NEAR_MS = 2000;
+
 /** Reads of one refresh, before it takes what it has though git keeps moving. */
 const REFRESH_ATTEMPTS = 3;
 
@@ -261,6 +264,18 @@ export function changeSpan(before: MarkerLook, after: MarkerLook): { earliest?: 
   return { earliest, latest };
 }
 
+/** When the stash ref or its reflog last changed between two looks (a removal by its directory's mtime), or undefined if neither did. */
+export function stashChangedAt(before: MarkerLook, after: MarkerLook): number | undefined {
+  let at: number | undefined;
+  for (const name of STASH_MARKERS) {
+    const now = after.mtimes.get(name);
+    const was = before.mtimes.get(name);
+    const t = now !== undefined ? (now !== was ? now : undefined) : was !== undefined ? after.goneAt.get(name) : undefined;
+    if (t !== undefined && (at === undefined || t > at)) at = t;
+  }
+  return at;
+}
+
 /** Splits `stash list --format=%H` output into commits, newest first. */
 export function parseStashList(out: string): string[] {
   return out.split('\n').filter(Boolean);
@@ -270,7 +285,10 @@ export function parseStashList(out: string): string[] {
 export function stashChange(before: readonly string[], after: readonly string[]): { pushed?: string; popped?: string } {
   const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
   if (after.length === before.length + 1 && same(after.slice(1), before)) return { pushed: after[0] };
-  if (before.length === after.length + 1 && same(before.slice(1), after)) return { popped: before[0] };
+  if (before.length === after.length + 1) {
+    // `git stash pop stash@{n}` removes any one entry and keeps the rest in order.
+    for (let i = 0; i < before.length; i++) if (same([...before.slice(0, i), ...before.slice(i + 1)], after)) return { popped: before[i] };
+  }
   return {};
 }
 
@@ -312,7 +330,8 @@ export function discardsConflicts(label: string): boolean {
 /** The label of a reflog message: up to its first colon, as `merge f`, `checkout`, `pull`, `reset`. */
 export function messageLabel(message: string): string | undefined {
   const colon = message.indexOf(':');
-  return (colon === -1 ? message : message.slice(0, colon)).trim() || undefined;
+  // `pull` logs its command line: `pull -q --no-rebase` is a pull.
+  return (colon === -1 ? message : message.slice(0, colon)).replace(/\s+--?\w.*$/, '').trim() || undefined;
 }
 
 /** The labels of the reflog lines in `text`, oldest first; a partial first line is skipped by the caller. */
@@ -527,15 +546,27 @@ export class GitOperationWatch {
       const candidates = await this.candidatesOf(prev, look, index, head, entries);
       if (this.disposed || this.state !== prev) return;
       dropResolutions(candidates, prev.index, index, entries);
-      // The stash is shared by every worktree; a push or pop writes the index of the one it ran in.
-      const { pushed, popped } = stashMoved && look.index !== prev.look.index ? stashChange(prev.stash, stash) : {};
+      const now = this.clock.now();
+      const span = changeSpan(prev.look, look);
+      // An index written apart from the markers is someone else's (a status refresh, an
+      // agent's `git add`) when the refresh comes late, after an operation that wrote no files.
+      const indexWritten = look.index !== prev.look.index ? look.indexMtime : undefined;
+      const near = (at: number | undefined, from: number, to: number) => at !== undefined && at >= from && at <= to;
+      const indexNear = span.latest !== undefined && near(indexWritten, span.latest - INDEX_NEAR_MS, span.latest + INDEX_NEAR_MS);
+      const start = Math.min(this.lockSeenAt ?? Infinity, span.earliest ?? now) - this.timing.leadMs;
+      const end = Math.max(span.latest ?? 0, indexNear ? indexWritten! : 0) || indexWritten || now;
+      // The stash is shared by every worktree; a push or pop is this checkout's only when its
+      // own index was written with it: a push resets it after storing the stash (and logs a
+      // `reset` in this worktree's reflog), a pop writes it before dropping the entry. A drop
+      // writes no index, so a later unrelated index write does not make it a pop.
+      const stashAt = stashChangedAt(prev.look, look);
+      const change = stashMoved && stashAt !== undefined ? stashChange(prev.stash, stash) : {};
+      const pushed =
+        change.pushed && (entries.includes('reset') || near(indexWritten, stashAt! - this.timing.endSlackMs, stashAt! + INDEX_NEAR_MS)) ? change.pushed : undefined;
+      const popped = change.popped && near(indexWritten, stashAt! - INDEX_NEAR_MS, stashAt! + this.timing.endSlackMs) ? change.popped : undefined;
       if (pushed) for (const p of await this.stashPaths(pushed)) candidates.add(p);
       const poppedPaths = popped ? await this.stashPaths(popped) : [];
       if (this.disposed || this.state !== prev) return;
-      const now = this.clock.now();
-      const span = changeSpan(prev.look, look);
-      const start = Math.min(this.lockSeenAt ?? Infinity, span.earliest ?? now) - this.timing.leadMs;
-      const end = Math.max(span.latest ?? 0, look.index !== prev.look.index ? look.indexMtime : 0) || now;
       const label = pushed ? 'stash push' : popped ? 'stash pop' : operationLabel(prev.look, look, entries);
       // Commits alone write no files: whatever they took in stays the agent's.
       const commitsOnly = !pushed && !popped && !stopped(prev.look, look) && entries.length > 0 && entries.every(writesNoFiles);
@@ -700,6 +731,8 @@ export class GitOperationWatch {
       ...GIT_DIR_MARKERS.map((m): [string, string] => [m, nodePath.join(this.gitDir, m)]),
       ...COMMON_DIR_MARKERS.map((m): [string, string] => [m, nodePath.join(this.commonDir, m)]),
       ...(branch ? [[branch, nodePath.join(this.commonDir, branch)] as [string, string]] : []),
+      // With reftable a linked worktree keeps HEAD in a stack of its own.
+      ...(this.gitDir !== this.commonDir ? [['worktree reftable', nodePath.join(this.gitDir, 'reftable', 'tables.list')] as [string, string]] : []),
     ];
     const [stats, index, lock] = await Promise.all([
       Promise.all(names.map(([, file]) => statOf(file))),
