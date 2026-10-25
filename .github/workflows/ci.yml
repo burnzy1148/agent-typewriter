@@ -71,9 +71,10 @@ jobs:
       - name: Unit tests
         run: npm test
 
-  # it/runTest.ts splits its VS Code launches into two groups that share
-  # nothing: suite (suite.ts and its reload checks, the long one) and
-  # workspaces (the launches with workspaces of their own).
+  # it/runTest.ts runs its VS Code launches in groups that share nothing:
+  # each part of suite.ts in a fresh workspace (the reload part also runs the
+  # reload checks in restore.ts), and workspaces, the launches with
+  # workspaces of their own.
   integration:
     name: Integration tests (${{ matrix.os }}, ${{ matrix.group }})
     needs: changes
@@ -83,7 +84,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        group: [suite, workspaces]
+        group: [recording, playback, reload, edits, workspaces]
     steps:
       - uses: actions/checkout@v7
 

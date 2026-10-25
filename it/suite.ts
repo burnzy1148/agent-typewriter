@@ -25,7 +25,24 @@ async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
   }
 }
 
+// The sections run in four parts. IT_PART names one to run on its own, in a
+// fresh workspace: runTest.ts gives each part a launch of its own, and CI a
+// job of its own. A part relies only on the workspace runTest.ts makes, not on
+// what the parts before it leave, and only the reload part leaves state for
+// restore.ts. Unset, every part runs in one launch.
+const PARTS = { recording, playback, reload, edits } as const;
+
 export async function run(): Promise<void> {
+  const part = process.env.IT_PART as keyof typeof PARTS | undefined;
+  if (part !== undefined && !Object.hasOwn(PARTS, part)) throw new Error(`unknown IT_PART ${part}`);
+  const c = await setUp();
+  if (part) await PARTS[part](c);
+  else for (const run of Object.values(PARTS)) await run(c);
+  if (!part || part === 'reload') await leaveForReload(c);
+}
+
+/** Activates the extension, starts recording, and gathers what every part uses. */
+async function setUp() {
   const ext = vscode.extensions.getExtension<AgentTypewriterApi>('burnzy1148.agent-typewriter');
   assert.ok(ext, 'extension not found');
   const api = await ext.activate();
@@ -55,6 +72,88 @@ export async function run(): Promise<void> {
       ...timeline.all().slice(-20).map((e) => `  #${e.seq} ${e.kind} ${e.relPath} ${timeline.stateOf(e.seq)}`),
     ].join('\n');
 
+
+  // Helpers sections in more than one part use.
+  const mirrorDoc = (rel: string) =>
+    vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel);
+  const reorderWindow = Number(process.env.IT_REORDER_WINDOW_MS ?? 5000);
+  const lf = (t: string) => t.replace(/\r\n/g, '\n');
+  const cfg = () => vscode.workspace.getConfiguration('agentTypewriter');
+  const WS = vscode.ConfigurationTarget.Workspace;
+  const settle = () => sleep(1500);
+  const { player, scrubber } = api;
+  const repoFile = path.join(root, '.agent-typewriter.json');
+  const uriOf = (rel: string) => vscode.Uri.file(path.join(root, rel));
+  const eventsFor = (rel: string, from: number) => timeline.all().slice(from).filter((e) => e.relPath === rel);
+  const folder = vscode.workspace.workspaceFolders![0];
+  const nestedDir = path.join(root, '.worktrees', 'nested');
+  const gitIn = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', ...args], { cwd, stdio: 'ignore' });
+  const own = () => api.recorder.checkoutOf(folder)?.own;
+  const choose = (p: string) => vscode.commands.executeCommand('agentTypewriter.chooseCheckout', folder.uri, p);
+  const since = (from: number) => timeline.all().slice(from);
+
+  await vscode.commands.executeCommand('agentTypewriter.start');
+  await sleep(500);
+  return {
+    api,
+    timeline,
+    root,
+    write,
+    disk,
+    mirrorText,
+    idle,
+    player,
+    scrubber,
+    reorderWindow,
+    lf,
+    cfg,
+    WS,
+    mirrorDoc,
+    repoFile,
+    settle,
+    uriOf,
+    eventsFor,
+    folder,
+    nestedDir,
+    gitIn,
+    own,
+    choose,
+    since,
+  };
+}
+
+type Context = Awaited<ReturnType<typeof setUp>>;
+
+/** Sections 1-17: live recording, filters, line endings, write order, git baselines, the playback panel, the repository settings file, and worktrees. */
+async function recording(c: Context): Promise<void> {
+  const {
+    api,
+    timeline,
+    root,
+    write,
+    disk,
+    mirrorText,
+    idle,
+    player,
+    scrubber,
+    reorderWindow,
+    lf,
+    cfg,
+    WS,
+    mirrorDoc,
+    repoFile,
+    settle,
+    uriOf,
+    eventsFor,
+    folder,
+    nestedDir,
+    gitIn,
+    own,
+    choose,
+    since,
+  } = c;
+
   // Track which file playback is in, and how many separate edits hit the mirrors.
   const order: string[] = [];
   let lastSeq = -1;
@@ -69,9 +168,6 @@ export async function run(): Promise<void> {
   vscode.workspace.onDidChangeTextDocument((e) => {
     if (e.document.uri.scheme === 'agent-typewriter' && e.contentChanges.length > 0) mirrorEdits++;
   });
-
-  await vscode.commands.executeCommand('agentTypewriter.start');
-  await sleep(500);
 
   // --- 1. Agent touches a.ts, b.ts, existing.ts, then a.ts again; plus a filtered .txt
   write('src/a.ts', 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
@@ -176,8 +272,6 @@ export async function run(): Promise<void> {
   console.log('[it] live filter change ok');
 
   // --- 7. Line endings: CRLF files replay as CRLF, LF files as LF whatever files.eol says.
-  const mirrorDoc = (rel: string) =>
-    vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel);
   const crlf = (lines: string[]) => lines.map((l) => l + '\r\n').join('');
   const lines = Array.from({ length: 50 }, (_, i) => `export const v${i} = ${i};`);
   write('src/crlf.ts', crlf(lines));
@@ -216,7 +310,6 @@ export async function run(): Promise<void> {
   // y.ts is written and reported first; x.ts is written after that report but
   // its mtime says it was written earlier, so the timeline and replay must put
   // x.ts first. A wide window keeps the mtime clamp out of the way on slow watchers.
-  const reorderWindow = Number(process.env.IT_REORDER_WINDOW_MS ?? 5000);
   await vscode.workspace.getConfiguration('agentTypewriter').update('reorderWindowMs', reorderWindow, vscode.ConfigurationTarget.Workspace);
   const beforeOrder = timeline.all().length;
   const seen = new Set<string>();
@@ -241,7 +334,6 @@ export async function run(): Promise<void> {
   console.log('[it] write order ok');
 
   // --- 9. An outside write right after an own save is still recorded, from the saved text.
-  const lf = (t: string) => t.replace(/\r\n/g, '\n');
   async function saveThenWrite(marker: string, gapMs: number) {
     const at = timeline.all().length;
     const d = await vscode.workspace.openTextDocument(path.join(root, 'src/existing.ts'));
@@ -276,8 +368,6 @@ export async function run(): Promise<void> {
 
   // --- 10. Git-backed baselines: with no memory budget, a committed file's
   // first change is still replayed, from the committed text. Git is only read.
-  const cfg = () => vscode.workspace.getConfiguration('agentTypewriter');
-  const WS = vscode.ConfigurationTarget.Workspace;
   const gitState = () => {
     const head = fs.readFileSync(path.join(root, '.git/HEAD'), 'utf8');
     const ref = head.startsWith('ref: ') ? fs.readFileSync(path.join(root, '.git', head.slice(5).trim()), 'utf8') : '';
@@ -307,7 +397,6 @@ export async function run(): Promise<void> {
 
   // --- 11. Toggling while watching. Off (with budget): baselines move to memory.
   // On (no budget): a file with no baseline gets one from git.
-  const settle = () => sleep(1500);
   await cfg().update('baselineBudgetMB', 256, WS);
   await settle();
   await cfg().update('gitBaselines', false, WS);
@@ -323,7 +412,6 @@ export async function run(): Promise<void> {
 
   // --- 12. Playback panel: locked-down HTML, seek keeps pause state, end of
   // the slider skips to latest, speed, and malformed messages do nothing.
-  const { player, scrubber } = api;
   await vscode.commands.executeCommand('agentTypewriter.scrubber.focus');
   await until('playback panel to resolve', () => scrubber.isResolved, 10000);
   assert.match(scrubber.html, /default-src 'none'; style-src 'nonce-[0-9a-f]+'; script-src 'nonce-[0-9a-f]+';/);
@@ -422,7 +510,6 @@ export async function run(): Promise<void> {
 
   // --- 13. Repository settings file: applies live, sits below workspace
   // settings, survives a broken save, and goes away with the file.
-  const repoFile = path.join(root, '.agent-typewriter.json');
   const skipped = vscode.Uri.file(path.join(root, 'src/skip/a.ts'));
   const watched = () => api.recorder.matches(skipped);
   await cfg().update('baselineBudgetMB', 256, WS);
@@ -475,8 +562,6 @@ export async function run(): Promise<void> {
 
   // --- 15. respectGitignore: ignored new files are skipped, tracked files are
   // not, .gitignore edits apply live, and turning it off records from a baseline.
-  const uriOf = (rel: string) => vscode.Uri.file(path.join(root, rel));
-  const eventsFor = (rel: string, from: number) => timeline.all().slice(from).filter((e) => e.relPath === rel);
   fs.mkdirSync(path.join(root, 'src/later'), { recursive: true });
   // Give the watcher time to pick up the new directory (Linux misses files created right away).
   await sleep(1000);
@@ -559,15 +644,8 @@ export async function run(): Promise<void> {
   // sibling worktree is recorded under its label into its own mirror,
   // switching back keeps queued changes, a worktree added while recording is
   // skipped, and removing the chosen worktree falls back to the folder's own.
-  const folder = vscode.workspace.workspaceFolders![0];
-  const nestedDir = path.join(root, '.worktrees', 'nested');
   const siblingDir = `${root}-sibling`;
   const label = path.basename(siblingDir);
-  const gitIn = (cwd: string, ...args: string[]) =>
-    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', ...args], { cwd, stdio: 'ignore' });
-  const own = () => api.recorder.checkoutOf(folder)?.own;
-  const choose = (p: string) => vscode.commands.executeCommand('agentTypewriter.chooseCheckout', folder.uri, p);
-  const since = (from: number) => timeline.all().slice(from);
   await until('nested worktree skipped', () => api.recorder.describeFilter().includes('other worktrees skipped'), 10000);
 
   const atNested = timeline.all().length;
@@ -664,6 +742,11 @@ export async function run(): Promise<void> {
   );
   await until('worktree playback', idle);
   console.log('[it] worktrees ok');
+}
+
+/** PLAY and settings layering: playback and mirror documents, with changes pushed straight onto the timeline. */
+async function playback(c: Context): Promise<void> {
+  const { api, timeline, root, write, mirrorText, idle, player, scrubber, reorderWindow, cfg, WS, mirrorDoc } = c;
 
   // --- PLAY. Playback and mirror documents. Changes go straight onto the
   // timeline with the recorder stopped, so only the player sets the timing.
@@ -1472,7 +1555,7 @@ export async function run(): Promise<void> {
     await until('run played', playedNow(run2.seq));
     await setting('agentTypewriter', 'charsPerMinute', 240000);
     // A real file open beside the mirrors is never decorated.
-    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
+    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/existing.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
     await sleep(300);
     assert.ok([...api.highlights.drawn.keys()].every((k) => k.startsWith('agent-typewriter:')), 'a real file got highlights');
     console.log('[it] highlights ok');
@@ -1570,6 +1653,32 @@ export async function run(): Promise<void> {
     await until('SET playback', idle);
     console.log('[it] settings layering ok');
   }
+}
+
+/** ACT: commands and settings that change what is recorded, including the history settings restore.ts checks. */
+async function reload(c: Context): Promise<void> {
+  const {
+    api,
+    timeline,
+    root,
+    write,
+    disk,
+    mirrorText,
+    idle,
+    player,
+    reorderWindow,
+    cfg,
+    WS,
+    repoFile,
+    settle,
+    uriOf,
+    eventsFor,
+    folder,
+    gitIn,
+    own,
+    choose,
+    since,
+  } = c;
 
   // ACT a. Watch Only This and Add to Watch on the workspace root write a
   // folder-relative glob, and a folder named like a route ("[id]") matches itself.
@@ -1714,6 +1823,11 @@ export async function run(): Promise<void> {
   assert.ok(timeline.all().length > 12, 'the user historyLimit cut the buffer though the repository file sets one');
   assert.ok(api.store?.isRunning, 'the user persistHistory stopped saving though the repository file turns it on');
   console.log(`[it] ACT: repository file history settings ok (${timeline.all().length} changes)`);
+}
+
+/** Edge cases of recording edits, then REC2 (baselines) and REC3 (worktree lifecycle). */
+async function edits(c: Context): Promise<void> {
+  const { api, timeline, root, write, disk, mirrorText, idle, reorderWindow, lf, cfg, WS, uriOf, eventsFor, gitIn, own, choose, since } = c;
 
   {
     // Settings these sections change; restored at the end for the sections below.
@@ -2448,6 +2562,11 @@ export async function run(): Promise<void> {
     await cfg().update('reorderWindowMs', restoreReorder, WS);
     await sleep(500);
   }
+}
+
+/** Section 18: queued changes and open mirror tabs for restore.ts, and the checkout it expects. */
+async function leaveForReload(c: Context): Promise<void> {
+  const { api, timeline, write, disk, mirrorText, idle, nestedDir, choose } = c;
 
   // --- 18. Leave three queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace. Two mirror
@@ -2491,6 +2610,7 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('agentTypewriter.stop');
   await choose(nestedDir);
 }
+
 
 /** Files whose mirror text differs from their highlight baseline, sorted. */
 export function highlightedFiles(t: Timeline): string[] {

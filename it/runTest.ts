@@ -8,18 +8,27 @@ const extensionDevelopmentPath = path.resolve(__dirname, '..');
 /** VS Code flags every launch shares, after its workspace and user-data dir. */
 const flags = ['--disable-extensions', '--disable-gpu', '--no-sandbox', '--disable-workspace-trust'];
 
-// IT_GROUP=suite runs only the main workspace's launches (suite.ts, its reload
-// check and the autoStart probes); IT_GROUP=workspaces runs only the launches
-// with workspaces of their own. CI runs the two groups as parallel jobs.
-// Unset, both run.
+// IT_GROUP picks launches to run, as a comma-separated list: a part of
+// suite.ts (recording, playback, reload or edits, see PARTS there), each in a
+// fresh main workspace; suite, for every part in one launch; or workspaces,
+// for the launches with workspaces of their own. CI runs them as parallel
+// jobs. Unset, suite and workspaces run.
+const PARTS = ['recording', 'playback', 'reload', 'edits'];
+
 async function main() {
-  const group = process.env.IT_GROUP;
-  if (group !== 'workspaces') await suiteLaunches();
-  if (group !== 'suite') await workspaceLaunches();
+  for (const group of process.env.IT_GROUP?.split(',') ?? ['suite', 'workspaces']) {
+    if (group === 'workspaces') await workspaceLaunches();
+    else if (group === 'suite') await suiteLaunches();
+    else if (PARTS.includes(group)) await suiteLaunches(group);
+    else throw new Error(`unknown IT_GROUP ${group}`);
+  }
 }
 
-/** The main workspace: suite.ts, then reloads of it that check what it left. */
-async function suiteLaunches() {
+/**
+ * The main workspace: suite.ts, or one part of it, then, unless the part
+ * leaves nothing for them, reloads of it that check what it left.
+ */
+async function suiteLaunches(part?: string) {
   const extensionTestsPath = path.resolve(__dirname, 'suite.js');
 
   const workspace = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-ws-'));
@@ -82,7 +91,8 @@ async function suiteLaunches() {
   const launchArgs = [workspace, `--user-data-dir=${userData}`, ...flags];
   // The first launch leaves the expected timeline here; the second checks it was restored.
   const extensionTestsEnv = { IT_EXPECT: path.join(userData, 'expected-timeline.json') };
-  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
+  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv: part ? { ...extensionTestsEnv, IT_PART: part } : extensionTestsEnv });
+  if (part && part !== 'reload') return;
   await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
 
   // The repository file's autoStart applies at activation: true there starts

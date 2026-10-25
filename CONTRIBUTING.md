@@ -22,7 +22,7 @@ npm run it        # integration tests in a real headless VS Code
 npm run package   # typecheck, test, bundle, produce the .vsix
 ```
 
-`npm run it` downloads a VS Code build into `.vscode-test/` on first run. On Linux without a display it runs itself under `xvfb-run`, so install xvfb first. Set `IT_GROUP=suite` or `IT_GROUP=workspaces` to run only one of its two groups of launches, as CI does in parallel jobs.
+`npm run it` downloads a VS Code build into `.vscode-test/` on first run. On Linux without a display it runs itself under `xvfb-run`, so install xvfb first. To run only some of its launches, as CI does in parallel jobs, set `IT_GROUP` to a comma-separated list: `recording`, `playback`, `reload` or `edits` for one part of `it/suite.ts`, `suite` for all of it in one launch, and `workspaces` for the launches with workspaces of their own.
 
 Run `npm run build` (or keep `npm run watch` running), then press F5 with the folder open to launch an Extension Development Host with your build loaded.
 
