@@ -10,8 +10,10 @@ import {
   digestIndex,
   findGitWrite,
   discardsConflicts,
-  dropResolutions,
+  firstReflogCommit,
   messageLabel,
+  reflogShowEntries,
+  resolutionsOf,
   GitOperationWatch,
   groupEntries,
   operationLabel,
@@ -64,7 +66,7 @@ test('buildOperation: clean, dirty, unmerged, removed and popped paths', () => {
 });
 
 test('findGitWrite: span edges and whether the file exists', () => {
-  const op: GitOperation = { label: 'checkout', from: 100, to: 200, touched: new Set(['a.ts', 'b.ts']), present: new Set(['a.ts']), absent: new Set(['b.ts']), blobs: new Map(), blobAt: new Map(), skipped: 0 };
+  const op: GitOperation = { label: 'checkout', from: 100, to: 200, touched: new Set(['a.ts', 'b.ts']), present: new Set(['a.ts']), absent: new Set(['b.ts']), blobs: new Map(), blobAt: new Map(), resolved: new Set(), skipped: 0 };
   assert.equal(findGitWrite([op], 'a.ts', 100, true), op);
   assert.equal(findGitWrite([op], 'a.ts', 200, true), op);
   assert.equal(findGitWrite([op], 'a.ts', 99, true), undefined);
@@ -75,7 +77,7 @@ test('findGitWrite: span edges and whether the file exists', () => {
 });
 
 test('findGitWrite: a blob made after the write was taken in by git, not written by it', () => {
-  const op: GitOperation = { label: 'commit', from: 100, to: 200, touched: new Set(['a.ts', 'b.ts']), present: new Set(['a.ts', 'b.ts']), absent: new Set(), blobs: new Map(), blobAt: new Map([['a.ts', 160], ['b.ts', 120]]), skipped: 0 };
+  const op: GitOperation = { label: 'commit', from: 100, to: 200, touched: new Set(['a.ts', 'b.ts']), present: new Set(['a.ts', 'b.ts']), absent: new Set(), blobs: new Map(), blobAt: new Map([['a.ts', 160], ['b.ts', 120]]), resolved: new Set(), skipped: 0 };
   assert.equal(findGitWrite([op], 'a.ts', 150, true), undefined);
   assert.equal(findGitWrite([op], 'a.ts', 160, true), op);
   assert.equal(findGitWrite([op], 'b.ts', 150, true), op);
@@ -117,20 +119,34 @@ test('discardsConflicts: aborts and resets, not continues', () => {
   for (const l of ['rebase (continue)', 'rebase (finish)', 'cherry-pick', 'commit (merge)', 'merge feature']) assert.ok(!discardsConflicts(l), l);
 });
 
-test('dropResolutions: a conflict settled since the last look is not a candidate, unless git threw it away', () => {
+test('resolutionsOf: a conflict settled since the last look is a resolution, unless git threw it away', () => {
   const before = digestIndex(index(`100644 ${SHA_A} 1\tr.ts\n100644 ${SHA_B} 2\tr.ts\n100644 ${SHA_A} 0\to.ts\n100644 ${SHA_A} 1\tstill.ts\n100644 ${SHA_B} 3\tstill.ts`));
   const after = digestIndex(index(`100644 ${SHA_B} 0\tr.ts\n100644 ${SHA_C} 0\to.ts\n100644 ${SHA_A} 1\tstill.ts\n100644 ${SHA_C} 3\tstill.ts`));
-  const kept = new Set(['r.ts', 'o.ts', 'still.ts']);
-  dropResolutions(kept, before, after, ['cherry-pick']);
-  assert.deepEqual([...kept].sort(), ['o.ts', 'still.ts']);
-  const aborted = new Set(['r.ts', 'o.ts']);
-  dropResolutions(aborted, before, after, ['reset']);
-  assert.deepEqual([...aborted].sort(), ['o.ts', 'r.ts']);
+  assert.deepEqual([...resolutionsOf(new Set(['r.ts', 'o.ts', 'still.ts']), before, after, ['cherry-pick'])], ['r.ts']);
+  assert.deepEqual([...resolutionsOf(new Set(['r.ts', 'o.ts']), before, after, ['reset'])], []);
 });
 
 test('writesNoFiles: commits of every kind, nothing else', () => {
   for (const l of ['commit', 'commit (amend)', 'commit (initial)', 'commit (merge)']) assert.ok(writesNoFiles(l), l);
   for (const l of ['checkout', 'merge feature', 'rebase (continue)', 'cherry-pick', 'reset', 'git operation']) assert.ok(!writesNoFiles(l), l);
+});
+
+test('findGitWrite: a resolved path is never git\'s, and an older operation does not claim it', () => {
+  const older: GitOperation = { label: 'rebase', from: 0, to: 500, touched: new Set(['r.ts']), present: new Set(['r.ts']), absent: new Set(), blobs: new Map(), blobAt: new Map(), resolved: new Set(), skipped: 0 };
+  const newer: GitOperation = { ...older, from: 100, to: 300, resolved: new Set(['r.ts']) };
+  assert.equal(findGitWrite([older, newer], 'r.ts', 200, true), undefined);
+});
+
+test('reflogShowEntries: entries since a second, oldest first, with the oldest one\'s commit', () => {
+  const out = [`${SHA_C}\0HEAD@{1700000010}\0checkout: moving from a to b`, `${SHA_B}\0HEAD@{1700000005}\0reset: moving to HEAD`, `${SHA_A}\0HEAD@{1699999000}\0commit: old`].join('\n');
+  assert.deepEqual(reflogShowEntries(out, 1700000005), { labels: ['reset', 'checkout'], firstCommit: SHA_B });
+  assert.deepEqual(reflogShowEntries(out, 1700000011), { labels: [], firstCommit: undefined });
+});
+
+test('firstReflogCommit: the new commit of the first line', () => {
+  const text = `${SHA_A} ${SHA_B} T <t@e> 1700000000 +0000\trebase (continue): x\n${SHA_B} ${SHA_C} T <t@e> 1700000001 +0000\trebase (pick): y\n`;
+  assert.equal(firstReflogCommit(text), SHA_B);
+  assert.equal(firstReflogCommit(''), undefined);
 });
 
 test('stashChange: push, pop, and anything else', () => {
@@ -409,6 +425,35 @@ test('watch: a conflict resolved and committed stays the agent\'s; the merge is 
   git(repo, 'add', 'a.ts');
   git(repo, '-c', 'core.editor=true', 'commit', '-q', '--no-edit');
   assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a later commit of a rebase that rewrites the resolved file is git\'s', { skip: noGit }, async () => {
+  const repo = tempRepo();
+  write(repo, 'a.ts', 'one\ntwo\nthree\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'base');
+  git(repo, 'switch', '-qc', 'feature');
+  write(repo, 'a.ts', 'ONE feature\ntwo\nthree\n');
+  git(repo, 'commit', '-qam', 'c1');
+  write(repo, 'b.ts', 'b\n');
+  git(repo, 'add', 'b.ts');
+  git(repo, 'commit', '-qm', 'c2');
+  write(repo, 'a.ts', 'ONE feature\ntwo\nTHREE\n');
+  git(repo, 'commit', '-qam', 'c3');
+  git(repo, 'switch', '-q', 'main');
+  write(repo, 'a.ts', 'ONE main\ntwo\nthree\n');
+  git(repo, 'commit', '-qam', 'main');
+  git(repo, 'switch', '-q', 'feature');
+  const w = await watchOf(repo);
+  assert.throws(() => git(repo, 'rebase', '-q', 'main'));
+  assert.equal(await gits(w, 'a.ts'), 'rebase');
+  await sleep(120);
+  write(repo, 'a.ts', 'ONE resolved\ntwo\nthree\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'rebase', '--continue');
+  assert.equal(fs.readFileSync(path.join(repo, 'a.ts'), 'utf8'), 'ONE resolved\ntwo\nTHREE\n');
+  assert.match((await gits(w, 'a.ts')) ?? '', /^rebase/);
+  assert.match((await gits(w, 'b.ts')) ?? '', /^rebase/);
 });
 
 test('watch: a rebase conflict resolved before --continue stays the agent\'s; the next commit\'s files are git\'s', { skip: noGit }, async () => {

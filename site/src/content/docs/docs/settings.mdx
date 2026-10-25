@@ -35,4 +35,4 @@ These are still replayed:
 - Edits made while an operation runs, and edits committed right after, unless git wrote that same file with that same text.
 - `git restore`, `git checkout -- <path>`, `git reset --hard` to the current commit, and `git stash apply`. Git leaves nothing that tells them apart from an agent writing a file back to its committed text.
 
-Commands that all finish within the debounce time (`debounceMs`) are read as one operation. For example, `git stash && git merge feature && git stash pop` run together replays the popped edits.
+Commands that all finish within the debounce time (`debounceMs`) are read as one operation. For example, `git stash && git merge feature && git stash pop` run together replays the popped edits. A `git stash -u` or `git stash pop` that moves thousands of untracked files (hundreds on Windows) can also go unrecognized, and then its files are replayed.
