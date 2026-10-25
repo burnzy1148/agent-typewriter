@@ -17,6 +17,7 @@ async function main() {
     JSON.stringify(
       {
         'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.charsPerMinute': 36000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.arrowNavigation': false,
@@ -137,6 +138,7 @@ exports.run = async () => {
       folders: [{ path: 'a' }, { path: 'b' }],
       settings: {
         'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
         'agentTypewriter.charsPerMinute': 240000,
@@ -171,6 +173,7 @@ exports.run = async () => {
       folders: [{ path: 'repo' }, { path: 'repo/pkg' }],
       settings: {
         'agentTypewriter.extensions': ['json'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
         'agentTypewriter.gitBaselines': true,
@@ -216,6 +219,7 @@ exports.run = async () => {
       folders: [{ path: 'client/app' }, { path: 'server/app' }, { path: 'proj' }, { path: 'repo' }],
       settings: {
         'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
         'agentTypewriter.charsPerMinute': 240000,
@@ -273,6 +277,7 @@ exports.run = async () => {
     path.join(replayRepo, '.vscode/settings.json'),
     JSON.stringify({
       'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
       'agentTypewriter.debounceMs': 100,
       'agentTypewriter.reorderWindowMs': 0,
       'agentTypewriter.charsPerMinute': 240000,
@@ -303,6 +308,7 @@ exports.run = async () => {
     path.join(lanesRepo, '.vscode/settings.json'),
     JSON.stringify({
       'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
       'agentTypewriter.debounceMs': 100,
       'agentTypewriter.reorderWindowMs': 0,
       'agentTypewriter.charsPerMinute': 240000,

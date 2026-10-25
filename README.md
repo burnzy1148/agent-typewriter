@@ -208,9 +208,10 @@ Agents often work side by side, each in its own worktree. Up to 5 checkouts can 
 | `catchUpFactor` | 0.5 | Speed added per queued change |
 | `maxSpeedup` | 8 | Cap on automatic catch-up |
 | `maxAnimatedChars` | 6000 | Bigger changes are applied instantly |
-| `fileSwitchDelayMs` | 600 | Pause when flipping to another file |
+| `fileSwitchDelayMs` | 1000 | Pause on the new file before its first edit, like a person changing tabs |
 | `smoothScroll` | true | Scroll to the next edit in the same file instead of jumping there. Edits already in view only move the caret |
-| `scrollPauseMs` | 400 | Pause before that scroll, to read the last lines typed |
+| `readPauseSeconds` | 1.5 | Time to read what was just typed before the view leaves it, for an off-screen edit or another file. Counts from the last edit, so idle time counts; 0 turns it off |
+| `scrollPauseMs` | | Deprecated: use `readPauseSeconds`. Still applies, divided by 1000, wherever `readPauseSeconds` is not set |
 | `scrollLinesPerSecond` | 60 | Scroll speed. A scroll takes at most one second at 1x; far edits jump most of the way first |
 | `arrowNavigation` | true | Walk the caret to a nearby edit in view with arrow keys (a line at a time, then by words) instead of clicking there |
 | `arrowKeysPerSecond` | 15 | Arrow key presses per second for that walk |

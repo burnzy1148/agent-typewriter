@@ -5,6 +5,7 @@ import { mergeProfiles, parseProfiles, type FilterProfile, type Profiles } from 
 import { pickLayer, REPO_SETTING_KINDS, type RepoValues } from './repoSettings';
 import { isFiniteNumber, numberSetting } from './numberSetting';
 import { resolveCharsPerMinute } from './pace';
+import { resolveReadPauseSeconds } from './readPause';
 
 export const SECTION = 'agentTypewriter';
 
@@ -25,10 +26,14 @@ export interface Settings extends FilterSettings {
   catchUpFactor: number;
   maxSpeedup: number;
   maxAnimatedChars: number;
+  /** Beat on the new file's mirror before its first edit. */
   fileSwitchDelayMs: number;
   /** Scroll to the next edit in the same file instead of jumping. */
   smoothScroll: boolean;
-  scrollPauseMs: number;
+  /** Least time since the last edit before the view leaves it: an off-screen edit or another file. */
+  readPauseSeconds: number;
+  /** The read pause came from the deprecated `scrollPauseMs` setting. */
+  readPauseFromDeprecatedSetting: boolean;
   scrollLinesPerSecond: number;
   /** Walk the caret to nearby edits with arrow keys instead of clicking there. */
   arrowNavigation: boolean;
@@ -86,6 +91,7 @@ export function readSettings(): Settings {
   const num = (key: string, fallback: number, min?: number, max?: number) =>
     numberSetting(c.get(key, fallback, isFiniteNumber), fallback, min, max);
   const speed = resolveSpeed(cfg);
+  const readPause = resolveReadPause(cfg);
   return {
     autoStart: c.get('autoStart', false),
     include: f.get('include', ['**/*'], isStringArray),
@@ -101,9 +107,10 @@ export function readSettings(): Settings {
     catchUpFactor: num('catchUpFactor', 0.5, 0),
     maxSpeedup: num('maxSpeedup', 8, 1),
     maxAnimatedChars: num('maxAnimatedChars', 6000),
-    fileSwitchDelayMs: num('fileSwitchDelayMs', 600, 0),
+    fileSwitchDelayMs: num('fileSwitchDelayMs', 1000, 0, 15000),
     smoothScroll: c.get('smoothScroll', true),
-    scrollPauseMs: num('scrollPauseMs', 400, 0, 5000),
+    readPauseSeconds: readPause.readPauseSeconds,
+    readPauseFromDeprecatedSetting: readPause.fromDeprecated,
     scrollLinesPerSecond: num('scrollLinesPerSecond', 60, 1),
     arrowNavigation: c.get('arrowNavigation', true),
     arrowKeysPerSecond: num('arrowKeysPerSecond', 15, 1),
@@ -192,6 +199,20 @@ function resolveSpeed(cfg: vscode.WorkspaceConfiguration) {
     { charsPerMinute: perMinute?.workspaceValue, charsPerSecond: perSecond?.workspaceValue },
     { charsPerMinute: repoValues.charsPerMinute, charsPerSecond: repoValues.charsPerSecond },
     { charsPerMinute: perMinute?.globalValue, charsPerSecond: perSecond?.globalValue },
+  ]);
+}
+
+/**
+ * readPauseSeconds, with the deprecated scrollPauseMs (divided by 1000)
+ * standing in for it in any layer that sets only the old key.
+ */
+function resolveReadPause(cfg: vscode.WorkspaceConfiguration) {
+  const seconds = cfg.inspect<unknown>('readPauseSeconds');
+  const ms = cfg.inspect<unknown>('scrollPauseMs');
+  return resolveReadPauseSeconds([
+    { readPauseSeconds: seconds?.workspaceValue, scrollPauseMs: ms?.workspaceValue },
+    { readPauseSeconds: repoValues.readPauseSeconds, scrollPauseMs: repoValues.scrollPauseMs },
+    { readPauseSeconds: seconds?.globalValue, scrollPauseMs: ms?.globalValue },
   ]);
 }
 

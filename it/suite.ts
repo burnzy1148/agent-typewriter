@@ -933,7 +933,7 @@ export async function run(): Promise<void> {
     // the scroll; finish current and skip to latest end it; smoothScroll off jumps.
     await setting('agentTypewriter', 'charsPerMinute', 240000);
     await setting('agentTypewriter', 'maxAnimatedChars', 6000);
-    await setting('agentTypewriter', 'scrollPauseMs', 0);
+    await setting('agentTypewriter', 'readPauseSeconds', 0);
     await setting('agentTypewriter', 'scrollLinesPerSecond', 60);
     const tallLines = Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`);
     /** The mirror's current text with `edits` applied, so each step's change holds only its own hunks. */
@@ -1009,6 +1009,94 @@ export async function run(): Promise<void> {
     await jumped.done();
     assert.ok(new Set(jumped.seen.seen).size <= 2, `smoothScroll off still scrolled: ${jumped.seen.seen.join(',')}`);
     console.log('[it] smooth scroll to the next edit ok');
+
+    // The read pause: before the view leaves what was just typed (an off-screen
+    // edit or another file) it waits, counting time already passed. smoothScroll
+    // off still waits; finish current ends it; a seek skips it.
+    await setting('agentTypewriter', 'smoothScroll', true);
+    await setting('agentTypewriter', 'readPauseSeconds', 1);
+    /** When the mirror of `rel` changed, in order, until disposed. */
+    const editTimes = (rel: string) => {
+      const at: number[] = [];
+      const sub = vscode.workspace.onDidChangeTextDocument((ev) => {
+        if (isMirror(ev.document, rel) && ev.contentChanges.length > 0) at.push(Date.now());
+      });
+      return { at, dispose: () => sub.dispose() };
+    };
+    /** Plays a scrollStep and measures the ms from the last edit before the view first moved down to that move. */
+    const scrollWait = async (label: string, edits: Record<number, string>, line: number) => {
+      const changed = editTimes('play/scroll.ts');
+      let movedAt: number | undefined;
+      const sub = vscode.window.onDidChangeTextEditorVisibleRanges((ev) => {
+        if (movedAt === undefined && isMirror(ev.textEditor.document, 'play/scroll.ts') && (ev.visibleRanges[0]?.start.line ?? 0) > 0) movedAt = Date.now();
+      });
+      const step = await scrollStep(label, edits, line);
+      await step.done();
+      sub.dispose();
+      changed.dispose();
+      assert.ok(movedAt !== undefined, `${label}: the view never moved`);
+      const before = changed.at.filter((t) => t <= movedAt!);
+      assert.ok(before.length > 0, `${label}: the view moved before anything was typed`);
+      return { wait: movedAt - before[before.length - 1], tops: step.seen.seen };
+    };
+
+    const offScreen = await scrollWait('read pause before a scroll', { 4: 'const line4 = 40;', 345: 'const line345 = 3450;' }, 345);
+    assert.ok(offScreen.wait >= 850 && offScreen.wait < 2500, `the view left line 4 after ${offScreen.wait} ms, not about 1 s`);
+
+    await setting('agentTypewriter', 'smoothScroll', false);
+    const offScreenJump = await scrollWait('read pause before a jump', { 7: 'const line7 = 70;', 347: 'const line347 = 3470;' }, 347);
+    assert.ok(offScreenJump.wait >= 850 && offScreenJump.wait < 2500, `with smoothScroll off the view left line 7 after ${offScreenJump.wait} ms, not about 1 s`);
+    assert.ok(new Set(offScreenJump.tops).size <= 2, `smoothScroll off still scrolled: ${offScreenJump.tops.join(',')}`);
+    await setting('agentTypewriter', 'smoothScroll', true);
+
+    await setting('agentTypewriter', 'readPauseSeconds', 3);
+    const cutPause = await scrollStep('finish during the read pause', { 8: 'const line8 = 80;', 349: 'const line349 = 3490;' }, 349);
+    await until('the first hunk of the cut change', () => mirrorText('play/scroll.ts').includes('const line8 = 80;'));
+    const finishAt = Date.now();
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await cutPause.done();
+    assert.ok(Date.now() - finishAt < 1500, `finish current took ${Date.now() - finishAt} ms to end a 3 s read pause`);
+    await setting('agentTypewriter', 'readPauseSeconds', 1);
+
+    // Switching files: the last file stays in view for the read pause first.
+    const a1 = await play('play/read-a.ts', '', 'export const a = 1;\n');
+    const aEdits = editTimes('play/read-a.ts');
+    let bShownAt: number | undefined;
+    const bShown = vscode.window.onDidChangeVisibleTextEditors((eds) => {
+      if (bShownAt === undefined && eds.some((ed) => isMirror(ed.document, 'play/read-b.ts'))) bShownAt = Date.now();
+    });
+    const a2 = push('play/read-a.ts', a1.after, 'export const a = 2;\n');
+    const b1 = push('play/read-b.ts', '', 'export const b = 1;\n');
+    await until('read-b playback', playedNow(b1.seq));
+    aEdits.dispose();
+    bShown.dispose();
+    assert.equal(timeline.stateOf(a2.seq), 'played');
+    assert.ok(bShownAt !== undefined && aEdits.at.length > 0, 'read-b was never shown after read-a was typed');
+    const switchWait = bShownAt - aEdits.at[aEdits.at.length - 1];
+    assert.ok(switchWait >= 850 && switchWait < 2500, `read-b was shown ${switchWait} ms after read-a's last edit, not about 1 s`);
+
+    // A change that arrives after the read pause has passed switches with no added wait.
+    await sleep(1500);
+    const lateEdits = editTimes('play/read-a.ts');
+    const pushedAt = Date.now();
+    const a3 = push('play/read-a.ts', a2.after, 'export const a = 3;\n');
+    await until('late read-a playback', playedNow(a3.seq));
+    lateEdits.dispose();
+    assert.ok(lateEdits.at.length > 0 && lateEdits.at[0] - pushedAt < 900, `a late change waited ${lateEdits.at[0] - pushedAt} ms, though the read pause had passed`);
+    assert.equal(mirrorText('play/read-a.ts'), a3.after);
+
+    // A seek right after typing shows the other file with no read pause.
+    const seekEdits = editTimes('play/read-b.ts');
+    const seekAt = Date.now();
+    await vscode.commands.executeCommand('agentTypewriter.seek', b1.seq);
+    await until('read-b replayed after the seek', () => seekEdits.at.length > 0);
+    seekEdits.dispose();
+    assert.ok(seekEdits.at[0] - seekAt < 900, `after a seek read-b waited ${seekEdits.at[0] - seekAt} ms`);
+    await until('idle after the seek', idle);
+    assert.equal(mirrorText('play/read-b.ts'), b1.after);
+    assert.equal(mirrorText('play/read-a.ts'), a3.after);
+    await setting('agentTypewriter', 'readPauseSeconds', 0);
+    console.log('[it] read pause ok');
 
     // A nearby edit in view is reached with arrow keys, a line at a time.
     // Pause holds the walk; arrowNavigation off puts the caret there at once.

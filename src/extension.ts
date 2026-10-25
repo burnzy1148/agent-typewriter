@@ -888,11 +888,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     loggedDeprecatedSpeed = deprecated;
   };
 
+  /** Whether the scrollPauseMs deprecation note is showing for the current settings. */
+  let loggedDeprecatedReadPause = false;
+  const noteDeprecatedReadPause = () => {
+    const deprecated = readSettings().readPauseFromDeprecatedSetting;
+    if (deprecated && !loggedDeprecatedReadPause) {
+      log.appendLine('scrollPauseMs is deprecated; the read pause comes from it divided by 1000. Set readPauseSeconds instead.');
+    }
+    loggedDeprecatedReadPause = deprecated;
+  };
+
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
   const applySettingsChange = async (affects: (key: string) => boolean) => {
     if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
     if (affects('profiles') || affects('activeProfile')) noteUnknownProfile();
     if (affects('charsPerMinute') || affects('charsPerSecond')) noteDeprecatedSpeed();
+    if (affects('readPauseSeconds') || affects('scrollPauseMs')) noteDeprecatedReadPause();
     if (['include', 'exclude', 'extensions', 'respectGitignore', 'profiles', 'activeProfile'].some(affects)) {
       await recorder.refreshFilter();
     } else if (affects('autoRecordWorktrees')) {
@@ -1016,6 +1027,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   await mirrorsRefilled;
   noteUnknownProfile();
   noteDeprecatedSpeed();
+  noteDeprecatedReadPause();
   if (readSettings().autoStart && vscode.workspace.workspaceFolders?.length) {
     void vscode.commands.executeCommand('agentTypewriter.start');
   }

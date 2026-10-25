@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Replay waits for a read pause before the view leaves what it just typed: before scrolling or jumping to an off-screen edit, and before switching to another file, while the old file is still in view (`readPauseSeconds`, default 1.5). Time already passed counts, so a change that arrives after an idle gap switches at once. Seeks, skips and catch up skip it; finish current ends it.
+- `fileSwitchDelayMs`, the pause on the new file before its first edit, now defaults to 1000 (was 600) and is capped at 15000.
+- `scrollPauseMs` is deprecated but still honored, divided by 1000, wherever `readPauseSeconds` is not set. The output channel says when it is in effect.
+- **BREAKING**: with `smoothScroll` off, an off-screen edit now waits for the read pause before the jump. Set `readPauseSeconds` to 0 for the old behavior.
+
 ## 0.3.0 (2026-10-24)
 
 - The caret walks to a nearby edit with arrow keys, a line at a time and then by words, instead of appearing there (`arrowNavigation`, `arrowKeysPerSecond`). Far edits are still scrolled to and clicked.
