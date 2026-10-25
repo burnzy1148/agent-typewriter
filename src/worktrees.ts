@@ -221,6 +221,16 @@ function realPath(p: string): string {
   }
 }
 
+/** `realPath` without blocking: the same path, read asynchronously. */
+export async function realPathAsync(p: string): Promise<string> {
+  const resolved = path.resolve(p);
+  try {
+    return await fs.promises.realpath(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
 
 /**
@@ -229,12 +239,22 @@ const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p)
  * with the checkout's `pathKey` for another worktree.
  */
 export function laneKey(folderKey: string, own: boolean, checkoutPath: string): string {
-  return own ? folderKey : `${folderKey}\0${pathKey(checkoutPath)}`;
+  return own ? folderKey : laneKeyOf(folderKey, pathKey(checkoutPath));
+}
+
+/** The lane id of another worktree's checkout, from its `pathKey`. */
+export function laneKeyOf(folderKey: string, checkoutKey: string): string {
+  return `${folderKey}\0${checkoutKey}`;
 }
 
 /** A path in a form two spellings of the same directory share: symlinks resolved, case folded on Windows. */
 export function pathKey(p: string): string {
-  return fold(realPath(p));
+  return realPathKey(realPath(p));
+}
+
+/** The `pathKey` of a path `realPath` or `realPathAsync` already resolved. */
+export function realPathKey(real: string): string {
+  return fold(real);
 }
 
 /**

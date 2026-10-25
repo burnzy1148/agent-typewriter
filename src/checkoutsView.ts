@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { laneOf, type LaneInfo, type Timeline } from './timeline';
 import { laneIcon, laneName } from './timelineView';
-import { laneKey, pathKey } from './worktrees';
+import { laneKeyOf, realPathAsync, realPathKey } from './worktrees';
 
 /** What the Checkouts view lists for one workspace folder. */
 export interface FolderCheckoutsModel {
@@ -138,11 +137,35 @@ export function pathInside(parent: string, child: string): string | undefined {
   return rel.split(path.sep).join('/');
 }
 
-/** Each path as it is on disk, symlinks resolved; one that can't be resolved stays as written. */
-async function realPaths(paths: string[]): Promise<Map<string, string>> {
-  const unique = [...new Set(paths)];
-  const real = await Promise.all(unique.map((p) => fs.promises.realpath(p).catch(() => p)));
-  return new Map(unique.map((p, i) => [p, real[i]]));
+/** A listed checkout with what its row needs from disk, worked out once per reload. */
+interface ListedCheckout {
+  path: string;
+  name: string;
+  lane: string;
+  where: string;
+  recorded: boolean;
+}
+
+/**
+ * The model's checkouts with their lane ids, where each one is, and whether it
+ * is recorded, reading real paths without blocking. A folder opened through a
+ * symlink is related to the worktrees by its real path, as git lists them.
+ */
+async function listCheckouts(model: FolderCheckoutsModel): Promise<ListedCheckout[]> {
+  const paths = [...new Set([model.folder.uri.fsPath, ...model.checkouts.map((c) => c.path), ...model.recorded])];
+  const resolved = await Promise.all(paths.map(realPathAsync));
+  const real = new Map(paths.map((p, i) => [p, resolved[i]]));
+  const keyOf = (p: string) => realPathKey(real.get(p)!);
+  const folderKey = model.folder.uri.toString();
+  const folderReal = real.get(model.folder.uri.fsPath)!;
+  const recorded = new Set(model.recorded.map(keyOf));
+  return model.checkouts.map((c) => ({
+    path: c.path,
+    name: c.name,
+    lane: c.own ? folderKey : laneKeyOf(folderKey, keyOf(c.path)),
+    where: c.own ? 'this folder' : (pathInside(folderReal, real.get(c.path)!) ?? c.path),
+    recorded: recorded.has(keyOf(c.path)),
+  }));
 }
 
 export type CheckoutsNode = FolderNode | CheckoutRow | LaneRow | OthersNode;
@@ -156,8 +179,8 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
   private models: FolderCheckoutsModel[] = [];
-  /** Real paths of the folders and checkouts listed, read once per reload rather than on every redraw. */
-  private real = new Map<string, string>();
+  /** Each model's checkouts as listed by the last reload, so redraws read nothing from disk. */
+  private listed = new Map<FolderCheckoutsModel, ListedCheckout[]>();
   private pending: NodeJS.Timeout | undefined;
   private loads = 0;
   private readonly sub: { dispose(): void };
@@ -174,10 +197,10 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
   async reload(): Promise<void> {
     const n = ++this.loads;
     const models = await this.load();
-    const real = await realPaths(models.flatMap((m) => [m.folder.uri.fsPath, ...m.checkouts.map((c) => c.path)]));
+    const listed = await Promise.all(models.map(listCheckouts));
     if (n !== this.loads) return;
     this.models = models;
-    this.real = real;
+    this.listed = new Map(models.map((m, i) => [m, listed[i]]));
     this.emitter.fire();
   }
 
@@ -206,23 +229,16 @@ export class CheckoutsView implements vscode.TreeDataProvider<CheckoutsNode>, vs
   }
 
   private rows(model: FolderCheckoutsModel): CheckoutRow[] {
-    const recorded = new Set(model.recorded.map(pathKey));
-    const folderKey = model.folder.uri.toString();
-    const realOf = (p: string) => this.real.get(p) ?? p;
-    // A folder opened through a symlink is related to the worktrees by its real path.
-    const folderReal = realOf(model.folder.uri.fsPath);
-    return model.checkouts.map((c) => {
-      const lane = laneKey(folderKey, c.own, c.path);
-      const info = this.timeline.laneInfo(lane);
-      const followed = info !== undefined && this.timeline.followed === lane;
-      const following = info && followingState(this.timeline, lane);
-      const where = c.own ? 'this folder' : (pathInside(folderReal, realOf(c.path)) ?? c.path);
-      return new CheckoutRow(model.folder, c.path, lane, c.name, where, recorded.has(pathKey(c.path)), info, followed, following, info ? this.timeline.pendingCount(lane) : 0);
+    return (this.listed.get(model) ?? []).map((c) => {
+      const info = this.timeline.laneInfo(c.lane);
+      const followed = info !== undefined && this.timeline.followed === c.lane;
+      const following = info && followingState(this.timeline, c.lane);
+      return new CheckoutRow(model.folder, c.path, c.lane, c.name, c.where, c.recorded, info, followed, following, info ? this.timeline.pendingCount(c.lane) : 0);
     });
   }
 
   private otherLanes(): LaneRow[] {
-    const listed = new Set(this.models.flatMap((m) => m.checkouts.map((c) => laneKey(m.folder.uri.toString(), c.own, c.path))));
+    const listed = new Set([...this.listed.values()].flatMap((cs) => cs.map((c) => c.lane)));
     const inBuffer = new Set(this.timeline.lanesInBuffer());
     return this.timeline
       .laneList()

@@ -173,13 +173,30 @@ test('at-dd6 a folder opened through a symlink shows a nested worktree relative 
       { path: path.join(real, '.claude', 'worktrees', 'coupons'), name: 'coupons', own: false },
       { path: `${real}-side`, name: 'side', own: false },
     ],
-    recorded: [real],
+    // Recorded as spelled through the link: still the same checkout.
+    recorded: [real, path.join(link, '.claude', 'worktrees', 'coupons')],
   };
-  const { view } = viewOf(new Timeline(100), [m]);
+  const t = new Timeline(100);
+  const { view } = viewOf(t, [m]);
   await view.reload();
-  assert.deepEqual(
-    (view.getChildren() as CheckoutRow[]).map((r) => r.description),
-    ['this folder', '.claude/worktrees/coupons', `${real}-side`],
-  );
+  // Redraws use what the reload read: nothing is resolved on disk again.
+  const realpathSync = fs.realpathSync.native;
+  fs.realpathSync.native = (() => {
+    throw new Error('a redraw resolved a path');
+  }) as unknown as typeof fs.realpathSync.native;
+  try {
+    const rows = view.getChildren() as CheckoutRow[];
+    assert.deepEqual(
+      rows.map((r) => [r.description, r.checkboxState]),
+      [
+        ['this folder', vscode.TreeItemCheckboxState.Checked],
+        ['.claude/worktrees/coupons', vscode.TreeItemCheckboxState.Checked],
+        [`${real}-side`, vscode.TreeItemCheckboxState.Unchecked],
+      ],
+    );
+    assert.equal(rows[1].lane, laneKey(f.uri.toString(), false, path.join(real, '.claude', 'worktrees', 'coupons')));
+  } finally {
+    fs.realpathSync.native = realpathSync;
+  }
   view.dispose();
 });

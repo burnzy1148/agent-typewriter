@@ -22,6 +22,8 @@ import {
   parseWorktreeList,
   initializing,
   pathKey,
+  realPathAsync,
+  realPathKey,
   relativeInside,
   rootIn,
   uniqueLabels,
@@ -242,6 +244,10 @@ test('at-dd6 a folder opened through a symlink: own checkout, nested worktrees a
     Object.fromEntries(r.worktrees.map((w) => [w.branch, relativeInside(link, w.path)])),
     { main: '', coupons: '.claude/worktrees/coupons', side: undefined },
   );
+  // Read without blocking, a path gets the same key.
+  for (const p of [link, path.join(link, '.claude', 'worktrees', 'coupons'), path.join(link, 'no-such-dir'), 'relative/dir']) {
+    assert.equal(realPathKey(await realPathAsync(p)), pathKey(p), p);
+  }
   const side = r.worktrees.find((w) => w.branch === 'side')!;
   assert.equal(rootIn(side, main, path.join(link, 'packages', 'app')), path.join(side.path, 'packages', 'app'));
 });
