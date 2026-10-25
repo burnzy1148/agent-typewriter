@@ -22,7 +22,7 @@ npm run it        # integration tests in a real headless VS Code
 npm run package   # typecheck, test, bundle, produce the .vsix
 ```
 
-`npm run it` downloads a VS Code build into `.vscode-test/` on first run. On Linux without a display it runs itself under `xvfb-run`, so install xvfb first.
+`npm run it` downloads a VS Code build into `.vscode-test/` on first run. On Linux without a display it runs itself under `xvfb-run`, so install xvfb first. Set `IT_GROUP=suite` or `IT_GROUP=workspaces` to run only one of its two groups of launches, as CI does in parallel jobs.
 
 Run `npm run build` (or keep `npm run watch` running), then press F5 with the folder open to launch an Extension Development Host with your build loaded.
 
@@ -64,7 +64,7 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 
 - Branch from `develop` and open the PR against `develop`, the default branch. `main` only receives releases.
 - Add or update tests for the behavior you change. Integration tests live in `it/`, unit tests in `test/`.
-- CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows, then packages the `.vsix`. It must be green before merge.
+- CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows, and packages the `.vsix`, all in parallel jobs. It must be green before merge.
 - If the PR implements an OpenSpec change, archive the change on the branch once its tasks are done, so the updated specs land with the code.
 - Add a line under `## Unreleased` at the top of [CHANGELOG.md](CHANGELOG.md) for user-visible changes. Add that heading if the top section is already a released version.
 - Feature PRs are squash-merged into `develop`.
