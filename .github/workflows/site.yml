@@ -29,6 +29,10 @@ on:
       - '.github/workflows/site.yml'
   workflow_dispatch:
 
+# Jobs only read the repository by default; preview adds what it needs to comment on the PR.
+permissions:
+  contents: read
+
 concurrency:
   group: site-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
