@@ -169,9 +169,9 @@ export class Player implements vscode.Disposable {
       if (this.timeline.jumps !== jumps) return;
       // Move the cursor and read the states in one step: a change recorded
       // from here on stays queued and plays on top of the snapped text.
+      // Only the followed lane: other lanes' mirrors stay where their own cursors are.
       this.timeline.seekToEnd();
-      const states = this.timeline.latestStates();
-      const renamedAway = new Set(this.timeline.all().flatMap((e) => (e.fromRelPath !== undefined && !states.has(e.fromRelPath) ? [e.fromRelPath] : [])));
+      const { states, renamedAway } = this.timeline.snapTargets();
       for (const relPath of renamedAway) if (!this.disposed) await this.retireMirror(relPath);
       const latest = [...states.values()];
       let newest: ChangeEvent | undefined;

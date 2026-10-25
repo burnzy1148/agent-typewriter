@@ -168,3 +168,32 @@ test('a rename is described with both paths', () => {
   assert.equal(s.changes[0].fromRelPath, 'src/a.ts');
   assert.equal('fromRelPath' in s.changes[1], false);
 });
+
+test('with two lanes the panel shows only the followed lane, and names it', () => {
+  const t = new Timeline(100);
+  t.defineLane({ id: 'main', label: 'main', root: '/w', color: 1, recording: true });
+  t.defineLane({ id: 'feat', label: 'feature', root: '/f', color: 2, recording: true });
+  const m1 = t.push({ ...ev('a.ts'), lane: 'main' });
+  t.push({ ...ev('feat/a.ts'), lane: 'feat' });
+  t.push({ ...ev('feat/b.ts'), lane: 'feat' });
+  t.push({ ...ev('b.ts'), lane: 'main' });
+  t.complete(m1.seq);
+  let s = scrubberState(t, player);
+  assert.deepEqual(s.changes.map((c) => c.relPath), ['a.ts', 'b.ts']);
+  assert.equal(s.index, 1);
+  assert.equal(s.queued, 1);
+  assert.equal(s.position, '2 / 2');
+  assert.equal(s.lane, 'main');
+  t.follow('feat');
+  s = scrubberState(t, player);
+  assert.deepEqual(s.changes.map((c) => c.relPath), ['feat/a.ts', 'feat/b.ts']);
+  assert.equal(s.index, 0);
+  assert.equal(s.queued, 2);
+  assert.equal(s.lane, 'feature');
+});
+
+test('a single lane is not named', () => {
+  const t = new Timeline(100);
+  t.push({ ...ev('a.ts'), lane: 'main' });
+  assert.equal(scrubberState(t, player).lane, undefined);
+});

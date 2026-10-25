@@ -94,7 +94,7 @@ export function renderHtml(nonce: string): string {
       speed.appendChild(o);
     }
     if (document.activeElement !== speed) speed.value = value;
-    label.textContent = held ? seekText(Number(slider.value)) : state.label;
+    label.textContent = held ? seekText(Number(slider.value)) : (state.lane ? state.lane + ' \u00b7 ' : '') + state.label;
     position.textContent = state.position;
   }
 

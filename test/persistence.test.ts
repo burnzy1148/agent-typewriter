@@ -357,3 +357,53 @@ test('a timeline saved without clears loads with none', async () => {
   store.stop();
   assert.equal(loadFrom(dir)?.highlightsFrom, undefined);
 });
+
+test('two lanes save and restore with their cursors and the followed lane', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  t.defineLane({ id: 'main', label: 'main', root: '/w', color: 1, recording: true });
+  t.defineLane({ id: 'feat', label: 'feat', root: '/f', color: 2, recording: true });
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  store.start();
+  t.push({ ...ev('a.ts', '', '1'), lane: 'main' });
+  t.push({ ...ev('feat/a.ts', '', '1'), lane: 'feat' });
+  t.complete(1);
+  t.follow('feat');
+  await store.flush();
+  store.stop();
+  const loaded = new TimelineStore(dir, new Timeline(100), () => {}).load();
+  assert.ok(loaded);
+  assert.deepEqual(loaded.events, t.all());
+  assert.deepEqual(loaded.cursors, { main: 2, feat: 2 });
+  assert.equal(loaded.followed, 'feat');
+  assert.deepEqual(loaded.lanes?.map((l) => l.id), ['main', 'feat']);
+});
+
+test('each save encodes only changes it has not encoded before', async () => {
+  const dir = tempDir();
+  const t = new Timeline(3);
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  store.start();
+  for (let i = 0; i < 3; i++) t.push({ ...ev(`f${i}`, '', String(i)), lane: i % 2 ? 'b' : 'a' });
+  await store.flush();
+  assert.equal(store.encodedCount, 3);
+  t.push({ ...ev('g', '', 'x'), lane: 'b' });
+  t.complete(1);
+  await store.flush();
+  assert.equal(store.encodedCount, 4);
+  assert.deepEqual(store.load()?.events.map((e) => e.relPath), ['f1', 'f2', 'g']);
+  store.stop();
+});
+
+test('the size cap counts every lane', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  const store = new TimelineStore(dir, t, () => {}, 10, 10);
+  store.start();
+  t.push({ ...ev('a', 'xxxx', 'yyyy'), lane: 'main' });
+  t.push({ ...ev('b', 'xx', 'yy'), lane: 'feat' });
+  t.push({ ...ev('c', 'x', 'y'), lane: 'main' });
+  await store.flush();
+  assert.deepEqual(store.load()?.events.map((e) => e.relPath), ['b', 'c']);
+  store.stop();
+});

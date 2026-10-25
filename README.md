@@ -23,7 +23,7 @@ To install a build from a [GitHub release](https://github.com/burnzy1148/agent-t
 ## Use
 
 1. Open your project folder.
-2. Run **Agent Typewriter: Start Watching** (Command Palette, the status bar item, or the **Agent Typewriter** panel in the Explorer).
+2. Run **Agent Typewriter: Start Watching** (Command Palette, the status bar item, or the **Agent Typewriter** icon in the Activity Bar).
 3. Let Claude Code work. The replay editor opens beside your current editor and starts typing.
 
 Set `agentTypewriter.autoStart` to `true` to start watching whenever the workspace opens.
@@ -68,19 +68,21 @@ Turn `highlightAdditions` off to get only a brief flash on each typed edit, and 
 
 ## The panels
 
-**Explorer > Playback** controls replay like a media player:
+Agent Typewriter has its own icon in the Activity Bar, with three views: **Checkouts**, **Changes** and **Playback**. (They used to sit in the Explorer; drag them back there if you prefer.)
+
+**Playback** controls replay like a media player:
 
 - Replay from the start, play/pause, finish the current change instantly, skip to the next change, skip to latest, and clear highlights.
 - Drag the slider to any recorded change and let go to seek there. Seeking keeps playback paused or playing as it was; the far end of the slider skips to latest.
 - The speed picker sets a multiplier (0.5x to 5x) on top of the base speed.
-- The line under the slider shows what is typing or next, and how many changes are queued.
+- The line under the slider shows what is typing or next, and how many changes are queued. With several [lanes](#lanes), the slider covers the followed lane, whose name leads the line.
 
 **The replay editor** has controls too, on the tab of the file being typed (or played last):
 
 - Its title bar has the same buttons: replay from the start, play/pause, finish current, skip to next, and skip to latest, plus clear highlights in this file while it has any. Right-click the title bar to hide any of them.
 - A row above the first line has play/pause, finish, next, latest, the speed (click to change it), and what is typing or next with the position in the buffer (click to open the Playback panel). The row is not part of the text. Set `mirrorStatusRow` to `false` to hide it, for example for screen recordings.
 
-**Explorer > Agent Typewriter** lists recorded changes, newest first, with their state (pending, typing, played) and line counts.
+**Changes** lists recorded changes, newest first, with their state (pending, typing, played) and line counts. With several lanes in the buffer, each lane gets a node in its color holding its changes, the followed lane first.
 
 - Click an entry to see its diff.
 - Inline **Replay From Here** restarts playback at that change.
@@ -91,9 +93,11 @@ Turn `highlightAdditions` off to get only a brief flash on each typed edit, and 
 Recorded changes are kept across reloads automatically (`persistHistory`). To take a run somewhere else, for a demo, another machine, or a reviewer, save it to a file:
 
 - **Save Session to File...** writes every change in the buffer, with its before and after text, to a JSON file you pick. The dialog starts in your home folder. If you save into the watched workspace instead, the file itself is recorded as a change when it passes the filters.
-- **Load Session from File...** replaces the buffer with a saved session (plain or gzip-compressed JSON), after asking if the buffer is not empty. Playback is paused at the first change, so resume when you are ready. If the session has more changes than `historyLimit`, you choose between raising the limit and loading the newest changes.
+- **Load Session from File...** replaces the buffer with a saved session (plain or gzip-compressed JSON), after asking if the buffer is not empty or you are watching. Loading stops watching, so live edits do not mix into the loaded changes. Playback is paused at the first change, so resume when you are ready. If the session has more changes than `historyLimit`, you choose between raising the limit and loading the newest changes.
 
 Both are in the panel's `...` menu. Loaded changes replay into mirror documents like any other; your real files are never written. A file saved by a newer version of the extension is refused with a message instead of being misread.
+
+A session keeps each change's lane (see [Lanes](#lanes)), so a run recorded from several checkouts loads with the same lanes, colors and followed lane, every change pending. Sessions are saved in format version 3; files from earlier versions load as a single lane. Versions of the extension before lanes refuse version 3 files, and a saved timeline written by this version is set aside if you downgrade.
 
 ## Replaying git history
 
@@ -181,6 +185,19 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 - The choice is remembered for the folder across reloads. If that worktree is removed, recording falls back to the folder's own checkout, its files are not replayed as deleted, and the output channel says so.
 - Without git, or outside a repository, there is one checkout and nothing changes. The extension never creates or removes worktrees.
 
+### Lanes
+
+Agents often work side by side, each in its own worktree. Up to 5 checkouts can record at once, across all workspace folders. Each is a **lane**: its changes queue on their own, with their own playback position, a color and a name (the branch, or the short commit when detached). One lane is **followed**: only its changes are typed, in the replay editor, with the usual controls. The others keep recording and wait.
+
+- **Checkouts** (in the Agent Typewriter Activity Bar view) lists each folder's checkout and every other worktree git lists. Tick a box to record that checkout in its own lane, clear it to stop. Choose Checkout... is the same choice as a multi-select list.
+- Each row and lane node shows its queue. The followed checkout's row has an eye in its lane color, a tinted name with a ▶ badge, and says whether it is typing, caught up or how many changes wait; the view's header names it. Click the eye on another lane, or run **Follow Lane...**, to follow it. Following picks up where that lane was left and keeps playback paused or playing as it was. The status bar entry names the followed checkout and how many record.
+- **Auto-follow** (the eye in the Checkouts title bar, or `autoFollow`): once the followed lane is caught up and nothing has been typed for 3 seconds, playback follows the lane whose oldest queued change came first. It never switches in the middle of a change.
+- **Auto-record** (`autoRecordWorktrees`): `fill` gives each worktree added while recording its own lane while fewer than 5 record; `rotate` also makes room by stopping the lane idle longest, never the followed one or one that changed in the last 2 minutes. New worktrees outside the workspace folder are noticed too.
+- A lane that stops recording, because you cleared its box, rotation stopped it, or its worktree was removed, keeps its changes and can still be followed. Lanes the Checkouts view no longer lists show under **Not recording**.
+- While more than one lane is in the buffer, replay tabs are tinted in their lane's color with a two-letter badge, and the replay editor's status row starts with the lane's name. With one lane, everything looks as before. Lane colors are the theme colors `agentTypewriter.lane1` to `agentTypewriter.lane5`.
+- Two agents in the same checkout still share one lane: the file watcher cannot tell them apart.
+- **Multi-root workspaces:** each workspace folder records in its own lane, so only the followed folder replays. Earlier versions replayed every folder's changes on one timeline. To replay them all again without picking, turn on `autoFollow`: playback then moves to the next folder with queued changes whenever the followed one goes quiet.
+
 ## Settings
 
 | Setting | Default | |
@@ -209,6 +226,8 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 | `mirrorStatusRow` | true | Show the playback controls and status row above the first line of the replay editor. Also hidden when `editor.codeLens` is off |
 | `highlightAdditions` | true | Keep added text highlighted, like a git diff, until highlights are cleared. Off: each typed edit only flashes briefly |
 | `markDeletions` | true | Show text in red with a strikethrough just before it is deleted, and mark where text was removed with a gutter marker that shows the removed text on hover |
+| `autoRecordWorktrees` | off | Give each worktree added while recording its own lane: `fill` while fewer than 5 checkouts record, `rotate` also by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). See [Lanes](#lanes) |
+| `autoFollow` | false | Once the followed lane is caught up and quiet for 3 seconds, follow the lane whose oldest queued change came first |
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 
