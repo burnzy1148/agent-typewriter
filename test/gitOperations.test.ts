@@ -78,7 +78,16 @@ test('findGitWrite: a blob made after the write was taken in by git, not written
 });
 
 test('operationLabel: a state file that appeared, else the reflog only when it moved', () => {
-  const look = (m: Record<string, number>): MarkerLook => ({ at: 0, markers: '', stash: '', index: '', indexMtime: 0, lock: false, mtimes: new Map(Object.entries(m)) });
+  const look = (m: Record<string, number>, gone: Record<string, number> = {}): MarkerLook => ({
+    at: 0,
+    markers: '',
+    stash: '',
+    index: '',
+    indexMtime: 0,
+    lock: false,
+    mtimes: new Map(Object.entries(m)),
+    goneAt: new Map(Object.entries(gone)),
+  });
   const tail = `${SHA_A} ${SHA_B} T <t@e> 1700000000 +0000\tcommit: earlier\n`;
   assert.equal(operationLabel(look({ 'logs/HEAD': 1 }), look({ 'logs/HEAD': 1, MERGE_HEAD: 2 }), tail), 'merge');
   assert.equal(operationLabel(look({}), look({ 'rebase-merge': 2, 'logs/HEAD': 3 }), tail), 'rebase');
@@ -109,9 +118,20 @@ test('reflogLabel: the message up to its colon', () => {
 });
 
 test('changeSpan: earliest and latest changed marker, ignoring unchanged and removed ones', () => {
-  const look = (m: Record<string, number>): MarkerLook => ({ at: 0, markers: '', stash: '', index: '', indexMtime: 0, lock: false, mtimes: new Map(Object.entries(m)) });
+  const look = (m: Record<string, number>, gone: Record<string, number> = {}): MarkerLook => ({
+    at: 0,
+    markers: '',
+    stash: '',
+    index: '',
+    indexMtime: 0,
+    lock: false,
+    mtimes: new Map(Object.entries(m)),
+    goneAt: new Map(Object.entries(gone)),
+  });
   assert.deepEqual(changeSpan(look({ HEAD: 5, ORIG_HEAD: 1 }), look({ HEAD: 9, ORIG_HEAD: 1, MERGE_HEAD: 7 })), { earliest: 7, latest: 9 });
   assert.deepEqual(changeSpan(look({ MERGE_HEAD: 3 }), look({})), { earliest: undefined, latest: undefined });
+  // A removal ends the span at its directory's mtime: a pop drops refs/stash after restoring files.
+  assert.deepEqual(changeSpan(look({ 'refs/stash': 3, index: 1 }), look({ index: 5 }, { 'refs/stash': 8 })), { earliest: 5, latest: 8 });
 });
 
 // Real repositories from here on.

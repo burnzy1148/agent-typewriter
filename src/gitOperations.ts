@@ -221,9 +221,19 @@ export interface MarkerLook {
   lock: boolean;
   /** Marker name to mtime, for the ones that exist. */
   mtimes: Map<string, number>;
+  /**
+   * For markers that do not exist, the mtime of the directory they would be
+   * in: removing a file stamps its directory, and a removal can be the last
+   * thing an operation does (a pop drops `refs/stash` after restoring files).
+   */
+  goneAt: Map<string, number>;
 }
 
-/** The earliest and latest mtimes of markers that differ between two looks; both undefined when the only changes are removals. */
+/**
+ * The earliest and latest mtimes of markers that differ between two looks.
+ * A removed marker counts by its directory's mtime, toward the latest only:
+ * that directory may have changed long before for other reasons.
+ */
 export function changeSpan(before: MarkerLook, after: MarkerLook): { earliest?: number; latest?: number } {
   let earliest: number | undefined;
   let latest: number | undefined;
@@ -231,6 +241,10 @@ export function changeSpan(before: MarkerLook, after: MarkerLook): { earliest?: 
     if (before.mtimes.get(name) === mtime) continue;
     if (earliest === undefined || mtime < earliest) earliest = mtime;
     if (latest === undefined || mtime > latest) latest = mtime;
+  }
+  for (const name of before.mtimes.keys()) {
+    const removedAt = after.mtimes.has(name) ? undefined : after.goneAt.get(name);
+    if (removedAt !== undefined && (latest === undefined || removedAt > latest)) latest = removedAt;
   }
   return { earliest, latest };
 }
@@ -545,6 +559,20 @@ export class GitOperationWatch {
       statOf(nodePath.join(this.gitDir, 'index')),
       statOf(nodePath.join(this.gitDir, 'index.lock')),
     ]);
+    const dirs = new Map<string, Promise<number | undefined>>();
+    const dirOf = (file: string) => {
+      const dir = nodePath.dirname(file);
+      if (!dirs.has(dir)) dirs.set(dir, statOf(dir).then((d) => d?.mtimeMs));
+      return dirs.get(dir)!;
+    };
+    const goneAt = new Map<string, number>();
+    await Promise.all(
+      names.map(async ([name, file], i) => {
+        if (stats[i]) return;
+        const at = await dirOf(file);
+        if (at !== undefined) goneAt.set(name, at);
+      }),
+    );
     const mtimes = new Map<string, number>();
     const markers: string[] = [];
     const stash: string[] = [];
@@ -563,6 +591,7 @@ export class GitOperationWatch {
       indexMtime: index?.mtimeMs ?? 0,
       lock: lock !== undefined,
       mtimes,
+      goneAt,
     };
   }
 }
