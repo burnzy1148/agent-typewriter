@@ -33,22 +33,19 @@ export type Following = 'typing' | 'caught up' | { queued: number };
 
 /**
  * How the lane's row is marked as followed, or undefined when it is not the
- * followed lane or there is only one lane: with nothing to choose between,
- * nothing is marked.
+ * followed lane. The only lane is marked too: it says where playback goes.
  */
 export function followingState(timeline: Timeline, lane: string): Following | undefined {
-  if (timeline.followed !== lane || timeline.laneList().length < 2) return undefined;
+  if (timeline.followed !== lane) return undefined;
   const playing = timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined;
   if (playing && laneOf(playing) === lane) return 'typing';
   const queued = timeline.pendingCount(lane);
   return queued > 0 ? { queued } : 'caught up';
 }
 
-/** The Checkouts view's header while there is more than one lane: which one is followed. */
+/** The Checkouts view's header: which lane is followed, once there is one. */
 export function followingHeader(timeline: Timeline): string | undefined {
-  const lanes = timeline.laneList();
-  if (lanes.length < 2) return undefined;
-  const followed = lanes.find((l) => l.id === timeline.followed);
+  const followed = timeline.laneList().find((l) => l.id === timeline.followed);
   return followed && `Following: ${laneName(followed)}`;
 }
 

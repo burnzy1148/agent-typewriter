@@ -50,10 +50,10 @@ test('a row per checkout, ticked when recorded, with its lane once it has one', 
     ['feat', vscode.TreeItemCheckboxState.Unchecked],
     ['side', vscode.TreeItemCheckboxState.Unchecked],
   ]);
-  // One lane: nothing to choose between, so nothing is marked as followed.
+  // The only lane is marked as followed too.
   assert.equal(rows[0].description, 'this folder  ·  1 queued');
-  assert.equal(rows[0].resourceUri, undefined);
-  assert.equal((rows[0].iconPath as vscode.ThemeIcon).id, 'circle-filled');
+  assert.equal(rows[0].resourceUri?.scheme, FOLLOWED_SCHEME);
+  assert.equal((rows[0].iconPath as vscode.ThemeIcon).id, 'eye');
   assert.equal(rows[1].description, '.claude/worktrees/feat');
   assert.equal(rows[0].contextValue, 'lane.followed');
   assert.equal(rows[1].contextValue, 'checkout');
@@ -89,7 +89,8 @@ test('folders get nodes in multi-root, and lanes no checkout lists are listed ap
   const top = view.getChildren();
   assert.deepEqual(top.map((n) => n.constructor.name), [FolderNode.name, FolderNode.name, OthersNode.name]);
   const others = view.getChildren(top[2]) as LaneRow[];
-  assert.deepEqual(others.map((r) => [r.label, r.description]), [['old-branch', '1 queued']], 'one lane: nothing marked as followed');
+  assert.deepEqual(others.map((r) => [r.label, r.description]), [['old-branch', '1 queued']]);
+  assert.equal((others[0].iconPath as vscode.ThemeIcon).id, 'eye', 'the only lane is marked as followed');
   assert.equal(view.getChildren(top[0]).length, 3);
   view.dispose();
 });
@@ -133,8 +134,9 @@ test('with two lanes the followed row has an eye, a decoration and says what it 
   view.dispose();
 });
 
-test('with one lane there is no header', () => {
+test('with one lane the header names it; with none there is no header', () => {
   const t = new Timeline(100);
-  t.defineLane({ id: 'only', label: 'main', root: '/w', color: 1, recording: true });
   assert.equal(followingHeader(t), undefined);
+  t.defineLane({ id: 'only', label: 'main', root: '/w', color: 1, recording: true });
+  assert.equal(followingHeader(t), 'Following: main');
 });

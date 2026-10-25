@@ -91,7 +91,7 @@ A lane that stops recording, because the user removed it, rotation stopped it, o
 - **THEN** its four changes are typed
 
 ### Requirement: Lanes are colored and labeled
-Each lane SHALL have a label: its branch, or short commit when detached, or the folder name outside git, plus the folder name in a multi-root workspace. Each lane SHALL also have one of five colors that users and themes can override. A checkout SHALL keep its color across reloads while it records. With only one lane in the buffer, no lane label, color or badge SHALL be shown anywhere.
+Each lane SHALL have a label: its branch, or short commit when detached, or the folder name outside git, plus the folder name in a multi-root workspace. Each lane SHALL also have one of five colors that users and themes can override. A checkout SHALL keep its color across reloads while it records. With only one lane in the buffer, no lane label, color or badge SHALL be shown on mirror tabs, the status row or the Changes view; the Checkouts view still shows the lane and marks it as followed.
 
 #### Scenario: Colors stay put
 - **WHEN** the `feature` lane is shown in its color, the window is reloaded, and `feature` still records
@@ -124,11 +124,15 @@ An Agent Typewriter view SHALL list, per workspace folder, its checkout and ever
 - **THEN** the choice is remembered and applies when recording starts
 
 ### Requirement: The followed checkout is marked
-While more than one lane is recording or in the buffer, the followed lane's row in the Checkouts view SHALL show an eye icon in the lane's color, a tinted label with a play badge, and what it is doing: typing, caught up, or how many changes are queued. The view's header SHALL name the followed lane. With one lane, nothing SHALL be marked.
+The followed lane's row in the Checkouts view SHALL show an eye icon in the lane's color, a tinted label with a play badge, and what it is doing: typing, caught up, or how many changes are queued. The view's header SHALL name the followed lane. This holds with a single lane too, so the view always says where playback goes.
 
 #### Scenario: Two lanes, one typing
 - **WHEN** the main checkout and `feature` record, `feature` is followed, and one of its changes is being typed
 - **THEN** the `feature` row shows the eye, the tint and badge, and "typing", the main row shows its colored dot, and the header reads "Following: feature"
+
+#### Scenario: A single lane
+- **WHEN** only the folder's own checkout records
+- **THEN** its row is marked as followed and the header names it
 
 #### Scenario: Follow another lane
 - **WHEN** the user follows the main checkout's lane
