@@ -23,7 +23,7 @@ To install a build from a [GitHub release](https://github.com/burnzy1148/agent-t
 ## Use
 
 1. Open your project folder.
-2. Run **Agent Typewriter: Start Watching** (Command Palette, the status bar item, or the **Agent Typewriter** panel in the Explorer).
+2. Run **Agent Typewriter: Start Watching** (Command Palette, the status bar item, or the **Agent Typewriter** icon in the Activity Bar).
 3. Let Claude Code work. The replay editor opens beside your current editor and starts typing.
 
 Set `agentTypewriter.autoStart` to `true` to start watching whenever the workspace opens.
@@ -38,6 +38,7 @@ The full docs are at **[agent-typewriter.com](https://agent-typewriter.com)**:
 - [Session files](https://agent-typewriter.com/docs/session-files/): save a run to a file and load it elsewhere.
 - [Replaying git history](https://agent-typewriter.com/docs/git-history/): type out a branch, pull request or commit range.
 - [Filters](https://agent-typewriter.com/docs/filtering/), the [repository settings file](https://agent-typewriter.com/docs/repository-settings/), [filter profiles](https://agent-typewriter.com/docs/filter-profiles/) and [worktrees](https://agent-typewriter.com/docs/worktrees/): choose which files are recorded.
+- [Lanes](https://agent-typewriter.com/docs/lanes/): record several checkouts at once and choose which one replays.
 - [Settings](https://agent-typewriter.com/docs/settings/): every setting and its default.
 - [Limits](https://agent-typewriter.com/docs/limits/): what the extension does not do.
 

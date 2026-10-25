@@ -17,11 +17,13 @@ export interface ScrubberState {
   hasHighlights: boolean;
   /** What is playing or next, e.g. "Typing #12 src/a.ts · 3 queued". */
   label: string;
-  /** Position within the buffer, e.g. "4 / 12". */
+  /** Position within the followed lane, e.g. "4 / 12". */
   position: string;
+  /** The followed lane's label, while more than one lane is in the buffer. */
+  lane?: string;
 }
 
-export type PlaybackFacts = Omit<ScrubberState, 'type' | 'label' | 'position'>;
+export type PlaybackFacts = Omit<ScrubberState, 'type' | 'label' | 'position' | 'lane'>;
 
 export type ScrubberMessage =
   | { type: 'ready' | 'togglePause' | 'finishCurrent' | 'skipToNext' | 'catchUp' | 'replayAll' | 'clearHighlights' }
@@ -32,9 +34,10 @@ export function scrubberState(
   timeline: Timeline,
   player: { paused: boolean; speed: number; watching: boolean; hasHighlights: boolean },
 ): ScrubberState {
-  const events = timeline.all();
-  const first = events[0]?.seq ?? timeline.cursor;
-  const index = Math.min(Math.max(timeline.cursor - first, 0), events.length);
+  // The followed lane's changes: the slider seeks within the lane being played.
+  const events = timeline.laneEvents();
+  const cursor = timeline.cursor;
+  const index = events.filter((e) => e.seq < cursor).length;
   const facts: PlaybackFacts = {
     changes: events.map((e) => ({ seq: e.seq, relPath: e.relPath, kind: e.kind, ...(e.fromRelPath !== undefined && { fromRelPath: e.fromRelPath }) })),
     index,
@@ -42,7 +45,8 @@ export function scrubberState(
     queued: timeline.pendingCount(),
     ...player,
   };
-  return { type: 'state', ...facts, ...describePlayback(facts) };
+  const info = timeline.lanesInBuffer().length > 1 ? timeline.laneList().find((l) => l.id === timeline.followed) : undefined;
+  return { type: 'state', ...facts, ...describePlayback(facts), ...(info && { lane: info.label || 'Earlier changes' }) };
 }
 
 /** The status text shown by the Playback panel and the mirror's status row. */

@@ -15,3 +15,5 @@ A folder that holds a bare repository and its worktrees (a `.bare` directory, a 
 - Switching applies at once while watching. Changes already in the timeline stay and still play.
 - The choice is remembered for the folder across reloads. If that worktree is removed, recording falls back to the folder's own checkout, its files are not replayed as deleted, and the output channel says so.
 - Without git, or outside a repository, there is one checkout and nothing changes. The extension never creates or removes worktrees.
+
+To record several checkouts at once, each in its own lane, see [Lanes](/docs/lanes/).

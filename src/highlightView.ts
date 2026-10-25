@@ -4,7 +4,7 @@ import { baselines, diffMarks, highlightPair, lineMarks, removedPreview, renderA
 import { MirrorFileSystem, MIRROR_SCHEME } from './mirrorFs';
 import { normalizeEol } from './planner';
 import type { Player } from './player';
-import type { Timeline } from './timeline';
+import { laneOf, type Timeline } from './timeline';
 
 /** Each mirror is drawn at most this often while it changes; a trailing run draws the last change. */
 const RENDER_INTERVAL_MS = 100;
@@ -151,25 +151,7 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   }
 
   private state(): HighlightState {
-    const playing = this.timeline.playing !== undefined ? this.timeline.get(this.timeline.playing) : undefined;
-    const clears = this.timeline.highlightClears;
-    const events = this.timeline.all();
-    // The change being typed counts, so its file's baseline is ready for its live text.
-    const through = playing ? playing.seq + 1 : this.timeline.cursor;
-    // With nothing playing, the change at the cursor has not played; a clear made
-    // while it was typed (before a reload) already holds for every other file.
-    const next = playing ? undefined : this.timeline.peek();
-    const heldBack = next && { seq: next.seq, paths: [next.relPath, ...(next.fromRelPath !== undefined ? [next.fromRelPath] : [])] };
-    const st: HighlightState = { bases: baselines(events, through, clears, heldBack), texts: this.timeline.mirrorStates(), clears };
-    if (next) st.next = { seq: next.seq, relPath: next.relPath, fromRelPath: next.fromRelPath };
-    if (playing) {
-      st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
-      if (playing.fromRelPath !== undefined && this.player.liveText(playing.fromRelPath) !== undefined) {
-        st.movingFrom = playing.fromRelPath;
-        st.basesBefore = baselines(events, playing.seq, clears);
-      }
-    }
-    return st;
+    return highlightState(this.timeline, (relPath) => this.player.liveText(relPath) !== undefined);
   }
 
   /** The file's marks for `pair`, worked out once per baseline and text. */
@@ -297,4 +279,51 @@ function removedHover(texts: readonly string[], language: string): vscode.Markdo
   md.appendCodeblock(code, language);
   if (more > 0) md.appendMarkdown(`… ${more} more line${more === 1 ? '' : 's'} removed`);
   return md;
+}
+
+/**
+ * What every mirror's highlights are worked out from. Each lane is taken on
+ * its own, at its own cursor and with its own clears; lanes never share a
+ * mirror path, so their baselines merge. `isLive` tells whether the player
+ * holds live text for a path, which a rename being typed moves.
+ */
+export function highlightState(timeline: Timeline, isLive: (relPath: string) => boolean): HighlightState {
+  const playing = timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined;
+  const all = timeline.all();
+  const clears = timeline.highlightClears;
+  // With nothing playing, the followed lane's next change has not played; a clear made
+  // while it was typed (before a reload) already holds for every other file.
+  const next = playing ? undefined : timeline.peek();
+  const active = playing ? laneOf(playing) : timeline.followed;
+  const bases = new Map<string, string>();
+  for (const lane of timeline.lanesInBuffer()) {
+    const events = all.filter((e) => laneOf(e) === lane);
+    const laneClears = clears.filter((c) => laneOf(c) === lane);
+    // The change being typed counts, so its file's baseline is ready for its live text.
+    if (playing && laneOf(playing) === lane) {
+      for (const [path, base] of baselines(events, playing.seq + 1, laneClears)) bases.set(path, base);
+      continue;
+    }
+    // Any lane's next change may have been typing when a clear was made, then
+    // overtaken by a reload or by following another lane: hold it back the same way.
+    const first = timeline.firstPending(lane);
+    const laneNext = first === undefined ? undefined : timeline.get(first);
+    const held = laneNext && { seq: laneNext.seq, paths: [laneNext.relPath, ...(laneNext.fromRelPath !== undefined ? [laneNext.fromRelPath] : [])] };
+    for (const [path, base] of baselines(events, laneNext ? laneNext.seq : timeline.cursorOf(lane), laneClears, held)) bases.set(path, base);
+  }
+  const activeClears = clears.filter((c) => laneOf(c) === active);
+  const st: HighlightState = { bases, texts: timeline.mirrorStates(), clears: activeClears };
+  if (next) st.next = { seq: next.seq, relPath: next.relPath, fromRelPath: next.fromRelPath };
+  if (playing) {
+    st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
+    if (playing.fromRelPath !== undefined && isLive(playing.fromRelPath)) {
+      st.movingFrom = playing.fromRelPath;
+      st.basesBefore = baselines(
+        all.filter((e) => laneOf(e) === active),
+        playing.seq,
+        activeClears,
+      );
+    }
+  }
+  return st;
 }

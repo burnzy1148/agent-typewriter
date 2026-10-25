@@ -287,6 +287,40 @@ exports.run = async () => {
     extensionTestsPath: path.resolve(__dirname, 'gitReplay.js'),
     launchArgs: [replayRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
   });
+
+  // Lanes (lanes.ts): a repository with a nested worktree, recorded together.
+  // The second launch checks the lanes were restored.
+  const lanesRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-lanes-'));
+  fs.mkdirSync(path.join(lanesRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(lanesRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(lanesRepo, '.gitignore'), '.vscode/\n');
+  gitAt(lanesRepo, 'init', '-q', '-b', 'main');
+  gitAt(lanesRepo, 'add', '-A');
+  gitAt(lanesRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(lanesRepo, 'worktree', 'add', '-q', '-b', 'feat', '.worktrees/feat');
+  fs.mkdirSync(path.join(lanesRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(lanesRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+    }),
+  );
+  const lanesUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
+  const lanesEnv = { IT_LANES_EXPECT: path.join(lanesUserData, 'expected-lanes.json') };
+  for (const phase of ['record', 'restore']) {
+    await runTests({
+      extensionDevelopmentPath,
+      extensionTestsPath: path.resolve(__dirname, 'lanes.js'),
+      launchArgs: [lanesRepo, `--user-data-dir=${lanesUserData}`, ...launchArgs.slice(2)],
+      extensionTestsEnv: { ...lanesEnv, IT_LANES_PHASE: phase },
+    });
+  }
 }
 
 main().catch((err) => {

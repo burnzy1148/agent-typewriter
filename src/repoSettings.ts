@@ -40,6 +40,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   mirrorStatusRow: 'boolean',
   highlightAdditions: 'boolean',
   markDeletions: 'boolean',
+  autoRecordWorktrees: { enum: ['off', 'fill', 'rotate'] },
+  autoFollow: 'boolean',
 };
 
 export type RepoValues = Readonly<Record<string, unknown>>;

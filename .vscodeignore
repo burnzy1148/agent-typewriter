@@ -1,9 +1,10 @@
-# Ship only the bundled extension, its manifest, the marketplace icon, the gutter icons, the repository settings schema, README, CHANGELOG, and LICENSE.
+# Ship only the bundled extension, its manifest, the marketplace icon, the Activity Bar icon, the gutter icons, the repository settings schema, README, CHANGELOG, and LICENSE.
 **
 !dist/extension.js
 !package.json
 !images/icon.png
 !images/gutter/*.svg
+!images/activity.svg
 !schemas/agent-typewriter.schema.json
 !README.md
 !CHANGELOG.md

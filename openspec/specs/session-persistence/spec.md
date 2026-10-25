@@ -18,7 +18,7 @@ With `agentTypewriter.persistHistory` on (the default), the recorded timeline SH
 - **THEN** workspace B starts with its own saved timeline, or an empty one
 
 ### Requirement: Playback position survives a reload
-A restored timeline SHALL keep which changes were played and which were pending. When any restored change is pending, playback SHALL start paused, and resuming SHALL play the pending changes in order.
+A restored timeline SHALL keep which changes were played and which were pending in every lane, and which lane was followed. When any restored change is pending, playback SHALL start paused, and resuming SHALL play the followed lane's pending changes in order.
 
 #### Scenario: Reload with queued changes
 - **WHEN** three changes are recorded while playback is paused, and the window is reloaded
@@ -30,12 +30,20 @@ A restored timeline SHALL keep which changes were played and which were pending.
 - **WHEN** every recorded change has been played and the window is reloaded
 - **THEN** every restored change is listed as played and playback is not paused
 
+#### Scenario: Reload with two lanes
+- **WHEN** the `feature` lane is followed with one change queued, the main lane has two changes queued, and the window is reloaded
+- **THEN** `feature` is still followed with one queued, and the main lane still has two queued
+
 ### Requirement: Restore respects the history limit
-A restored timeline SHALL hold at most `agentTypewriter.historyLimit` changes, keeping the newest.
+A restored timeline SHALL hold at most `agentTypewriter.historyLimit` changes across all lanes, keeping the newest.
 
 #### Scenario: Limit lowered before reload
 - **WHEN** 50 changes were saved and `historyLimit` is 10 at the next activation
 - **THEN** the restored timeline holds the newest 10 changes
+
+#### Scenario: Limit counts every lane
+- **WHEN** `historyLimit` is 10 and two lanes record 8 changes each
+- **THEN** the buffer holds the newest 10 of the 16, whichever lanes they are in
 
 ### Requirement: Saved history is bounded in size
 The saved timeline SHALL be limited to 64 MB of change text. When the buffer holds more, only the newest changes that fit SHALL be saved, and the output channel SHALL say how many were left out.
@@ -57,7 +65,7 @@ The saved timeline SHALL use a session format that carries a format identifier a
 - **THEN** nothing is restored, the reason is logged, and the extension activates normally
 
 ### Requirement: Session format version 2 carries renames
-Version 2 of the session format SHALL add the `rename` change kind, whose changes carry the old path as `fromUri` and `fromRelPath`. The extension SHALL write version 2 and SHALL read versions 1 and 2.
+Version 2 of the session format SHALL add the `rename` change kind, whose changes carry the old path as `fromUri` and `fromRelPath`. The extension SHALL read versions 1, 2 and 3, and SHALL write version 3.
 
 #### Scenario: Version 1 file
 - **WHEN** a session saved before renames were recorded (version 1) is loaded
@@ -94,7 +102,7 @@ The Save Session to File command SHALL write every change in the buffer, in orde
 - **THEN** a message says the buffer is empty and no dialog opens
 
 ### Requirement: Load a session file into the buffer
-The Load Session from File command SHALL read a session file, as written by Save Session to File or gzip-compressed, and replace the buffer with its changes. When the buffer is not empty, it SHALL ask before replacing it. After loading, every loaded change SHALL be pending and playback SHALL be paused at the first one, so resuming plays the session from the start.
+The Load Session from File command SHALL read a session file, as written by Save Session to File or gzip-compressed, and replace the buffer with its changes and lanes. When the buffer is not empty, or when watching, it SHALL ask first. After loading, every loaded change SHALL be pending, the lane followed when the session was saved (or, for a session without lanes, its one lane) SHALL be followed, and playback SHALL be paused at its first change, so resuming plays the session from the start.
 
 #### Scenario: Load and play a saved run
 - **WHEN** the user loads a session file saved earlier and resumes playback
@@ -104,6 +112,17 @@ The Load Session from File command SHALL read a session file, as written by Save
 #### Scenario: Buffer not empty
 - **WHEN** the buffer holds changes and the user picks a session file
 - **THEN** the user is asked to confirm replacing the buffer, and declining leaves the buffer unchanged
+
+#### Scenario: Load a session with lanes
+- **WHEN** the user loads a session saved with the `main` and `feature` lanes while `feature` was followed
+- **THEN** both lanes are in the buffer with every change pending, `feature` is followed, and neither lane records until the user records those checkouts
+
+### Requirement: Loading a session stops watching
+When watching, Load Session from File SHALL stop watching, so live edits do not replay into the loaded session's mirrors, and its confirmation SHALL say so.
+
+#### Scenario: Load while watching
+- **WHEN** watching is on and the user loads a session saved before lanes
+- **THEN** the confirmation says watching stops, watching stops, and resuming types the loaded changes from the first
 
 ### Requirement: Invalid session files are refused
 A file that is not a session, is damaged, or was saved by a newer version SHALL NOT be loaded. An error message SHALL say why, and the buffer and playback SHALL stay as they were.
@@ -145,3 +164,14 @@ With `agentTypewriter.persistHistory` on, the saved timeline SHALL keep the high
 #### Scenario: Load a session file
 - **WHEN** the user loads a session file
 - **THEN** every change is pending and no mirror shows highlights until changes play
+
+### Requirement: Session format version 3 carries lanes
+Version 3 of the session format SHALL add each change's lane, each lane's label, checkout path and color, a playback position per lane, and the followed lane. A version 1 or 2 session SHALL load as a single lane holding all its changes.
+
+#### Scenario: Lanes round trip
+- **WHEN** a buffer with changes in the `main` and `feature` lanes is saved and loaded again
+- **THEN** each change is in the same lane, with the same label and color
+
+#### Scenario: Version 2 file
+- **WHEN** a session saved before lanes (version 2) is loaded
+- **THEN** its changes load into one lane, and the Changes view lists them without a lane node

@@ -1502,6 +1502,10 @@ export async function run(): Promise<void> {
   assert.equal(player.playbackRelPath, undefined, 'Load Session kept the previous playback mirror');
   if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
   await until('loaded session playback', idle);
+  // Loading stops watching, so live edits do not mix into the loaded changes; start again for what follows.
+  assert.equal(api.recorder.isRunning, false, 'Load Session kept watching');
+  await vscode.commands.executeCommand('agentTypewriter.start');
+  await sleep(500);
   console.log('[it] ACT: Clear Buffer and Load Session drain held changes ok');
 
   // ACT d. A .git file is git metadata: never recorded, unlike a file next to it.

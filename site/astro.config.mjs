@@ -40,6 +40,7 @@ export default defineConfig({
             { label: 'Repository settings file', link: '/docs/repository-settings/' },
             { label: 'Filter profiles', link: '/docs/filter-profiles/' },
             { label: 'Worktrees', link: '/docs/worktrees/' },
+            { label: 'Lanes', link: '/docs/lanes/' },
           ],
         },
         { label: 'Settings', link: '/docs/settings/' },

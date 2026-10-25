@@ -57,8 +57,14 @@ export class TimelineStore {
   private dirty = false;
   private writing: Promise<void> | undefined;
   private subscription: { dispose(): void } | undefined;
-  /** JSON of the last saved event list, keyed by its first and last seq (events are immutable). */
-  private cachedEvents: { key: string; json: string } | undefined;
+  /**
+   * JSON of each saved event by seq. Events are immutable and seqs are never
+   * reused, so a save encodes only events it has not seen, however many lanes
+   * keep adding to the buffer.
+   */
+  private readonly encoded = new Map<number, string>();
+  /** Events encoded so far, for tests. */
+  encodedCount = 0;
   private lastOmitted = 0;
   /** Bumped by every write; a slower async write that was overtaken does not replace a newer file. */
   private writeId = 0;
@@ -238,12 +244,21 @@ export class TimelineStore {
       this.log(`The saved timeline leaves out the ${omitted} oldest change(s) to stay within ${Math.round(this.maxTextChars / 1024 / 1024)} MB of text.`);
     }
     this.lastOmitted = omitted;
-    const events = session.events;
-    const key = events.length === 0 ? '' : `${events[0].seq}-${events[events.length - 1].seq}`;
-    if (this.cachedEvents?.key !== key) this.cachedEvents = { key, json: JSON.stringify(events) };
-    const { format, version, savedAt, cursor, highlightsFrom } = session;
-    const envelope = JSON.stringify({ format, version, savedAt, cursor, ...(highlightsFrom && { highlightsFrom }) });
-    return envelope.slice(0, -1) + `,"events":${this.cachedEvents.json}}`;
+    const { events, ...rest } = session;
+    const parts: string[] = [];
+    for (const e of events) {
+      let json = this.encoded.get(e.seq);
+      if (json === undefined) {
+        json = JSON.stringify(e);
+        this.encoded.set(e.seq, json);
+        this.encodedCount++;
+      }
+      parts.push(json);
+    }
+    // Forget events no longer saved: trimmed, cleared, or left out for size.
+    const first = events[0]?.seq ?? Infinity;
+    if (this.encoded.size > events.length) for (const seq of this.encoded.keys()) if (seq < first || !this.timeline.get(seq)) this.encoded.delete(seq);
+    return JSON.stringify(rest).slice(0, -1) + `,"events":[${parts.join(',')}]}`;
   }
 }
 

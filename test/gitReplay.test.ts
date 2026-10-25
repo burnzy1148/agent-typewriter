@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  replayLane,
   buildReplay,
   countCommits,
   currentBranch,
@@ -17,6 +18,7 @@ import {
   resolveRange,
 } from '../src/gitReplay';
 import { git, noGit, tempDir, tempRepo, write } from './gitFixture';
+import { Timeline } from '../src/timeline';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -360,4 +362,27 @@ test('listBranches, currentBranch and isRepository', { skip: noGit }, async () =
   assert.equal(await currentBranch(repo), undefined);
   assert.equal(await isRepository(repo), true);
   assert.equal(await isRepository(tempDir('at-replay-plain-')), false);
+});
+
+test('a git replay fills one lane labeled with its range', () => {
+  const lane = replayLane('main..feature');
+  assert.equal(lane.label, 'main..feature');
+  const t = new Timeline(100);
+  const events = [1, 2].map((seq) => ({
+    seq,
+    uri: 'file:///r/a.ts',
+    relPath: 'a.ts',
+    time: seq,
+    kind: 'modify' as const,
+    before: String(seq - 1),
+    after: String(seq),
+    eol: '\n' as const,
+    linesAdded: 1,
+    linesRemoved: 1,
+    lane: lane.id,
+  }));
+  t.restore(events, 1, undefined, { lanes: [lane], followed: lane.id });
+  assert.equal(t.followed, lane.id);
+  assert.equal(t.laneList()[0].label, 'main..feature');
+  assert.equal(t.pendingCount(), 2);
 });

@@ -20,7 +20,7 @@ To install a build from a [GitHub release](https://github.com/burnzy1148/agent-t
 ## Use
 
 1. Open your project folder.
-2. Run **Agent Typewriter: Start Watching** (Command Palette, the status bar item, or the **Agent Typewriter** panel in the Explorer).
+2. Run **Agent Typewriter: Start Watching** (Command Palette, the status bar item, or the **Agent Typewriter** icon in the Activity Bar).
 3. Let Claude Code work. The replay editor opens beside your current editor and starts typing.
 
 Set `agentTypewriter.autoStart` to `true` to start watching whenever the workspace opens.

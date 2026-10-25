@@ -72,11 +72,14 @@ export class MirrorControls implements vscode.CodeLensProvider, vscode.Disposabl
 
   /** Title, command and tooltip of each lens in the row. */
   private row(s: ScrubberState): Array<[string, string, string]> {
-    const row: Array<[string, string, string]> = [
+    const row: Array<[string, string, string]> = [];
+    // Which lane is played, while there are several; picking it follows another.
+    if (s.lane !== undefined) row.push([`$(circle-filled) ${s.lane.replace(/\$\(/g, '\\$(')}`, 'agentTypewriter.followLane', 'Follow another lane']);
+    row.push(
       s.paused
         ? ['$(play) Play', 'agentTypewriter.resume', 'Resume playback']
         : ['$(debug-pause) Pause', 'agentTypewriter.pause', 'Pause playback'],
-    ];
+    );
     if (s.changes.length > 0) {
       row.push(
         ['$(zap) Finish', 'agentTypewriter.finishCurrent', 'Finish current change instantly'],

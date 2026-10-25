@@ -369,3 +369,313 @@ test('clears at or before the oldest change left in the buffer are dropped', () 
   // Buffer holds seqs 3 to 5: the clear at 2 is gone, the one at 4 stays.
   assert.deepEqual(t.highlightClears, [{ seq: 4, relPath: 'a' }]);
 });
+
+// ------------------------------------------------------------------ lanes
+
+function lev(lane: string, relPath: string, before: string, after: string): NewChangeEvent {
+  return { ...ev(relPath, before, after), lane };
+}
+
+const laneInfo = (id: string) => ({ id, label: id, root: '/w/' + id, color: 1, recording: true });
+
+/** Plays the followed lane to the end and returns what was typed. */
+function drain(t: Timeline): string[] {
+  const out: string[] = [];
+  for (let e = t.peek(); e; e = t.peek()) {
+    t.begin(e.seq);
+    out.push(`${e.lane ?? ''}:${e.relPath}:${e.after}`);
+    t.complete(e.seq);
+  }
+  return out;
+}
+
+test('only the followed lane plays; the other lane queues', () => {
+  const t = new Timeline(100);
+  t.defineLane(laneInfo('main'));
+  t.defineLane(laneInfo('feat'));
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'a', '', 'f1'));
+  t.push(lev('feat', 'b', '', 'f2'));
+  assert.equal(t.followed, 'main');
+  assert.deepEqual(drain(t), ['main:a:1']);
+  assert.equal(t.pendingCount(), 0);
+  assert.equal(t.pendingCount('feat'), 2);
+  assert.equal(t.firstPending('feat'), 2);
+});
+
+test('following another lane resumes it at its own cursor, and coming back resumes the first', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'x', '', 'f1'));
+  t.push(lev('main', 'a', '1', '2'));
+  assert.deepEqual(drain(t).length, 2);
+  t.push(lev('main', 'a', '2', '3'));
+  t.follow('feat');
+  assert.deepEqual(drain(t), ['feat:x:f1']);
+  t.follow('main');
+  assert.deepEqual(drain(t), ['main:a:3']);
+});
+
+test('following mid-change overtakes it; it stays pending in its lane', () => {
+  const t = new Timeline(100);
+  const a = t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'x', '', 'f1'));
+  const token = t.begin(a.seq);
+  const jumps = t.jumps;
+  t.follow('feat');
+  assert.notEqual(t.jumps, jumps);
+  assert.equal(t.playing, undefined);
+  t.complete(a.seq, token);
+  assert.equal(t.stateOf(a.seq), 'pending');
+  assert.equal(t.pendingCount('main'), 1);
+  assert.equal(t.peek()?.lane, 'feat');
+});
+
+test('seek and skip move only the followed lane', () => {
+  const t = new Timeline(100);
+  const m1 = t.push(lev('main', 'a', '', '1'));
+  const f1 = t.push(lev('feat', 'x', '', 'f1'));
+  t.push(lev('main', 'a', '1', '2'));
+  t.seekToEnd();
+  assert.equal(t.pendingCount('main'), 0);
+  assert.equal(t.pendingCount('feat'), 1);
+  assert.equal(t.stateOf(m1.seq), 'played');
+  assert.equal(t.stateOf(f1.seq), 'pending');
+  t.seek(m1.seq);
+  assert.equal(t.pendingCount('main'), 2);
+  assert.equal(t.stateOf(f1.seq), 'pending');
+  t.follow('feat');
+  t.seekToEnd();
+  assert.equal(t.stateOf(f1.seq), 'played');
+  assert.equal(t.pendingCount('main'), 2);
+});
+
+test('the history limit counts every lane; dropped unplayed changes are counted per lane', () => {
+  const t = new Timeline(3);
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'x', '', 'f1'));
+  t.push(lev('feat', 'x', 'f1', 'f2'));
+  t.push(lev('main', 'a', '1', '2'));
+  assert.equal(t.all().length, 3);
+  assert.equal(t.droppedUnplayed, 1);
+  t.push(lev('feat', 'x', 'f2', 'f3'));
+  assert.deepEqual(t.all().map((e) => `${e.lane}:${e.after}`), ['feat:f2', 'main:2', 'feat:f3']);
+});
+
+test('a stopped lane with no changes left is forgotten, and following moves on', () => {
+  const t = new Timeline(2);
+  t.defineLane(laneInfo('old'));
+  t.defineLane(laneInfo('new'));
+  t.push(lev('old', 'a', '', '1'));
+  assert.equal(t.followed, 'old');
+  t.setLaneRecording('old', false);
+  assert.deepEqual(t.laneList().map((l) => [l.id, l.recording]), [['old', false], ['new', true]]);
+  t.push(lev('new', 'b', '', '1'));
+  t.push(lev('new', 'b', '1', '2'));
+  assert.deepEqual(t.laneList().map((l) => l.id), ['new']);
+  assert.equal(t.followed, 'new');
+});
+
+test('mirror states and latest states use each lane on its own', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'feat/a', 'x', 'y'));
+  drain(t);
+  const m = t.mirrorStates();
+  assert.equal(m.get('a')?.text, '1');
+  assert.equal(m.get('feat/a')?.text, 'x');
+  assert.deepEqual([...t.latestStates('feat').keys()], ['feat/a']);
+  assert.deepEqual([...t.latestStates().keys()], ['a', 'feat/a']);
+});
+
+test('clear all writes a clear per lane at its own cursor; seek drops only the followed lane\'s', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'b', '', '1'));
+  t.push(lev('main', 'a', '1', '2'));
+  drain(t);
+  t.clearHighlights();
+  assert.deepEqual(t.highlightClears, [
+    { seq: 4, lane: 'main' },
+    { seq: 2, lane: 'feat' },
+  ]);
+  t.clearHighlights('b');
+  assert.deepEqual(t.highlightClears.at(-1), { seq: 2, relPath: 'b', lane: 'feat' });
+  t.seek(1);
+  assert.deepEqual(t.highlightClears, [
+    { seq: 2, lane: 'feat' },
+    { seq: 2, relPath: 'b', lane: 'feat' },
+  ]);
+});
+
+test('restore keeps each lane\'s cursor, the followed lane and recording lanes', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'b', '', '1'));
+  t.push(lev('main', 'a', '1', '2'));
+  t.push(lev('feat', 'b', '1', '2'));
+  drain(t);
+  t.follow('feat');
+  t.begin(2);
+  t.complete(2);
+  const r = new Timeline(100);
+  r.push(ev('z', '', '1'));
+  r.defineLane(laneInfo('live'));
+  r.restore(t.all(), t.cursor, [], {
+    lanes: [{ id: 'main', label: 'main', root: '/m', color: 1 }, { id: 'feat', label: 'feat', root: '/f', color: 2 }],
+    cursors: { main: t.cursorOf('main'), feat: t.cursorOf('feat') },
+    followed: 'feat',
+  });
+  assert.equal(r.followed, 'feat');
+  assert.equal(r.pendingCount('main'), 0);
+  assert.equal(r.pendingCount('feat'), 1);
+  assert.deepEqual(r.laneList().map((l) => [l.id, l.recording]), [['live', true], ['main', false], ['feat', false]]);
+});
+
+test('restore without lane cursors applies the one cursor to every lane', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push(lev('feat', 'b', '', '1'));
+  const r = new Timeline(100);
+  r.restore(t.all(), t.all()[0].seq, undefined, { followed: 'feat' });
+  assert.equal(r.followed, 'feat');
+  assert.equal(r.pendingCount('main'), 1);
+  assert.equal(r.pendingCount('feat'), 1);
+});
+
+test('fuzz: lanes stay consistent through pushes, follows, seeks, trims and playback', () => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const lanes = ['', 'a', 'b', 'c'];
+  for (let round = 0; round < 200; round++) {
+    let limit = 1 + Math.floor(rnd() * 12);
+    const t = new Timeline(limit);
+    for (let step = 0; step < 60; step++) {
+      const r = rnd();
+      const lane = lanes[Math.floor(rnd() * lanes.length)];
+      if (r < 0.4) t.push(lev(lane, 'f' + Math.floor(rnd() * 3), 'x', 'y'));
+      else if (r < 0.55) t.follow(lane);
+      else if (r < 0.65 && t.all().length > 0) t.seek(t.all()[Math.floor(rnd() * t.all().length)].seq);
+      else if (r < 0.7) t.seekToEnd();
+      else if (r < 0.75) t.setLimit((limit = 1 + Math.floor(rnd() * 12)));
+      else {
+        const e = t.peek();
+        if (e) {
+          const token = t.begin(e.seq);
+          if (rnd() < 0.2) t.follow(lanes[Math.floor(rnd() * lanes.length)]);
+          t.complete(e.seq, token);
+        }
+      }
+      assert.ok(t.all().length <= limit);
+      for (const l of t.lanesInBuffer()) {
+        const states = t.laneEvents(l).map((e) => t.stateOf(e.seq));
+        // Each lane's played changes are a prefix of its changes.
+        const firstPending = states.indexOf('pending');
+        if (firstPending !== -1) assert.ok(states.slice(firstPending).every((s) => s !== 'played'), `lane ${l}: ${states.join(',')}`);
+      }
+      const p = t.peek();
+      if (p) assert.equal(p.lane ?? '', t.followed);
+    }
+  }
+});
+
+test('a played-out lane that is not recording gives way to another lane\'s new change', () => {
+  const t = new Timeline(100);
+  t.push(lev('', 'old', '', '1'));
+  drain(t);
+  t.defineLane(laneInfo('live'));
+  assert.equal(t.followed, '');
+  t.push(lev('live', 'a', '', '1'));
+  assert.equal(t.followed, 'live');
+  // Queued changes keep a stopped lane followed.
+  const u = new Timeline(100);
+  u.push(lev('', 'old', '', '1'));
+  u.defineLane(laneInfo('live'));
+  u.push(lev('live', 'a', '', '1'));
+  assert.equal(u.followed, '');
+});
+
+test('skip to latest settles only the followed lane\'s mirrors', () => {
+  const t = new Timeline(100);
+  t.push(lev('main', 'a', '', '1'));
+  t.push({ ...lev('main', 'b', '1', '1'), kind: 'rename', fromUri: 'file:///w/a', fromRelPath: 'a' });
+  t.push(lev('feat', 'feat/x', '', 'x1'));
+  t.push({ ...lev('feat', 'feat/y', 'x1', 'x1'), kind: 'rename', fromUri: 'file:///w/feat/x', fromRelPath: 'feat/x' });
+  t.follow('feat');
+  t.seekToEnd();
+  const { states, renamedAway } = t.snapTargets();
+  assert.deepEqual([...states.keys()], ['feat/y']);
+  assert.deepEqual(renamedAway, ['feat/x']);
+  assert.equal(t.pendingCount('main'), 2, 'the main lane is still queued');
+  assert.deepEqual([...t.snapTargets('main').states.keys()], ['b']);
+});
+
+test('restoring a buffer follows its first change, not a lane recording beside it', () => {
+  const t = new Timeline(100);
+  t.defineLane(laneInfo('live'));
+  assert.equal(t.followed, 'live');
+  const saved = new Timeline(100);
+  saved.push(ev('b.ts', '', '1'));
+  saved.push(ev('c.ts', '', '1'));
+  t.restore(saved.all(), saved.all()[0].seq);
+  assert.equal(t.followed, '');
+  assert.equal(t.peek()?.relPath, 'b.ts');
+  assert.equal(t.pendingCount(), 2);
+});
+
+test('a played-out stopped lane gives way when its last change finishes, and when it stops recording', () => {
+  const t = new Timeline(100);
+  const old = t.push(lev('', 'old', '', '1'));
+  t.defineLane(laneInfo('live'));
+  t.push(lev('live', 'a', '', '1'));
+  assert.equal(t.followed, '', 'queued changes keep the stopped lane followed');
+  t.begin(old.seq);
+  t.complete(old.seq);
+  assert.equal(t.followed, 'live', 'its last change done, the recording lane with queued changes is followed');
+  // A followed lane that stops recording with nothing queued gives way too.
+  const u = new Timeline(100);
+  u.defineLane(laneInfo('a'));
+  u.defineLane(laneInfo('b'));
+  const a1 = u.push(lev('a', 'x', '', '1'));
+  u.push(lev('b', 'y', '', '1'));
+  u.begin(a1.seq);
+  u.complete(a1.seq);
+  assert.equal(u.followed, 'a', 'a recording lane stays followed when caught up');
+  u.setLaneRecording('a', false);
+  assert.equal(u.followed, 'b');
+});
+
+test('a lane that is gone hands over to one with changes queued', () => {
+  const t = new Timeline(1);
+  t.defineLane(laneInfo('a'));
+  t.defineLane(laneInfo('b'));
+  t.push(lev('a', 'x', '', '1'));
+  t.setLaneRecording('a', false);
+  t.push(lev('b', 'y', '', '1'));
+  assert.equal(t.followed, 'b');
+});
+
+test('pendingTotal counts the queue of every lane', () => {
+  const t = new Timeline(100);
+  t.push(lev('a', 'x', '', '1'));
+  t.push(lev('b', 'y', '', '1'));
+  t.push(lev('b', 'y', '1', '2'));
+  assert.equal(t.pendingCount(), 1);
+  assert.equal(t.pendingTotal(), 3);
+});
+
+test('following a played-out stopped lane by hand sticks when the change it interrupted completes', () => {
+  const t = new Timeline(100);
+  t.defineLane({ ...laneInfo('stopped'), recording: false });
+  t.defineLane(laneInfo('live'));
+  const s1 = t.push(lev('stopped', 's', '', '1'));
+  t.follow('stopped');
+  t.begin(s1.seq);
+  t.complete(s1.seq);
+  const r1 = t.push(lev('live', 'r', '', '1'));
+  assert.equal(t.followed, 'live');
+  const token = t.begin(r1.seq);
+  t.follow('stopped');
+  t.complete(r1.seq, token);
+  assert.equal(t.followed, 'stopped');
+});

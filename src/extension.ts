@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { readHighlightSettings, readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
 import { parseExtensionList, PathFilter, selectionGlob, stillFiltered } from './filter';
-import { buildReplay, countCommits, currentBranch, defaultBase, isRepository, listBranches, resolveRange } from './gitReplay';
+import { buildReplay, countCommits, currentBranch, defaultBase, isRepository, listBranches, replayLane, resolveRange } from './gitReplay';
 import { HighlightView } from './highlightView';
 import { MirrorControls } from './mirrorControls';
 import { MirrorFileSystem, MIRROR_SCHEME, mirrorBytes, SnapshotProvider, SNAPSHOT_SCHEME } from './mirrorFs';
@@ -18,8 +18,13 @@ import { REPO_SETTINGS_FILE } from './repoSettings';
 import { RepoSettingsFile } from './repoSettingsFile';
 import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
-import { Timeline, sessionClears, toSession } from './timeline';
-import { ChangeItem, TimelineView } from './timelineView';
+import { Timeline, laneOf, sessionClears, sessionLanes, toSession, type LaneInfo } from './timeline';
+import { ChangeItem, laneName, TimelineView } from './timelineView';
+import { CheckoutRow, CheckoutsView, followingHeader, type FolderCheckoutsModel } from './checkoutsView';
+import { LaneDecorations } from './laneDecorations';
+import { AutoFollow } from './autoFollow';
+import { FollowedMemory } from './followedMemory';
+import { MAX_LANES } from './lanes';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
 export interface AgentTypewriterApi {
@@ -32,7 +37,7 @@ export interface AgentTypewriterApi {
   /** Undefined when no folder is open (no workspace storage). */
   store: TimelineStore | undefined;
   /** Re-reads each folder's checkouts, as a window focus does, and returns them by folder URI. For tests. */
-  refreshCheckouts(): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>>;
+  refreshCheckouts(): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>>;
   /** Closes mirror tabs whose file the mirror filesystem does not hold, as activation does once. Returns how many. For tests. */
   closeOrphanMirrorTabs(): Promise<number>;
   /** Settles once activation has refilled the mirrors from the restored timeline and closed orphaned mirror tabs. For tests. */
@@ -59,6 +64,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const highlights = new HighlightView(timeline, player, readHighlightSettings, context.extensionUri);
   const view = new TimelineView(timeline);
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
+  /** Every checkout of each folder, its own first, and the ones it records (or will once started). */
+  const loadCheckouts = async (): Promise<FolderCheckoutsModel[]> => {
+    const out: FolderCheckoutsModel[] = [];
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const c = await recorder.checkoutsOf(folder);
+      const live = recorder.recordedLanes().filter((l) => l.folder.uri.toString() === folder.uri.toString());
+      const checkouts = c
+        ? [
+            { path: c.own?.path ?? folder.uri.fsPath, name: c.own ? checkoutName(c.own) : '', own: true },
+            ...c.worktrees.filter((w) => w !== c.own).map((w) => ({ path: w.path, name: checkoutName(w), own: false })),
+          ]
+        : [{ path: folder.uri.fsPath, name: '', own: true }];
+      out.push({ folder, checkouts, recorded: recorder.isRunning ? live.map((l) => l.checkout) : (c?.recorded ?? recorder.defaultRecorded(folder)) });
+    }
+    return out;
+  };
+  const checkoutsView = new CheckoutsView(timeline, loadCheckouts, {
+    add: (folder, p) => recorder.addCheckout(folder, p),
+    remove: (folder, p) => recorder.removeCheckout(folder, p),
+    error: (message) => void vscode.window.showErrorMessage(`Agent Typewriter: ${message}`),
+  });
+  const laneDecorations = new LaneDecorations(timeline);
+  const autoFollow = new AutoFollow(timeline, () => readSettings().autoFollow);
+  const checkoutsTree = vscode.window.createTreeView('agentTypewriter.checkouts', { treeDataProvider: checkoutsView, manageCheckboxStateManually: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
   const playbackState = () =>
@@ -77,6 +106,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     highlights,
     view,
     tree,
+    checkoutsView,
+    checkoutsTree,
+    laneDecorations,
+    autoFollow,
+    checkoutsTree.onDidChangeCheckboxState(async (e) => {
+      for (const [item, state] of e.items) {
+        if (item instanceof CheckoutRow) await checkoutsView.setChecked(item, state === vscode.TreeItemCheckboxState.Checked);
+      }
+    }),
     status,
     checkoutStatus,
     scrubber,
@@ -84,6 +122,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     vscode.window.registerWebviewViewProvider(ScrubberView.id, scrubber),
     vscode.languages.registerCodeLensProvider({ scheme: MIRROR_SCHEME }, mirrorControls),
     vscode.languages.registerHoverProvider({ scheme: MIRROR_SCHEME }, highlights),
+    vscode.window.registerFileDecorationProvider(laneDecorations),
     { dispose: () => store?.dispose() },
     vscode.workspace.registerFileSystemProvider(MIRROR_SCHEME, mirror, { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, new SnapshotProvider((seq) => timeline.get(seq))),
@@ -96,12 +135,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
    * URI; only folders in git. `worktrees` counts the checkouts the chooser
    * offers: one more than git lists for a folder with no checkout of its own.
    */
-  const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+  const checkouts = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>();
   // Calls overlap (scope events, focus, folder changes); only the newest one's answer is kept.
   let checkoutsGen = 0;
-  const refreshCheckouts = async (): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>> => {
+  const refreshCheckouts = async (): Promise<ReadonlyMap<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>> => {
     const gen = ++checkoutsGen;
-    const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees'>>();
+    const next = new Map<string, Pick<CheckoutInfo, 'own' | 'name' | 'worktrees' | 'lanes'>>();
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
       const c = await recorder.checkoutsOf(folder);
       const live = recorder.checkoutOf(folder);
@@ -109,18 +148,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
         // What is recorded comes from the recorder; the count from a fresh
         // listing, since worktrees added or removed elsewhere send no event.
         const worktrees = c ? folderCheckoutChoice(folder.name, c.own, c.worktrees).choices : live.worktrees + (live.container ? 1 : 0);
-        if (worktrees > 0) next.set(folder.uri.toString(), { own: live.own, name: live.name, worktrees });
+        if (worktrees > 0) next.set(folder.uri.toString(), { own: live.own, name: live.name, worktrees, lanes: live.lanes });
         continue;
       }
       if (!c) continue;
       const chosen = c.chosen !== undefined ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.chosen!)) : undefined;
       const choice = folderCheckoutChoice(folder.name, c.own, c.worktrees);
-      next.set(folder.uri.toString(), { own: !chosen || chosen === c.own, name: chosen ? checkoutName(chosen) : choice.name, worktrees: choice.choices });
+      const recorded = c.recorded.length;
+      const first = recorded === 1 ? c.worktrees.find((w) => pathKey(w.path) === pathKey(c.recorded[0])) : undefined;
+      const shown = chosen ?? (first !== c.own ? first : undefined);
+      next.set(folder.uri.toString(), { own: !shown || shown === c.own, name: shown ? checkoutName(shown) : choice.name, worktrees: choice.choices, lanes: recorded });
     }
     if (gen !== checkoutsGen) return next;
     checkouts.clear();
     for (const [k, v] of next) checkouts.set(k, v);
     refreshStatus();
+    await checkoutsView.reload();
     return next;
   };
 
@@ -132,7 +175,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const shown = statusPresentation({
       watching,
       paused: player.isPaused,
-      pending: timeline.pendingCount(),
+      // Every lane's queue: changes waiting in a lane not followed still keep playback paused.
+      pending: timeline.pendingTotal(),
       speed: player.speed,
       watchedCount: recorder.watchedCount,
       filter: recorder.describeFilter(),
@@ -154,6 +198,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     scrubber.refresh();
     mirrorControls.refresh();
     tree.description = shown.description;
+    // Which lane is followed, at the top of the Checkouts view, once there is one.
+    checkoutsTree.description = followingHeader(timeline);
     if (timeline.droppedUnplayed > lastDropped) {
       lastDropped = timeline.droppedUnplayed;
       tree.message = `${lastDropped} queued change(s) were dropped because the buffer is full (historyLimit).`;
@@ -162,7 +208,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       tree.message = undefined;
     }
   };
+  // The followed lane is remembered, so a reload follows it again once it records.
+  const followedMemory = new FollowedMemory(
+    timeline,
+    (lane) => void Promise.resolve(choices.setFollowed?.(lane)).catch(() => {}),
+    // The status bar names the followed lane's checkout.
+    () => void refreshCheckouts(),
+  );
   context.subscriptions.push(
+    followedMemory,
     timeline.onDidChange(refreshStatus),
     highlights.onDidChangeHighlighted(refreshStatus),
     recorder.onDidChangeScope(() => void refreshCheckouts()),
@@ -174,6 +228,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   void refreshCheckouts();
 
   const setWatching = (on: boolean) => vscode.commands.executeCommand('setContext', 'agentTypewriter.watching', on);
+  const setAutoFollowKey = () => vscode.commands.executeCommand('setContext', 'agentTypewriter.autoFollow', readSettings().autoFollow);
+  void setAutoFollowKey();
 
   // ------------------------------------------------------------ commands
 
@@ -228,8 +284,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   register('agentTypewriter.catchUp', catchUp);
 
   register('agentTypewriter.replayAll', async () => {
-    if (timeline.all().length === 0) {
-      vscode.window.showInformationMessage('Agent Typewriter: the buffer is empty.');
+    // Replays the followed lane, so one with nothing in it has nothing to replay.
+    if (timeline.laneEvents().length === 0) {
+      vscode.window.showInformationMessage(
+        timeline.all().length === 0 ? 'Agent Typewriter: the buffer is empty.' : 'Agent Typewriter: the followed lane has no changes yet. Follow another lane to replay it.',
+      );
       return;
     }
     timeline.seekToStart();
@@ -240,6 +299,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   register('agentTypewriter.replayFrom', async (arg?: ChangeItem | number) => {
     const seq = typeof arg === 'number' ? arg : arg?.event.seq;
     if (seq === undefined) return;
+    // A change in another lane is replayed in that lane, which is followed from then on.
+    const event = timeline.get(seq);
+    if (event) timeline.follow(laneOf(event));
     timeline.seek(seq);
     await player.interrupt();
     player.setPaused(false);
@@ -247,7 +309,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   // Like replayFrom, but keeps the pause state; past the newest change it skips to latest.
   const seekTo = async (seq: number) => {
-    const events = timeline.all();
+    const events = timeline.laneEvents();
     if (events.length === 0 || seq > events[events.length - 1].seq) {
       await catchUp();
       return;
@@ -256,13 +318,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     await player.interrupt();
   };
   register('agentTypewriter.seek', async (seq?: number) => {
-    if (typeof seq === 'number') await seekTo(seq);
+    if (typeof seq !== 'number') return;
+    // The panel seeks within the lane it showed; if another lane was followed since, go back to that one.
+    const target = timeline.get(seq);
+    if (target && laneOf(target) !== timeline.followed) timeline.follow(laneOf(target));
+    await seekTo(seq);
   });
 
   // Drops the change being typed (or the next queued one) and moves on to the one after it.
   register('agentTypewriter.skipToNext', async () => {
-    const playing = timeline.all().find((e) => timeline.stateOf(e.seq) === 'playing');
-    await seekTo((playing?.seq ?? timeline.cursor) + 1);
+    const current = (timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined) ?? timeline.peek();
+    await seekTo((current?.seq ?? timeline.cursor) + 1);
   });
 
   register('agentTypewriter.showDiff', async (arg?: ChangeItem) => {
@@ -350,10 +416,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     const name = uri.path.slice(uri.path.lastIndexOf('/') + 1);
     if (session.events.length === 0) throw new Error(`${name} holds no changes.`);
     recorder.drainHeld();
-    if (interactive && timeline.all().length > 0) {
-      const replace = 'Replace';
+    if (interactive && (timeline.all().length > 0 || recorder.isRunning)) {
+      const replace = timeline.all().length > 0 ? 'Replace' : 'Load';
+      const what = timeline.all().length > 0 ? `Replace the ${timeline.all().length} recorded change(s) with the ${session.events.length} in ${name}?` : `Load the ${session.events.length} change(s) in ${name}?`;
       const pick = await vscode.window.showWarningMessage(
-        `Replace the ${timeline.all().length} recorded change(s) with the ${session.events.length} in ${name}?`,
+        recorder.isRunning ? `${what} This stops watching, so live edits do not mix into the loaded session.` : what,
         { modal: true },
         replace,
       );
@@ -362,9 +429,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (!(await fitHistoryLimit(session.events.length, name, interactive))) return;
     // Loaded sessions start paused at their first change; the user resumes when ready.
     player.setPaused(true);
+    // Live edits would replay into the same mirrors as the loaded changes, from another starting text.
+    if (recorder.isRunning) {
+      recorder.stop();
+      await setWatching(false);
+    }
     // Changes recorded while the prompts were open are replaced too.
     recorder.drainHeld();
-    timeline.restore(session.events, session.events[0].seq);
+    // Every lane starts at its first change; the lane followed when it was saved is followed again.
+    followedMemory.quietly(() => timeline.restore(session.events, session.events[0].seq, undefined, { ...sessionLanes(session), cursors: undefined }));
     await player.interrupt();
     player.forgetPlaybackMirror();
     log.appendLine(`Loaded ${timeline.all().length} change(s) from ${uri.fsPath}; playback paused.`);
@@ -506,9 +579,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       recorder.stop();
       await setWatching(false);
     }
-    timeline.restore(
-      events.map((e, i) => ({ ...e, seq: i + 1 })),
-      1,
+    // The replay is one lane, labeled with its range.
+    const lane = replayLane(range);
+    followedMemory.quietly(() =>
+      timeline.restore(
+        events.map((e, i) => ({ ...e, seq: i + 1, lane: lane.id })),
+        1,
+        undefined,
+        { lanes: [lane], followed: lane.id },
+      ),
     );
     await player.interrupt();
     player.forgetPlaybackMirror();
@@ -664,8 +743,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
   });
 
-  // Tests pass (folder, worktree path); an empty or null path means the folder's own checkout.
-  register('agentTypewriter.chooseCheckout', async (folderArg?: vscode.Uri | string, pathArg?: string | null) => {
+  // Tests pass (folder, worktree path); an empty or null path means the folder's own checkout, and a list of paths records each.
+  register('agentTypewriter.chooseCheckout', async (folderArg?: vscode.Uri | string, pathArg?: string | null | string[]) => {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) throw new Error('Open a folder or workspace first.');
     const only = folderArg ? vscode.workspace.getWorkspaceFolder(typeof folderArg === 'string' ? vscode.Uri.file(folderArg) : folderArg) : undefined;
@@ -686,35 +765,78 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (candidates.length > 1) {
       const pick = await vscode.window.showQuickPick(
         candidates.map(([folder, c]) => ({ label: folder.name, detail: `${folderCheckoutChoice(folder.name, c.own, c.worktrees).choices} checkouts`, entry: [folder, c] as const })),
-        { title: 'Agent Typewriter: choose a checkout for which folder?' },
+        { title: 'Agent Typewriter: choose checkouts for which folder?' },
       );
       if (!pick) return;
       target = [pick.entry[0], pick.entry[1]];
     }
     const [folder, c] = target;
+    if (Array.isArray(pathArg)) {
+      await recorder.setCheckouts(folder, pathArg);
+      return;
+    }
     if (pathArg !== undefined) {
       await recorder.setCheckout(folder, pathArg || undefined);
       return;
     }
-    const current = pathKey(c.chosen ?? c.own?.path ?? folder.uri.fsPath);
-    const mark = (p: string) => (pathKey(p) === current ? 'current' : undefined);
+    const ownPath = c.own?.path ?? folder.uri.fsPath;
+    const recorded = new Set((recorder.isRunning ? recorder.recordedLanes().filter((l) => l.folder === folder).map((l) => l.checkout) : c.recorded).map(pathKey));
     const others = c.worktrees.filter((w) => w !== c.own);
     const self = folderCheckoutChoice(folder.name, c.own, c.worktrees);
-    const pick = await vscode.window.showQuickPick(
-      [
-        {
-          label: self.label,
-          description: [self.description, mark(c.own?.path ?? folder.uri.fsPath)].filter(Boolean).join(' · '),
-          detail: c.own?.path ?? folder.uri.fsPath,
-          path: undefined as string | undefined,
-        },
-        ...others.map((w) => ({ label: checkoutName(w), description: mark(w.path), detail: w.path, path: w.path as string | undefined })),
-      ],
-      { title: `Agent Typewriter: record which checkout of ${folder.name}?` },
-    );
-    if (!pick) return;
-    await recorder.setCheckout(folder, pick.path);
+    const items = [
+      { label: self.label, description: self.description, detail: ownPath, path: ownPath },
+      ...others.map((w) => ({ label: checkoutName(w), description: undefined as string | undefined, detail: w.path, path: w.path })),
+    ].map((item) => ({ ...item, picked: recorded.has(pathKey(item.path)) }));
+    const picks = await vscode.window.showQuickPick(items, {
+      title: `Agent Typewriter: record which checkouts of ${folder.name}? Each gets its own lane, up to ${MAX_LANES} in all.`,
+      canPickMany: true,
+    });
+    if (!picks) return;
+    if (picks.length === 0) {
+      vscode.window.showInformationMessage('Agent Typewriter: at least one checkout must record; nothing changed.');
+      return;
+    }
+    try {
+      await recorder.setCheckouts(folder, picks.map((p) => p.path));
+    } catch (err) {
+      vscode.window.showErrorMessage(`Agent Typewriter: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
+
+  // From a view row (its lane, or the lane id) or the palette, which asks.
+  register('agentTypewriter.followLane', async (arg?: string | { lane: string | LaneInfo }) => {
+    let lane = typeof arg === 'string' ? arg : typeof arg?.lane === 'string' ? arg.lane : arg?.lane?.id;
+    const lanes = timeline.laneList();
+    if (lane === undefined) {
+      if (lanes.length < 2) {
+        vscode.window.showInformationMessage('Agent Typewriter: there is only one lane to follow.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        lanes.map((l) => ({
+          label: laneName(l),
+          description: [`${timeline.pendingCount(l.id)} queued`, l.id === timeline.followed ? 'following' : '', l.recording ? '' : 'stopped']
+            .filter(Boolean)
+            .join(' · '),
+          detail: l.root || undefined,
+          lane: l.id,
+        })),
+        { title: 'Agent Typewriter: follow which lane?' },
+      );
+      if (!pick) return;
+      lane = pick.lane;
+    }
+    if (!lanes.some((l) => l.id === lane)) {
+      vscode.window.showWarningMessage('Agent Typewriter: that checkout has no lane yet. Record it first.');
+      return;
+    }
+    if (lane === timeline.followed) return;
+    timeline.follow(lane);
+    await player.interrupt();
+  });
+  register('agentTypewriter.autoFollowOn', () => updateSetting('autoFollow', true));
+  register('agentTypewriter.autoFollowOff', () => updateSetting('autoFollow', false));
+  register('agentTypewriter.refreshCheckouts', () => refreshCheckouts());
 
   register('agentTypewriter.setSpeed', async (multiplier?: number) => {
     if (typeof multiplier === 'number' && Number.isFinite(multiplier) && multiplier > 0) {
@@ -773,10 +895,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (affects('charsPerMinute') || affects('charsPerSecond')) noteDeprecatedSpeed();
     if (['include', 'exclude', 'extensions', 'respectGitignore', 'profiles', 'activeProfile'].some(affects)) {
       await recorder.refreshFilter();
+    } else if (affects('autoRecordWorktrees')) {
+      await recorder.refreshFilter('autoRecordWorktrees changed');
     }
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('persistHistory')) applyPersistHistory();
     if (affects('highlightAdditions') || affects('markDeletions')) highlights.refresh();
+    if (affects('autoFollow')) {
+      await setAutoFollowKey();
+      autoFollow.check();
+    }
     refreshStatus();
   };
 
@@ -818,10 +946,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     if (store && readSettings().persistHistory) {
       const saved = store.load();
       if (saved && saved.events.length > 0) {
-        const pending = saved.events.filter((e) => e.seq >= saved.cursor).length;
+        const pending = saved.events.filter((e) => e.seq >= (saved.cursors?.[laneOf(e)] ?? saved.cursor)).length;
         if (pending > 0) player.setPaused(true);
-        timeline.restore(saved.events, saved.cursor, sessionClears(saved));
-        const queued = timeline.pendingCount();
+        followedMemory.quietly(() => timeline.restore(saved.events, saved.cursor, sessionClears(saved), sessionLanes(saved)));
+        // Queued in every lane: any of them pauses playback.
+        const queued = timeline.pendingTotal();
         log.appendLine(`Restored ${timeline.all().length} change(s) from the last session${queued ? `; ${queued} queued, playback paused` : ''}.`);
         refreshStatus();
       }

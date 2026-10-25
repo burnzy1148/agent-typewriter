@@ -49,6 +49,8 @@ function settings(over: Partial<Settings> = {}): Settings {
     mirrorStatusRow: true,
     highlightAdditions: true,
     markDeletions: true,
+    autoRecordWorktrees: 'off',
+    autoFollow: false,
     ...over,
   };
 }

@@ -52,6 +52,10 @@ export interface Settings extends FilterSettings {
   highlightAdditions: boolean;
   /** Preview deletions in red and mark where text was removed. */
   markDeletions: boolean;
+  /** Give worktrees added while recording their own lane: never, while there is room, or by stopping the idlest lane. */
+  autoRecordWorktrees: 'off' | 'fill' | 'rotate';
+  /** Move playback to the lane with the oldest queued change once the followed lane is caught up and idle. */
+  autoFollow: boolean;
 }
 
 /** Values from the repository settings file; they sit between user and workspace settings. */
@@ -113,8 +117,15 @@ export function readSettings(): Settings {
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     viewColumn: c.get('viewColumn', 'beside'),
     mirrorStatusRow: c.get('mirrorStatusRow', true),
+    autoRecordWorktrees: oneOf(c.get<unknown>('autoRecordWorktrees', 'off'), ['off', 'fill', 'rotate'] as const, 'off'),
+    autoFollow: c.get<unknown>('autoFollow', false) === true,
     ...readHighlightSettings(),
   };
+}
+
+/** `value` when it is one of `allowed`, else `fallback`. */
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
 /** Only the highlight settings; the highlight view reads them on every render. */
