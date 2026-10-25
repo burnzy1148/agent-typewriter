@@ -1,0 +1,59 @@
+---
+title: Agent Typewriter
+description: A VS Code extension that replays your agent's edits as if a person were typing them.
+template: splash
+editUrl: false
+hero:
+  title: Watch your agent write code like a person would
+  tagline: A VS Code extension that records every change Claude Code, any other agent, or a teammate writes to disk, and types each one out at human speed, in the order it happened.
+  actions:
+    - text: Install from the Marketplace
+      link: https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter
+      icon: external
+      variant: primary
+    - text: Read the docs
+      link: /docs/getting-started/
+      icon: right-arrow
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/burnzy1148/agent-typewriter
+      icon: github
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import pkg from '../../../../package.json';
+
+## Install
+
+```sh
+code --install-extension burnzy1148.agent-typewriter
+```
+
+Or search for **Agent Typewriter** in the Extensions view. To install a build from a [GitHub release](https://github.com/burnzy1148/agent-typewriter/releases) instead, download the `.vsix` and run `code --install-extension agent-typewriter-<version>.vsix`. Then run **Agent Typewriter: Start Watching** and let your agent work. These docs describe version {pkg.version}.
+
+<img
+  class="landing-demo"
+  src="/images/demo.gif"
+  width="1280"
+  height="820"
+  alt="Agent Typewriter replays an agent's edits as typing: new lines highlighted green, deleted words and lines shown red before they go, a red marker where lines were removed, and a smooth scroll to the next edit"
+/>
+
+## What it does
+
+<CardGrid>
+  <Card title="Replays, never touches your files" icon="approve-check">
+    Replay happens in mirror documents with full syntax highlighting. Your real files are never written.
+  </Card>
+  <Card title="Types like a person" icon="pencil">
+    Changes are planned line by line and word by word, so renaming a variable retypes only that word.
+    Playback speeds up when the agent gets ahead.
+  </Card>
+  <Card title="Highlights like a git diff" icon="document">
+    Added text stays green and removed text is marked, so you can see what changed at a glance. [Highlights](/docs/highlights/)
+  </Card>
+  <Card title="Replays git history too" icon="code-branch">
+    Type out a branch, pull request or commit range that was never watched. [Replaying git history](/docs/git-history/)
+  </Card>
+</CardGrid>

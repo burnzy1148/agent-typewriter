@@ -1,0 +1,115 @@
+name: Site
+
+# Builds the agent-typewriter.com site in site/ and deploys it to Firebase Hosting.
+#
+# - Every PR and push that touches the site builds it; broken internal links fail the build.
+# - PRs from branches in this repository get a preview channel, and the URL is posted on
+#   the PR. PRs from forks and Dependabot PRs only build, since their runs cannot read
+#   secrets (and dependency updates should not reach the Firebase credentials).
+# - Production deploys from main only, so the site matches the released extension. Merging
+#   a release PR that touches the site deploys it; workflow_dispatch on main re-deploys.
+#
+# Needs the FIREBASE_SERVICE_ACCOUNT repository secret: a service account key for the
+# agent-typewriter-web project with the Firebase Hosting Admin and Service Usage Consumer
+# roles (the deploy checks that the Hosting API is enabled, which needs serviceusage.services.get).
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'site/**'
+      - 'images/**'
+      - 'package.json'
+      - '.github/workflows/site.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'images/**'
+      - 'package.json'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+# Jobs only read the repository by default; preview adds what it needs to comment on the PR.
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: npm ci
+        working-directory: site
+
+      - name: Build and check links
+        run: npm run build
+        working-directory: site
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: site-dist
+          path: site/dist
+          if-no-files-found: error
+
+  preview:
+    name: Deploy preview
+    needs: build
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: site-dist
+          path: site/dist
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: agent-typewriter-web
+          entryPoint: site
+          expires: 7d
+
+  deploy:
+    name: Deploy production
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: site-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: site-dist
+          path: site/dist
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: agent-typewriter-web
+          entryPoint: site
+          channelId: live

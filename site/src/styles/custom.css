@@ -1,0 +1,30 @@
+/* Accent colors from the extension's Marketplace banner (#2F2B63). */
+:root {
+  --sl-color-accent-low: #1d1a3d;
+  --sl-color-accent: #6c63d9;
+  --sl-color-accent-high: #d4d1f7;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #dedcf7;
+  --sl-color-accent: #4a42b8;
+  --sl-color-accent-high: #2f2b63;
+}
+
+
+.landing-demo {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  box-shadow: var(--sl-shadow-lg);
+}
+
+/* Keep the install command on the landing page above the fold at 1280×800. */
+@media (min-width: 50rem) {
+  .hero {
+    padding-block: 3rem 1rem;
+  }
+  .hero h1 {
+    font-size: clamp(2.5rem, 4vw, 3.25rem);
+  }
+}

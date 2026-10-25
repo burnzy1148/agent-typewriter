@@ -30,6 +30,23 @@ To try replay by hand, run `npm run tour`. It builds the extension, makes a thro
 
 The README demo (`images/demo.gif`) is recorded by `npm run demo` on macOS with ffmpeg installed. It plays a few of the tour's steps (defined once in `scripts/tour-scenarios.mjs`) into the tour's repository in a throwaway VS Code profile and screen-records the window. The header of `scripts/demo/record.mjs` lists options for choosing the display, and its `shot` list picks the steps. Re-record it when the UI in the shot changes.
 
+## The docs site
+
+The site at [agent-typewriter.com](https://agent-typewriter.com) is built from `site/` with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build). It is a separate npm project, so its dependencies never touch the extension's.
+
+```
+cd site
+npm install
+npm run dev       # live preview at http://localhost:4321
+npm run build     # static build in site/dist, fails on broken internal links
+```
+
+- Docs pages are Markdown files in `site/src/content/docs/docs/`, and the sidebar order is in `site/astro.config.mjs`. Every page has an "Edit this page" link to its file.
+- The settings reference is generated from `contributes.configuration` in the root `package.json`, so a new setting needs no docs edit. Describe it well in `package.json` instead.
+- The demo GIF, banner and icon are copied from `images/` at build time. Don't add copies under `site/`. The banner is also the preview image when a site link is shared.
+- PRs that change the site get a build check. PRs from branches in this repository also get a preview link posted on the PR; PRs from forks and Dependabot PRs don't, because their runs can't read the deploy secret. A PR that only changes `site/` skips the extension's tests.
+- Production follows releases: the site deploys when a release merges into `main`, so it always describes the published version.
+
 ## How the code fits together
 
 [CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
@@ -54,11 +71,25 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 
 ## Releasing (maintainers)
 
-1. Run the **Release** workflow from the Actions tab, or `gh workflow run release.yml -f bump=patch` (or `minor`, `major`). It cuts `release/v<version>` from `develop`, bumps the version in `package.json` and `package-lock.json`, dates the CHANGELOG's `## Unreleased` heading, and opens a PR into `main`.
-2. When CI is green, merge that PR with **Create a merge commit**. Don't squash, or `develop` and `main` stop sharing history.
-3. The merge tags `main` `v<version>` and runs CI on the tag, which checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release. It also opens a PR syncing `main` back into `develop`. Merge that one with a merge commit too.
+1. Run the **Release** workflow from the Actions tab, or `gh workflow run release.yml -f bump=patch` (or `minor`, `major`). It cuts `bump/v<version>` from `develop`, bumps the version in `package.json` and `package-lock.json`, dates the CHANGELOG's `## Unreleased` heading, and opens a PR into `develop`.
+2. When CI is green, merge that PR. The merge tags the resulting `develop` commit `v<version>`, points `release/v<version>` at it, and opens a PR into `main`.
+3. When CI is green, merge the release PR with **Create a merge commit**. Don't squash, and don't push to `release/v<version>`: the tag must stay on its head. The merge runs CI on the tag, which checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release.
 
-Without the workflow, do the same by hand: a `release/v<version>` PR from `develop` into `main` with the version bump, a merge commit, `git tag v<version>` on the merge and `git push origin v<version>`, then merge `main` into `develop`.
+The tag lives in `develop`'s history, so nothing has to be synced back from `main`. Pushing a `v*` tag doesn't publish anything. Only a CI run dispatched on the tag does, which the workflow starts after step 3.
+
+If the release PR is closed without merging, the bump and the tag stay on `develop`. To release that commit after all, reopen the PR. To release a later `develop` commit as the same version instead, for example after a fix, move the tag and the branch to it and open the PR again:
+
+```
+git fetch origin
+git tag -f v<version> origin/develop
+git push -f origin v<version>
+git push -f origin origin/develop:refs/heads/release/v<version>
+gh pr create --base main --head release/v<version> --title "Release v<version>"
+```
+
+If a workflow run fails partway, rerun it: each job skips the tag, branch, or PR it already created.
+
+Without the workflow, do the same by hand: a PR into `develop` with the version bump, `git tag v<version>` on its merge and `git push origin v<version>`, a `release/v<version>` PR from that commit into `main` merged with a merge commit, then `gh workflow run ci.yml --ref v<version>` to publish.
 
 `scripts/apply-branch-rules.sh` sets the rulesets on `main` and `develop`: PRs only, CI green before merge, no force pushes or deletion, merge commits only on `main`. Repository admins can bypass them.
 
