@@ -21,7 +21,7 @@
 ## 4. CI shortcut for site-only PRs
 
 - [x] 4.1 Add `scripts/ci-paths.mjs` exporting the classification (site-only when every path is under `site/` or is `.github/workflows/site.yml`) and `scripts/ci-changes.mjs`, a small CLI that writes `extension=true|false` to `$GITHUB_OUTPUT`. Verify with `test/ciChanges.test.ts`: site-only, mixed, `images/` only, `package.json` only, empty list (runs everything), and a rename out of `site/`
-- [ ] 4.2 Add the `changes` job to `ci.yml` and gate every step after checkout in `test` and `package` on its output, keeping job names unchanged; non-PR events always run everything. Verify on a throwaway site-only PR that the three required checks report success without running tests, and on this change's PR (which touches more than `site/`) that the full suite runs
+- [x] 4.2 Add the `changes` job to `ci.yml` and gate every step after checkout in `test` and `package` on its output, keeping job names unchanged; non-PR events always run everything. Verify on a throwaway site-only PR that the three required checks report success without running tests, and on this change's PR (which touches more than `site/`) that the full suite runs
 
 ## 5. Repository wiring
 
