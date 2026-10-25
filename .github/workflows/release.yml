@@ -1,15 +1,19 @@
 name: Release
 
-# Promotes develop to main.
+# Versions and tags develop, then promotes the tagged commit to main.
 #
 # Run it from the Actions tab (or `gh workflow run release.yml -f bump=minor`).
-# It cuts release/v<version> from develop, bumps the version in package.json
-# and package-lock.json, dates the CHANGELOG's "## Unreleased" heading, and
-# opens a PR into main. Merge that PR with a merge commit, not a squash.
+# It cuts bump/v<version> from develop, bumps the version in package.json and
+# package-lock.json, dates the CHANGELOG's "## Unreleased" heading, and opens a
+# PR into develop.
 #
-# When the release PR merges, this workflow tags the merge commit v<version>,
-# runs ci.yml on the tag (test, package, publish to the Marketplace, GitHub
-# release), and opens a PR syncing main back into develop.
+# When the bump PR merges, this workflow tags the resulting develop commit
+# v<version>, points release/v<version> at it, and opens a PR into main. Merge
+# that PR with a merge commit, not a squash.
+#
+# When the release PR merges, this workflow runs ci.yml on the tag (test,
+# package, publish to the Marketplace, GitHub release). The tag is already in
+# develop's history, so main needs no sync back into develop.
 #
 # PRs, branches and tags created with GITHUB_TOKEN don't trigger other
 # workflows, so this workflow starts ci.yml itself with workflow_dispatch.
@@ -24,15 +28,15 @@ on:
         default: patch
   pull_request:
     types: [closed]
-    branches: [main]
+    branches: [develop, main]
 
 env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
 
 jobs:
-  prepare:
-    name: Open release PR
+  bump:
+    name: Open version bump PR
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -57,12 +61,16 @@ jobs:
           fi
           version=$(npm version "$BUMP" --no-git-tag-version --ignore-scripts)
           version=${version#v}
+          if git ls-remote --exit-code --tags origin "refs/tags/v${version}" >/dev/null; then
+            echo "Tag v${version} already exists" >&2
+            exit 1
+          fi
           sed -i "0,/^## Unreleased$/s//## ${version} ($(date -u +%Y-%m-%d))/" CHANGELOG.md
           echo "version=${version}" >> "$GITHUB_OUTPUT"
         env:
           BUMP: ${{ inputs.bump }}
 
-      - name: Push release branch
+      - name: Push bump branch
         run: |
           git config user.name "$GITHUB_ACTOR"
           git config user.email "${GITHUB_ACTOR_ID}+${GITHUB_ACTOR}@users.noreply.github.com"
@@ -71,29 +79,28 @@ jobs:
           git push origin "$BRANCH"
         env:
           VERSION: ${{ steps.bump.outputs.version }}
-          BRANCH: release/v${{ steps.bump.outputs.version }}
+          BRANCH: bump/v${{ steps.bump.outputs.version }}
 
-      - name: Open PR into main and start CI
+      - name: Open PR into develop and start CI
         run: |
-          gh pr create --base main --head "$BRANCH" --title "Release v${VERSION}" --body "$(cat <<EOF
-          Promotes \`develop\` to \`main\` as v${VERSION}.
+          gh pr create --base develop --head "$BRANCH" --title "Release v${VERSION}" --body "$(cat <<EOF
+          Bumps the version to v${VERSION} and dates the CHANGELOG.
 
-          Merge with **Create a merge commit**, not squash, so \`develop\` and \`main\` keep one history.
-
-          Once merged, the Release workflow tags \`main\` v${VERSION}, runs CI on the tag to publish to the Marketplace and create the GitHub release, and opens a PR syncing \`main\` back into \`develop\`.
+          Once merged, the Release workflow tags the merge on \`develop\` v${VERSION} and opens a \`release/v${VERSION}\` PR into \`main\`.
           EOF
           )"
           gh workflow run ci.yml --ref "$BRANCH"
         env:
           VERSION: ${{ steps.bump.outputs.version }}
-          BRANCH: release/v${{ steps.bump.outputs.version }}
+          BRANCH: bump/v${{ steps.bump.outputs.version }}
 
-  finish:
-    name: Tag, publish and sync develop
+  tag:
+    name: Tag develop and open release PR
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged &&
-      startsWith(github.head_ref, 'release/v')
+      github.base_ref == 'develop' &&
+      startsWith(github.head_ref, 'bump/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -104,31 +111,65 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
+      - name: Tag the merge and push the release branch
+        id: tag
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "${HEAD_REF}" != "bump/v${version}" ]; then
+            echo "Branch ${HEAD_REF} does not match package.json version ${version}" >&2
+            exit 1
+          fi
+          git tag "v${version}"
+          git push origin "v${version}"
+          git push origin "HEAD:refs/heads/release/v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+
+      - name: Open PR into main and start CI
+        run: |
+          gh pr create --base main --head "$BRANCH" --title "Release v${VERSION}" --body "$(cat <<EOF
+          Promotes \`develop\` at tag v${VERSION} to \`main\`.
+
+          Merge with **Create a merge commit**, not squash. Don't push to this branch: the tag must stay on its head.
+
+          Once merged, the Release workflow runs CI on the tag to publish to the Marketplace and create the GitHub release.
+          EOF
+          )"
+          gh workflow run ci.yml --ref "$BRANCH"
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          BRANCH: release/v${{ steps.tag.outputs.version }}
+
+  publish:
+    name: Publish
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged &&
+      github.base_ref == 'main' &&
+      startsWith(github.head_ref, 'release/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
       - name: Check the release was merged with a merge commit
         run: |
           parents=$(gh api "repos/${GH_REPO}/commits/${SHA}" --jq '.parents | length')
           if [ "$parents" -lt 2 ]; then
-            echo "::warning::The release PR was not merged with a merge commit, so develop and main now differ in history. The sync PR may conflict."
+            echo "::warning::The release PR was not merged with a merge commit, so main no longer contains the tagged develop commit."
           fi
         env:
           SHA: ${{ github.event.pull_request.merge_commit_sha }}
 
-      - name: Tag main and publish
-        id: tag
+      - name: Check the tag is on the release PR's head and publish it
         run: |
-          version=$(node -p "require('./package.json').version")
-          git tag "v${version}"
-          git push origin "v${version}"
-          gh workflow run ci.yml --ref "v${version}"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-      - name: Open PR syncing main into develop
-        run: |
-          gh pr create --base develop --head main --title "Sync main into develop after v${VERSION}" --body "$(cat <<EOF
-          Brings the v${VERSION} release commit and merge back into \`develop\`.
-
-          Merge with **Create a merge commit**, not squash.
-          EOF
-          )"
+          tag=${HEAD_REF#release/}
+          tag_sha=$(gh api "repos/${GH_REPO}/commits/${tag}" --jq .sha)
+          if [ "$tag_sha" != "$HEAD_SHA" ]; then
+            echo "Tag ${tag} is on ${tag_sha}, but the release PR merged ${HEAD_SHA}" >&2
+            exit 1
+          fi
+          gh workflow run ci.yml --ref "$tag"
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
