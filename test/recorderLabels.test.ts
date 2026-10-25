@@ -46,6 +46,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     historyLimit: 500,
     persistHistory: false,
     ignoreOwnSaves: true,
+    ignoreGitOperations: true,
     viewColumn: 'beside',
     mirrorStatusRow: true,
     highlightAdditions: true,

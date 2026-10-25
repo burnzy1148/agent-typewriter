@@ -38,6 +38,7 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   historyLimit: 'number',
   persistHistory: 'boolean',
   ignoreOwnSaves: 'boolean',
+  ignoreGitOperations: 'boolean',
   viewColumn: { enum: ['beside', 'active'] },
   mirrorStatusRow: 'boolean',
   highlightAdditions: 'boolean',

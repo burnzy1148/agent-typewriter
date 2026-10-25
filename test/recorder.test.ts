@@ -44,6 +44,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     historyLimit: 500,
     persistHistory: false,
     ignoreOwnSaves: true,
+    ignoreGitOperations: true,
     viewColumn: 'beside',
     mirrorStatusRow: true,
     highlightAdditions: true,
@@ -756,4 +757,295 @@ test('a rename whose old path is written again before the create arrives is not 
   // The old path's own changes keep their order.
   assert.deepEqual(renames(t).filter((e) => e.endsWith('src/a.ts')), ['delete src/a.ts', 'create src/a.ts']);
   assert.deepEqual([...t.timeline.latestStates().keys()].sort(), ['src/a.ts', 'src/b.ts']);
+});
+
+// --- at-yd9: writes git operations make are not recorded.
+
+/** A repository with `a.ts` and `b.ts` on main and a `feature` branch that changes `a.ts`, adds `c.ts` and removes `b.ts`. */
+function featureRepo(): string {
+  const repo = committedRepo({ 'a.ts': 'a1\n', 'b.ts': 'b1\n', 'z.ts': 'z\n' });
+  git(repo, 'switch', '-qc', 'feature');
+  write(repo, 'a.ts', 'a2\n');
+  write(repo, 'c.ts', 'c\n');
+  git(repo, 'rm', '-q', 'b.ts');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'feature');
+  git(repo, 'switch', '-q', 'main');
+  return repo;
+}
+
+/** Reports each file as the watcher would after git wrote it: a create, change or delete by what is on disk now. */
+function fireGitWrites(repo: string, created: string[], changed: string[] = [], deleted: string[] = []): void {
+  for (const rel of created) mock.fire('create', path.join(repo, rel));
+  for (const rel of changed) mock.fire('change', path.join(repo, rel));
+  for (const rel of deleted) mock.fire('delete', path.join(repo, rel));
+}
+
+const editorDoc = (file: string, text: string) => ({ uri: vscode.Uri.file(file), getText: () => text });
+
+test('git: a merge records nothing, and the next edit starts from the merged text', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  git(repo, 'merge', '-q', 'feature');
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  const summary = /^Skipped 3 files written by git \(merge feature\) in /;
+  for (let i = 0; i < 40 && !t.logs.some((l) => summary.test(l)); i++) await sleep(50);
+  assert.ok(t.logs.some((l) => summary.test(l)), t.logs.join('\n'));
+  t.change(path.join(repo, 'a.ts'), 'a2\nagent\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: 'a2\n', after: 'a2\nagent\n' }]);
+});
+
+test('git: a merge the watcher reports late, with no reorder window, records nothing', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings({ reorderWindowMs: 0 }), repo);
+  await t.recorder.start();
+  git(repo, 'merge', '-q', 'feature');
+  await sleep(400);
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+});
+
+test('git: an agent edit during a merge, of a file the merge does not touch, is recorded', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  write(repo, 'z.ts', 'agent\n');
+  git(repo, 'merge', '-q', 'feature');
+  fireGitWrites(repo, ['c.ts'], ['a.ts', 'z.ts'], ['b.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'z.ts', before: 'z\n', after: 'agent\n' }]);
+});
+
+test('git: an agent write over a merged file, read together with the merge, is recorded', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  git(repo, 'merge', '-q', 'feature');
+  await sleep(120);
+  t.change(path.join(repo, 'a.ts'), 'agent\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: 'a1\n', after: 'agent\n' }]);
+});
+
+/** featureRepo plus a commit on main that conflicts with feature's change to `a.ts`. */
+function conflictRepo(): string {
+  const repo = featureRepo();
+  write(repo, 'a.ts', 'main\n');
+  git(repo, 'commit', '-qam', 'main side');
+  return repo;
+}
+
+test('git: conflict markers are not recorded; the resolution is, from the marker text', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  assert.throws(() => git(repo, 'merge', '-q', 'feature'));
+  const markers = fs.readFileSync(path.join(repo, 'a.ts'), 'utf8');
+  assert.match(markers, /<<<<<<</);
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  t.change(path.join(repo, 'a.ts'), 'resolved\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: markers, after: 'resolved\n' }]);
+});
+
+test('git: checkout --theirs is a resolution and is recorded', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  assert.throws(() => git(repo, 'merge', '-q', 'feature'));
+  const markers = fs.readFileSync(path.join(repo, 'a.ts'), 'utf8');
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  git(repo, 'checkout', '--theirs', 'a.ts');
+  fireGitWrites(repo, [], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: markers, after: 'a2\n' }]);
+});
+
+test('git: a resolution saved from an editor is the user\'s own save', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  assert.throws(() => git(repo, 'merge', '-q', 'feature'));
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  const file = path.join(repo, 'a.ts');
+  mock.willSave.fire({ document: editorDoc(file, 'mine\n') });
+  fs.writeFileSync(file, 'mine\n');
+  mock.didSave.fire(editorDoc(file, 'mine\n'));
+  mock.fire('change', file);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  t.change(file, 'mine\nagent\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: 'mine\n', after: 'mine\nagent\n' }]);
+});
+
+test('git: a branch switch that moves a file records no rename and holds no delete', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'old.ts': 'same\n' });
+  git(repo, 'switch', '-qc', 'moved');
+  git(repo, 'mv', 'old.ts', 'new.ts');
+  git(repo, 'commit', '-qm', 'move');
+  git(repo, 'switch', '-q', 'main');
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  git(repo, 'switch', '-q', 'moved');
+  fireGitWrites(repo, ['new.ts'], [], ['old.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  assert.match(t.recorder.describeActivity(), /debouncing: none; reading: 0;/);
+});
+
+test('git: stash, pull and a pop that conflicts record nothing', { skip: noGit }, async () => {
+  const origin = featureRepo();
+  const clone = path.join(tempDir('at-rec-clone-'), 'clone');
+  git(origin, 'clone', '-q', origin, clone);
+  const t = recorderOn(settings(), clone);
+  await t.recorder.start();
+  t.change(path.join(clone, 'a.ts'), 'wip\n');
+  await t.settle();
+  assert.equal(t.events().length, 1);
+  git(clone, 'stash', 'push', '-q');
+  fireGitWrites(clone, [], ['a.ts']);
+  await t.settle();
+  git(origin, 'merge', '-q', 'feature');
+  git(clone, '-c', 'pull.rebase=false', 'pull', '-q', '--no-edit');
+  fireGitWrites(clone, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  assert.throws(() => git(clone, 'stash', 'pop', '-q'));
+  // The pop conflicts with the pulled change to a.ts: git writes markers and keeps the stash.
+  fireGitWrites(clone, [], ['a.ts']);
+  await t.settle();
+  assert.equal(t.events().length, 1, JSON.stringify(t.events()));
+});
+
+test('git: stash push and a clean pop record nothing', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  t.change(path.join(repo, 'z.ts'), 'wip\n');
+  write(repo, 'u.ts', 'untracked\n');
+  mock.fire('create', path.join(repo, 'u.ts'));
+  await t.settle();
+  assert.equal(t.events().length, 2);
+  git(repo, 'stash', 'push', '-u', '-q');
+  fireGitWrites(repo, [], ['z.ts'], ['u.ts']);
+  await t.settle();
+  git(repo, 'switch', '-q', 'feature');
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  git(repo, 'stash', 'pop', '-q');
+  fireGitWrites(repo, ['u.ts'], ['z.ts']);
+  await t.settle();
+  assert.equal(t.events().length, 2, JSON.stringify(t.events()));
+  t.change(path.join(repo, 'z.ts'), 'wip\nagent\n');
+  await t.settle();
+  assert.deepEqual(t.events().at(-1), { kind: 'modify', relPath: 'z.ts', before: 'wip\n', after: 'wip\nagent\n' });
+});
+
+test('git: restore and stash apply are recorded', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  t.change(path.join(repo, 'a.ts'), 'agent\n');
+  await t.settle();
+  git(repo, 'restore', 'a.ts');
+  fireGitWrites(repo, [], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events().map((e) => e.after), ['agent\n', 'a1\n']);
+  t.change(path.join(repo, 'a.ts'), 'wip\n');
+  await t.settle();
+  git(repo, 'stash', 'push', '-q');
+  fireGitWrites(repo, [], ['a.ts']);
+  await t.settle();
+  await sleep(120);
+  git(repo, 'stash', 'apply', '-q');
+  fireGitWrites(repo, [], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events().map((e) => e.after), ['agent\n', 'a1\n', 'wip\n', 'wip\n']);
+});
+
+test('git: a stale index.lock delays a change by the cap, then it is recorded', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  fs.writeFileSync(path.join(repo, '.git', 'index.lock'), '');
+  t.change(path.join(repo, 'a.ts'), 'agent\n');
+  await t.settle();
+  for (let i = 0; i < 150 && t.events().length === 0; i++) await sleep(100);
+  t.recorder.drainHeld();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: 'a1\n', after: 'agent\n' }]);
+});
+
+test('git: with the setting off a merge is recorded, and turning it on applies while recording', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const s = settings({ ignoreGitOperations: false });
+  const t = recorderOn(s, repo);
+  await t.recorder.start();
+  git(repo, 'merge', '-q', 'feature');
+  fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+  await t.settle();
+  assert.deepEqual(t.events().map((e) => `${e.kind} ${e.relPath}`).sort(), ['create c.ts', 'delete b.ts', 'modify a.ts']);
+  s.ignoreGitOperations = true;
+  await t.recorder.refreshGitOperations();
+  git(repo, 'switch', '-q', '-c', 'back', 'HEAD~1');
+  fireGitWrites(repo, ['b.ts'], ['a.ts'], ['c.ts']);
+  await t.settle();
+  assert.equal(t.events().length, 3, JSON.stringify(t.events()));
+});
+
+test('git: a folder outside git records every write', async () => {
+  const dir = tempDir('at-rec-nogit-');
+  write(dir, 'a.ts', 'one\n');
+  const t = recorderOn(settings(), dir);
+  await t.recorder.start();
+  t.change(path.join(dir, 'a.ts'), 'two\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: 'one\n', after: 'two\n' }]);
+});
+
+test('git: a rebase conflict resolved, then --continue: the resolution records, the next commit does not', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  git(repo, 'switch', '-q', 'feature');
+  write(repo, 'd.ts', 'd\n');
+  git(repo, 'add', 'd.ts');
+  git(repo, 'commit', '-qm', 'feature d');
+  const t = recorderOn(settings(), repo);
+  await t.recorder.start();
+  assert.throws(() => git(repo, 'rebase', '-q', 'main'));
+  const markers = fs.readFileSync(path.join(repo, 'a.ts'), 'utf8');
+  fireGitWrites(repo, [], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  // The agent resolves and continues before the recorder reads its write.
+  write(repo, 'a.ts', 'resolved\n');
+  git(repo, 'add', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'rebase', '--continue');
+  fireGitWrites(repo, ['d.ts'], ['a.ts']);
+  await t.settle();
+  assert.deepEqual(t.events(), [{ kind: 'modify', relPath: 'a.ts', before: markers, after: 'resolved\n' }]);
+});
+
+test('git: git going missing while a write is classified records the write and says so once', { skip: noGit }, async () => {
+  const repo = featureRepo();
+  const t = recorderOn(settings({ gitBaselines: false }), repo);
+  await t.recorder.start();
+  git(repo, 'merge', '-q', 'feature');
+  const savedPath = process.env.PATH;
+  process.env.PATH = tempDir('at-rec-nopath-');
+  try {
+    fireGitWrites(repo, ['c.ts'], ['a.ts'], ['b.ts']);
+    await t.settle();
+  } finally {
+    process.env.PATH = savedPath;
+  }
+  assert.deepEqual(t.events().map((e) => `${e.kind} ${e.relPath}`).sort(), ['create c.ts', 'delete b.ts', 'modify a.ts']);
+  assert.equal(t.logs.filter((l) => l.startsWith('Git operations are recorded like any other change: git could not run')).length, 1, t.logs.join('\n'));
 });

@@ -50,6 +50,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     historyLimit: 500,
     persistHistory: false,
     ignoreOwnSaves: true,
+    ignoreGitOperations: true,
     viewColumn: 'beside',
     mirrorStatusRow: true,
     highlightAdditions: true,
@@ -1074,4 +1075,45 @@ test('a worktree locked on purpose before start is never auto-recorded as new', 
   assert.equal(t.checkout()?.lanes, 1);
   assert.ok(!t.logs.some((l) => l.includes('Recording the new worktree kept')), t.logs.join('\n'));
   assert.ok(t.logs.filter((l) => l.startsWith('Worktrees changed')).length === 0, 'kept re-listing while it waited on a lock');
+});
+
+// --- at-yd9: git operations in a recorded worktree.
+
+test('a merge in a recorded sibling worktree records nothing in its lane; an edit in the main checkout still records', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  git(side, 'switch', '-qc', 'feature');
+  write(side, 'src/a.ts', 'feature\n');
+  write(side, 'src/new.ts', 'new\n');
+  git(side, 'add', '.');
+  git(side, 'commit', '-qm', 'feature');
+  git(side, 'switch', '-q', 'side');
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, side]);
+  git(side, 'merge', '-q', 'feature');
+  t.fire('change', path.join(side, 'src', 'a.ts'));
+  t.fire('create', path.join(side, 'src', 'new.ts'));
+  t.change(path.join(repo, 'src', 'a.ts'), 'main\n');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify src/a.ts']);
+  assert.equal(laneOf(t, 0), t.folder.uri.toString());
+});
+
+test('a stash in the main checkout is not taken for a git write in a sibling worktree', { skip: noGit }, async () => {
+  const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings(), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, side]);
+  t.change(path.join(side, 'src', 'a.ts'), 'edit\n');
+  write(repo, 'src/a.ts', 'wip\n');
+  await t.settle();
+  await sleep(120);
+  // Back to its committed text just before the stash: a stash push in this worktree would vouch for that.
+  t.change(path.join(side, 'src', 'a.ts'), 'a\n');
+  git(repo, 'stash', 'push', '-q');
+  t.fire('change', path.join(repo, 'src', 'a.ts'));
+  await t.settle();
+  const sideFile = `${path.basename(side)}/src/a.ts`;
+  assert.deepEqual(t.events(), [`modify ${sideFile}`, `modify ${sideFile}`]);
+  assert.equal(t.timeline.all()[1].after, 'a\n');
 });

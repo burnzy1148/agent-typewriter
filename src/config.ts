@@ -50,6 +50,8 @@ export interface Settings extends FilterSettings {
   /** Keep the timeline in workspace storage across reloads. */
   persistHistory: boolean;
   ignoreOwnSaves: boolean;
+  /** Skip writes git operations make (merge, pull, checkout, rebase, stash push and pop). */
+  ignoreGitOperations: boolean;
   viewColumn: 'beside' | 'active';
   /** Show the CodeLens status row on the playback mirror. */
   mirrorStatusRow: boolean;
@@ -122,6 +124,7 @@ export function readSettings(): Settings {
     historyLimit: num('historyLimit', 500, 10),
     persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
+    ignoreGitOperations: c.get('ignoreGitOperations', true),
     viewColumn: c.get('viewColumn', 'beside'),
     mirrorStatusRow: c.get('mirrorStatusRow', true),
     autoRecordWorktrees: oneOf(c.get<unknown>('autoRecordWorktrees', 'off'), ['off', 'fill', 'rotate'] as const, 'off'),

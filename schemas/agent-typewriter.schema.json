@@ -224,6 +224,11 @@
       "default": true,
       "description": "Do not replay changes you saved from a VS Code editor yourself. Saves are matched by content: if something else writes the file right after your save, that write is still replayed. Turn off if your agent edits VS Code's editor buffers and then saves them."
     },
+    "ignoreGitOperations": {
+      "type": "boolean",
+      "default": true,
+      "description": "Do not replay files that git rewrites when you merge, pull, switch branches, rebase, cherry-pick, revert, reset to another commit, or stash and pop. Conflict resolutions, edits made during the operation, git restore and git stash apply are still replayed. Needs the git command; the repository is only read."
+    },
     "viewColumn": {
       "type": "string",
       "enum": [
