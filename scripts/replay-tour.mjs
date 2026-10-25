@@ -33,12 +33,14 @@ const { values: opts } = parseArgs({
 const root = path.resolve(import.meta.dirname, '..');
 // Holds the default repository and the throwaway VS Code profile; made only when one is needed.
 let tmpDir;
-const tmp = () => (tmpDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'typewriter-tour-')));
+// Resolved, because git reports worktrees by their real path and the Checkouts
+// view would otherwise show macOS's /private/var/... in full.
+const tmp = () => (tmpDir ??= fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'typewriter-tour-'))));
 const repo = opts.dir ? path.resolve(opts.dir) : path.join(tmp(), 'shop');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const checklist = `
-Things to try by hand now (Explorer > Playback, and the replay editor):
+Things to try by hand now (Agent Typewriter in the Activity Bar, and the replay editor):
 
   [ ] Drag the Playback slider back a few changes and release: highlights of
       changes not yet replayed disappear, and come back as they replay.
@@ -54,6 +56,13 @@ Things to try by hand now (Explorer > Playback, and the replay editor):
       triangles). Turn both back on: highlights reappear.
   [ ] Switch themes (Preferences: Color Theme): a dark, a light, and a high
       contrast theme. Colors stay soft; gutter icons stay visible.
+  [ ] In the Checkouts view, click the eye on the coupons lane: playback
+      follows it again, and the header and status bar name it. Turn
+      Auto-Follow off in the view's title bar, then append a line to
+      .claude/worktrees/tax/src/cart.ts in a terminal: it queues in tax's
+      row but nothing is typed.
+  [ ] Clear the tax checkout's box: it stops recording but keeps its queued
+      change, and its eye still follows it. Tick it again to record it.
   [ ] Developer: Reload Window: the timeline, the playback position and any
       clear come back; reopened tabs show the same highlights.
   [ ] Agent Typewriter: Save Session to File..., then Load Session from File...:
@@ -61,12 +70,6 @@ Things to try by hand now (Explorer > Playback, and the replay editor):
   [ ] Agent Typewriter: Replay Git Commits..., range main..feature: three commits
       replay (a new file, an edit, a rename) without touching the repository.
   [ ] Close a mirror tab mid-typing: it reopens and typing carries on.
-  [ ] In the Checkouts view, click the eye on the coupons lane: playback
-      follows it again, and the header and status bar name it. Turn
-      Auto-Follow off in the view's title bar, edit a file in the tax worktree
-      (.claude/worktrees/tax): it queues in tax's row but nothing is typed.
-  [ ] Clear the tax checkout's box: it stops recording, keeps its changes, and
-      can still be followed. Tick it again to record it.
 
 The repository stays at ${repo} for more experiments; delete it when done.
 `;
@@ -112,7 +115,7 @@ const rl = opts.auto ? undefined : readline.createInterface({ input: process.std
 let auto = opts.auto;
 if (rl) {
   console.log('\nWait for the VS Code window to open and show "Watching" in the status bar.');
-  console.log('Open Explorer > Playback to follow along. Before each step, press Enter; type "a" to run the rest without stopping, "q" to stop.');
+  console.log('Open Agent Typewriter in the Activity Bar to follow along. Before each step, press Enter; type "a" to run the rest without stopping, "q" to stop.');
 } else {
   await sleep(opts['no-launch'] ? 0 : 12000);
 }

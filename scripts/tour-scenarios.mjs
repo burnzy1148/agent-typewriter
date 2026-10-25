@@ -204,9 +204,12 @@ export const steps = [
     id: 'add-worktrees',
     title: 'Two agents get their own checkouts',
     look: 'Two git worktrees appear under .claude/worktrees, on branches coupons and tax. In the Checkouts view (Agent Typewriter in the Activity Bar), each is ticked within a few seconds and gets its own lane color: main blue, coupons green, tax orange. The eye stays on main.',
-    run: (ws) => {
+    run: async (ws) => {
       ws.git('worktree', 'add', '-q', '-b', 'coupons', COUPONS);
       ws.git('worktree', 'add', '-q', '-b', 'tax', TAX);
+      // Writes in a worktree before it records are not replayed, so give
+      // auto-record time to tick both before the next step can start.
+      await sleep(2500);
     },
   },
   {

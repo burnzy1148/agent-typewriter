@@ -39,10 +39,9 @@ const [atX, atY] = opts.at.split(',').map(Number);
 const width = 1280;
 const height = 820;
 // Tour steps to play, by id, each followed by a pause in ms before the next.
-// The pause after add-worktrees lets both new lanes appear in the Checkouts
-// view and settle before their agents start writing.
+// add-worktrees itself waits for both new lanes to record before returning.
 const shot = [
-  ['add-worktrees', 2500],
+  ['add-worktrees', 0],
   ['two-agents', 0],
 ];
 
@@ -152,10 +151,23 @@ if (ffmpeg) {
   ffmpeg.stdin.write('q');
   await new Promise((r) => ffmpeg.on('exit', r));
 }
+// VS Code writes its profile while it shuts down; wait for it before deleting.
+const exited = new Promise((r) => (code.exitCode !== null ? r() : code.on('exit', r)));
+const ended = Date.now();
 code.kill();
+await Promise.race([exited, sleep(10000)]);
+const removeTmp = () => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5 });
 
-// Who was followed and typing when, in seconds into the shot.
-const lines = fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+// Who was followed and typing when, in seconds into the shot. Lines from the
+// shutdown, and one it cut off, are skipped.
+const parse = (l) => {
+  try {
+    return [JSON.parse(l)];
+  } catch {
+    return [];
+  }
+};
+const lines = fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).flatMap(parse).filter((t) => t.at <= ended) : [];
 let said = '';
 for (const t of lines) {
   const queues = t.lanes.map((l) => `${l.label}${l.recording ? '' : ' (stopped)'} ${l.queued}`).join(', ');
@@ -164,7 +176,7 @@ for (const t of lines) {
   said = line;
 }
 if (opts['dry-run']) {
-  fs.rmSync(tmp, { recursive: true, force: true });
+  removeTmp();
   console.log(`Dry run: nothing recorded. Trace in ${path.relative(root, trace)}`);
   process.exit(0);
 }
@@ -175,5 +187,5 @@ run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', raw, '-vf',
   'fps=15,tpad=stop_mode=clone:stop_duration=2,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle', gif]);
 run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', raw, '-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
   path.join(outDir, 'demo.mp4')]);
-fs.rmSync(tmp, { recursive: true, force: true });
+removeTmp();
 console.log(`Wrote ${path.relative(root, gif)} and .demo-out/demo.mp4`);
