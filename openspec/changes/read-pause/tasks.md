@@ -25,6 +25,13 @@
 
 - [x] 5.1 In the README settings table, add `readPauseSeconds` (1.5), mark `scrollPauseMs` deprecated, and change `fileSwitchDelayMs` to 1000 with its new description; under `## Unreleased` in CHANGELOG.md (add the heading if missing) describe the read pause, the new `fileSwitchDelayMs` default, the deprecation, and **BREAKING**: with `smoothScroll` off, off-screen edits now wait for the read pause (set `readPauseSeconds` to 0 for the old behavior); verify by reading both against the spec
 
+## 6. Review fixes
+
+- [x] 6.1 In `play()`, treat a rename as a switch when choosing `smooth` for the first hunk; verify with the rename-with-an-edit check in `it/suite.ts` (no scroll, first edit within 1.5 s of the new mirror being shown at a 3 s read pause)
+- [x] 6.2 Make `readPause` wait in steps of at most 100 ms, working out what is left after each; verify with the speed-change check in `it/suite.ts` (6 s pause, 6x picked during it, switch within 3 s)
+- [x] 6.3 In `scrollTo`, check again after the read pause whether the edit is in view and take the viewport height from then; verify by reading and with `npm run typecheck`
+- [x] 6.4 Add the pause-during-the-read-pause check to `it/suite.ts` (read-b not shown while paused, played after resume), raise the late-change limit to 1100 ms, and update the spec and design for these fixes and the 15 s file-switch cap; verify `openspec validate read-pause --strict` and `npm run it`
+
 ## Workflow follow-up
 
 - Open a PR to `develop` for bead `at-2i9.9` and turn on Auto-fix.

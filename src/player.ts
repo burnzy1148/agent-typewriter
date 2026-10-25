@@ -13,6 +13,8 @@ const BACKSPACE_MAX = 24;
 /** More arrow presses than this to reach an edit, and the caret is clicked there instead. */
 const ARROW_MAX_KEYS = 24;
 const TICK_HZ = 60;
+/** How often a read pause looks again at what is left of it. */
+const READ_PAUSE_STEP_MS = 100;
 
 /**
  * Consumes the timeline in order and types each change into its mirror
@@ -287,8 +289,9 @@ export class Player implements vscode.Disposable {
       return;
     }
 
-    // After a file switch the first edit is jumped to; later ones are scrolled to.
-    let smooth = !switching;
+    // After a file switch, or a rename's move to the new mirror, the first edit
+    // is jumped to; later ones are scrolled to.
+    let smooth = !switching && e.fromRelPath === undefined;
     for (const h of hunks) {
       if (this.finishNow) break;
       if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
@@ -419,18 +422,20 @@ export class Player implements vscode.Disposable {
       return editor;
     }
     if (inView(editor, line)) return editor;
-    const first = view[0].start.line;
-    const last = view[view.length - 1].end.line;
 
     await this.readPause(epoch);
     let ed: vscode.TextEditor | undefined = editor;
     if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
-    if (!s.smoothScroll || this.finishNow) {
+    // The user may have scrolled, or resized the editor, during a pause.
+    if (inView(ed, line)) return ed;
+    const now = ed.visibleRanges;
+    if (!s.smoothScroll || this.finishNow || now.length === 0) {
       ed.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       return ed;
     }
-    const height = last - first + 1;
-    let shown = ed.visibleRanges[0]?.start.line ?? first;
+    const first = now[0].start.line;
+    const height = now[now.length - 1].end.line - first + 1;
+    let shown = first;
     const steps = scrollSteps(shown, centeredTop(line, height, ed.document.lineCount), height, s.scrollLinesPerSecond, this.speedMultiplier(s));
     // Each frame shows the step for the time elapsed, so late timers skip
     // steps instead of stretching the scroll. Time spent paused doesn't count.
@@ -570,8 +575,13 @@ export class Player implements vscode.Disposable {
    */
   private async readPause(epoch: number): Promise<void> {
     if (this.lastEditEpoch !== epoch) return;
-    const s = this.settings();
-    await this.sleep(readPauseLeft(this.lastEditAt, Date.now(), s.readPauseSeconds, this.speedMultiplier(s)));
+    // Waited in short steps, so a speed, catch-up or setting change during the pause takes effect.
+    for (;;) {
+      const s = this.settings();
+      const left = readPauseLeft(this.lastEditAt, Date.now(), s.readPauseSeconds, this.speedMultiplier(s));
+      if (left <= 0 || this.finishNow || !this.live(epoch)) break;
+      await this.sleep(Math.min(left, READ_PAUSE_STEP_MS));
+    }
     await this.whilePaused(epoch);
   }
 

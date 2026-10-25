@@ -17,6 +17,10 @@ Before the view leaves what replay just typed, replay SHALL wait until at least 
 - **WHEN** the next edit in the same file is in view
 - **THEN** replay does not wait for the read pause before moving the caret there
 
+#### Scenario: Scrolled into view during a pause
+- **WHEN** playback is paused during the read pause before an off-screen edit, the user scrolls the edit's line into view, and playback resumes
+- **THEN** the view does not move and only the caret moves
+
 #### Scenario: Rename
 - **WHEN** a change to `a.ts` is followed by a rename of `b.ts` to `c.ts`
 - **THEN** the `a.ts` mirror stays in view for the read pause before the `b.ts` mirror is shown
@@ -56,7 +60,7 @@ Replay SHALL NOT wait for the read pause for the first change played, or for the
 - **THEN** the edit is brought into view at once and the rest of the change appears
 
 ### Requirement: File-switch delay
-After replay switches to another file's mirror and shows it, replay SHALL wait `agentTypewriter.fileSwitchDelayMs` ms (default 1000, clamped to 0 to 15000) before the first edit there, divided by the playback speed multiplier. The first change played SHALL NOT wait for it.
+After replay switches to another file's mirror and shows it, replay SHALL wait `agentTypewriter.fileSwitchDelayMs` ms (default 1000, clamped to 0 to 15000) before the first edit there, divided by the playback speed multiplier, and at most 15 s however slow the speed. The first change played SHALL NOT wait for it.
 
 #### Scenario: Default delay
 - **WHEN** `readPauseSeconds` and `fileSwitchDelayMs` are at their defaults, playback speed is 1x, and a change to `b.ts` is queued right behind a change to `a.ts`
@@ -64,6 +68,10 @@ After replay switches to another file's mirror and shows it, replay SHALL wait `
 
 #### Scenario: Out of range
 - **WHEN** `fileSwitchDelayMs` is 60000
+- **THEN** the file-switch delay is 15 s
+
+#### Scenario: Slow playback
+- **WHEN** `fileSwitchDelayMs` is 15000 and the manual speed is 0.5x
 - **THEN** the file-switch delay is 15 s
 
 ### Requirement: Deprecated scroll pause setting is honored
@@ -103,18 +111,26 @@ When replay is about to edit a line outside the viewport of the mirror it is alr
 - **THEN** the mirror's text equals the change's after text
 
 ### Requirement: File switches jump
-The first edit after replay switches to another file, or of the first change played, SHALL be brought into view without the read pause or a scroll, after the file-switch delay. The read pause for a switch SHALL come before the other file's mirror is shown.
+The first edit after replay switches to another file, or of the first change played, SHALL be brought into view without the read pause or a scroll, after the file-switch delay. The same SHALL hold for the first edit of a rename, in the mirror for the new name. The read pause for a switch SHALL come before the other file's mirror is shown.
 
 #### Scenario: Switching files
 - **WHEN** a change to `a.ts` is followed by a change to line 300 of `b.ts`
 - **THEN** after the read pause the `b.ts` mirror is shown, and after the file-switch delay it shows line 300 at once
 
+#### Scenario: Rename with an edit
+- **WHEN** a change to `a.ts` is followed by a rename of `a.ts` to `c.ts` that also edits line 300
+- **THEN** once the `c.ts` mirror is shown it shows line 300 at once, with no read pause and no scroll
+
 ### Requirement: Scrolling follows playback speed and controls
-The read pause and the scroll's duration SHALL be divided by the playback speed multiplier (manual speed times catch-up). Pausing playback SHALL hold a scroll where it is until playback resumes. Seek, skip to next, and skip to latest SHALL stop a read pause or a scroll at once. Finish current SHALL end a read pause or a scroll by bringing the edit into view at once.
+The read pause and the scroll's duration SHALL be divided by the playback speed multiplier (manual speed times catch-up). A change of speed during the read pause SHALL apply to what is left of it. Pausing playback SHALL hold a scroll where it is until playback resumes. Seek, skip to next, and skip to latest SHALL stop a read pause or a scroll at once. Finish current SHALL end a read pause or a scroll by bringing the edit into view at once.
 
 #### Scenario: Double speed
 - **WHEN** the manual speed is 2x and no changes are queued
 - **THEN** the read pause and the scroll each take half as long as at 1x
+
+#### Scenario: Faster during the read pause
+- **WHEN** `readPauseSeconds` is 6, replay waits to switch files at 1x, and the user picks 2x 1 s after the last edit
+- **THEN** the switch happens about 3 s after the last edit, not 6 s
 
 #### Scenario: Pause mid-scroll
 - **WHEN** playback is paused while the view is scrolling to an edit

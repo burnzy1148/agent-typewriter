@@ -26,7 +26,7 @@ Every text change the player makes to a live mirror goes through `Player.edit()`
 ## Decisions
 
 ### Count from the last edit, scoped to the playback epoch
-`Player` records `lastEditAt` (`Date.now()`) and `lastEditEpoch` in `edit()` after each successful edit. `readPause(epoch)` works out `target = readPauseSeconds * 1000 / speedMultiplier(s)` and `left = target - (Date.now() - lastEditAt)`, then sleeps `left` when it is positive. It does nothing when `lastEditEpoch !== epoch`. That one check covers every "jump in playback" case in the spec, because each of them bumps the epoch, and so does the first change ever played (`lastEditEpoch` starts at -1). Auto-follow's handoff keeps the epoch, so it gets a read pause. Its quiet period has usually used the read pause up already, so the handoff shows no extra wait.
+`Player` records `lastEditAt` (`Date.now()`) and `lastEditEpoch` in `edit()` after each successful edit. `readPause(epoch)` works out `target = readPauseSeconds * 1000 / speedMultiplier(s)` and `left = target - (Date.now() - lastEditAt)`, and sleeps in steps of at most 100 ms, working `left` out again after each one, until it reaches 0. Re-checking means a speed, catch-up or setting change during the pause applies to what is left, and a slow speed is not capped by `sleep()`. It does nothing when `lastEditEpoch !== epoch`. That one check covers every "jump in playback" case in the spec, because each of them bumps the epoch, and so does the first change ever played (`lastEditEpoch` starts at -1). Auto-follow's handoff keeps the epoch, so it gets a read pause. Its quiet period has usually used the read pause up already, so the handoff shows no extra wait.
 
 Alternative: a fixed wait, like today. Rejected because the user wants idle time to count, so live recording has no dead air.
 
@@ -52,7 +52,13 @@ The `smooth` flag already marks the first edit after a file switch and the first
 The old scroll pause was humanized. The read pause is a floor ("at least N s since the last edit"), so random spread would only make it harder to predict and to test. Typing keeps its jitter.
 
 ### sleep() caps at 15 s instead of 5 s
-The 5 s cap would cut a longer read pause or file-switch delay short. The new cap is the settings' maximum, 15 s, so a slow manual speed (down to 0.1x) can't stretch one wait past it.
+The 5 s cap would cut a longer file-switch delay short. The new cap is the settings' maximum, 15 s, so a slow manual speed (down to 0.1x) can't stretch the file-switch delay past it; the spec states this limit. The read pause waits in short steps, so the cap never shortens it.
+
+### Renames count as a switch for the first edit
+`moveMirror()` shows the new name's mirror and sets `lastRelPath` to it, so `play()` would see no switch and scroll to the first edit after a read pause on the new tab, where nothing was just typed. `play()` treats a change with `fromRelPath` as a switch when choosing `smooth` for its first hunk, so that edit is jumped to without a read pause.
+
+### scrollTo looks at the view again after the pause
+The pause can be long, and the user can scroll or resize the mirror during it. After the read pause `scrollTo` checks again whether the edit is in view, and takes the viewport height from the editor as it is then.
 
 ### Settings resolution in a vscode-free module
 New `src/readPause.ts` holds:

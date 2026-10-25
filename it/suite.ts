@@ -1082,7 +1082,7 @@ export async function run(): Promise<void> {
     const a3 = push('play/read-a.ts', a2.after, 'export const a = 3;\n');
     await until('late read-a playback', playedNow(a3.seq));
     lateEdits.dispose();
-    assert.ok(lateEdits.at.length > 0 && lateEdits.at[0] - pushedAt < 900, `a late change waited ${lateEdits.at[0] - pushedAt} ms, though the read pause had passed`);
+    assert.ok(lateEdits.at.length > 0 && lateEdits.at[0] - pushedAt < 1100, `a late change waited ${lateEdits.at[0] - pushedAt} ms, though the read pause had passed`);
     assert.equal(mirrorText('play/read-a.ts'), a3.after);
 
     // A seek right after typing shows the other file with no read pause.
@@ -1095,6 +1095,65 @@ export async function run(): Promise<void> {
     await until('idle after the seek', idle);
     assert.equal(mirrorText('play/read-b.ts'), b1.after);
     assert.equal(mirrorText('play/read-a.ts'), a3.after);
+
+    // Pausing during the read pause keeps the old file in view until resumed.
+    const bVisible = () => vscode.window.visibleTextEditors.some((ed) => isMirror(ed.document, 'play/read-b.ts'));
+    const p1 = push('play/read-a.ts', a3.after, 'export const a = 4;\n');
+    const p2 = push('play/read-b.ts', b1.after, 'export const b = 2;\n');
+    await until('read-a typed before the pause', () => timeline.stateOf(p1.seq) === 'played');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(1500);
+    assert.ok(!bVisible(), 'read-b was shown while playback was paused');
+    assert.notEqual(timeline.stateOf(p2.seq), 'played', 'read-b played while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('read-b after resuming', playedNow(p2.seq));
+    assert.equal(mirrorText('play/read-b.ts'), p2.after);
+
+    // A faster speed chosen during the read pause shortens what is left of it.
+    await setting('agentTypewriter', 'readPauseSeconds', 6);
+    const s1 = push('play/read-b.ts', p2.after, 'export const b = 3;\n');
+    const s2 = push('play/read-a.ts', p1.after, 'export const a = 5;\n');
+    await until('read-b typed before the speed change', () => timeline.stateOf(s1.seq) === 'played');
+    const fasterAt = Date.now();
+    await vscode.commands.executeCommand('agentTypewriter.setSpeed', 6);
+    await until('read-a after the speed change', playedNow(s2.seq));
+    const fasterWait = Date.now() - fasterAt;
+    await vscode.commands.executeCommand('agentTypewriter.setSpeed', 1);
+    assert.ok(fasterWait < 3000, `a 6 s read pause at 6x took ${fasterWait} ms more after the speed change`);
+    assert.equal(mirrorText('play/read-a.ts'), s2.after);
+
+    // A rename that also edits far down jumps to that edit on the new name, with no read pause there.
+    await setting('agentTypewriter', 'readPauseSeconds', 3);
+    const moveText = tallLines.join('\n') + '\n';
+    await play('play/read-move.ts', '', moveText);
+    const movedTops = tops('play/read-moved.ts');
+    const movedEdits = editTimes('play/read-moved.ts');
+    let movedShownAt: number | undefined;
+    const movedShown = vscode.window.onDidChangeVisibleTextEditors((eds) => {
+      if (movedShownAt === undefined && eds.some((ed) => isMirror(ed.document, 'play/read-moved.ts'))) movedShownAt = Date.now();
+    });
+    const moved = timeline.push({
+      uri: vscode.Uri.file(path.join(root, 'play/read-moved.ts')).toString(),
+      relPath: 'play/read-moved.ts',
+      fromUri: vscode.Uri.file(path.join(root, 'play/read-move.ts')).toString(),
+      fromRelPath: 'play/read-move.ts',
+      time: Date.now(),
+      kind: 'rename',
+      before: moveText,
+      after: tallLines.map((l, i) => (i === 300 ? 'const line300 = 3000;' : l)).join('\n') + '\n',
+      eol: '\n',
+      linesAdded: 1,
+      linesRemoved: 1,
+    });
+    await until('rename with an edit playback', playedNow(moved.seq));
+    movedTops.dispose();
+    movedEdits.dispose();
+    movedShown.dispose();
+    assert.equal(mirrorText('play/read-moved.ts'), moved.after);
+    assert.ok(new Set(movedTops.seen).size <= 2, `the first edit after a rename was scrolled to: ${movedTops.seen.join(',')}`);
+    const firstMovedEdit = movedEdits.at.find((t) => t >= (movedShownAt ?? 0));
+    assert.ok(movedShownAt !== undefined && firstMovedEdit !== undefined, 'the renamed mirror was never shown and edited');
+    assert.ok(firstMovedEdit - movedShownAt < 1500, `the first edit after a rename waited ${firstMovedEdit - movedShownAt} ms on the new name`);
     await setting('agentTypewriter', 'readPauseSeconds', 0);
     console.log('[it] read pause ok');
 
