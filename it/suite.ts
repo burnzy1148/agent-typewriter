@@ -614,7 +614,12 @@ async function recording(c: Context): Promise<void> {
   const atProfile = timeline.all().length;
   write('src/profiled.ts', 'export const profiled = 1;\n');
   write('docs/guide.md', '# Guide\n');
-  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).length === 1, 20000);
+  // Linux can report a file in a just-created directory with only a change
+  // event, which takes a baseline instead of recording a create. An edit after
+  // either is recorded.
+  await until('docs/guide.md seen', () => api.recorder.hasBaseline(uriOf('docs/guide.md')), 20000);
+  write('docs/guide.md', '# Guide\n\nMore.\n');
+  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).some((e) => e.kind === 'modify'), 20000);
   await sleep(1000);
   assert.equal(eventsFor('src/profiled.ts', atProfile).length, 0, 'a path outside the active profile was recorded');
 
@@ -1045,12 +1050,16 @@ async function playback(c: Context): Promise<void> {
       return {
         e,
         seen,
+        /** Waits for playback and the scroll to `line`; returns when playback ended. */
         done: async () => {
           await until(`${label} playback`, playedNow(e.seq));
-          seen.dispose();
+          const playedAt = Date.now();
           assert.equal(mirrorText('play/scroll.ts'), e.after, `${label}: the mirror does not hold the after text`);
-          assert.ok(inView('play/scroll.ts', line), `${label}: line ${line} is not in view`);
+          // visibleRanges updates only once the renderer reports the scroll, which can trail a quick finish.
+          await until(`${label}: line ${line} in view`, () => inView('play/scroll.ts', line), 2000);
+          seen.dispose();
           tallText = e.after;
+          return playedAt;
         },
       };
     };
@@ -1137,8 +1146,8 @@ async function playback(c: Context): Promise<void> {
     await until('the first hunk of the cut change', () => mirrorText('play/scroll.ts').includes('const line8 = 80;'));
     const finishAt = Date.now();
     await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
-    await cutPause.done();
-    assert.ok(Date.now() - finishAt < 1500, `finish current took ${Date.now() - finishAt} ms to end a 3 s read pause`);
+    const cutAt = await cutPause.done();
+    assert.ok(cutAt - finishAt < 1500, `finish current took ${cutAt - finishAt} ms to end a 3 s read pause`);
     await setting('agentTypewriter', 'readPauseSeconds', 1);
 
     // Switching files: the last file stays in view for the read pause first.
