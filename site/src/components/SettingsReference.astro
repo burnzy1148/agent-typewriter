@@ -9,6 +9,8 @@ type Setting = {
   type?: string | string[];
   default?: unknown;
   enum?: unknown[];
+  enumDescriptions?: string[];
+  markdownEnumDescriptions?: string[];
   minimum?: number;
   maximum?: number;
   description?: string;
@@ -24,22 +26,26 @@ const escape = (s: string) =>
 
 const anchor = (name: string) => name.slice(PREFIX.length);
 
+const settingLink = (id: string) => `<a href="#${anchor(id)}"><code>${anchor(id)}</code></a>`;
+
 // The manifest's Markdown descriptions use only code spans, bold and VS Code's
-// #setting.id# links, so a full Markdown renderer is not needed.
-function inline(md: string): string {
-  return md
-    .split(/(`[^`]*`)/)
-    .map((part) => {
-      if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
-        return `<code>${escape(part.slice(1, -1))}</code>`;
-      }
-      return escape(part)
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/#(agentTypewriter\.\w+)#/g, (_, id) => `<a href="#${anchor(id)}"><code>${anchor(id)}</code></a>`);
-    })
-    .join('')
-    .replace(/<code>#(agentTypewriter\.\w+)#<\/code>/g, (_, id) => `<a href="#${anchor(id)}"><code>${anchor(id)}</code></a>`);
+// #setting.id# links, so a full Markdown renderer is not needed. Bold is applied
+// after code spans are swapped for placeholders, so it can wrap one.
+function markdown(md: string): string {
+  const spans: string[] = [];
+  const text = escape(md).replace(/`([^`]+)`/g, (_, code: string) => {
+    const link = /^#(agentTypewriter\.[\w.]+)#$/.exec(code);
+    spans.push(link ? settingLink(link[1]) : `<code>${code}</code>`);
+    return `\u0000${spans.length - 1}\u0000`;
+  });
+  return text
+    .replace(/#(agentTypewriter\.[\w.]+)#/g, (_, id: string) => settingLink(id))
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\u0000(\d+)\u0000/g, (_, i: string) => spans[Number(i)]);
 }
+
+// Plain descriptions are shown literally, as VS Code does.
+const describe = (s: Setting) => (s.markdownDescription ? markdown(s.markdownDescription) : escape(s.description ?? ''));
 
 const show = (v: unknown) => JSON.stringify(v);
 
@@ -53,16 +59,30 @@ const settings = Object.entries(properties).map(([name, s]) => {
         : s.maximum !== undefined
           ? `at most ${s.maximum}`
           : '';
-  const deprecated = s.markdownDeprecationMessage ?? s.deprecationMessage;
+  const deprecated = s.markdownDeprecationMessage
+    ? markdown(s.markdownDeprecationMessage)
+    : s.deprecationMessage
+      ? escape(s.deprecationMessage)
+      : undefined;
   return {
     id: anchor(name),
     name,
     type,
     default: 'default' in s ? show(s.default) : undefined,
     values: s.enum?.map(show).join(', '),
+    // Per-value descriptions, when the manifest has them.
+    choices: s.enum
+      ?.map((v, i) => {
+        const md = s.markdownEnumDescriptions?.[i];
+        const text = md ? markdown(md) : s.enumDescriptions?.[i] ? escape(s.enumDescriptions[i]) : '';
+        return { value: show(v), text };
+      })
+      .filter((c) => c.text),
     range,
-    description: inline(s.markdownDescription ?? s.description ?? ''),
-    deprecated: deprecated ? inline(deprecated) : undefined,
+    // A deprecated setting shows its deprecation message instead of a
+    // description, which usually repeats it.
+    description: deprecated ?? describe(s),
+    deprecated: deprecated !== undefined,
   };
 });
 ---
@@ -91,7 +111,15 @@ const settings = Object.entries(properties).map(([name, s]) => {
             {s.range && <span>Range: {s.range}</span>}
           </p>
           <p set:html={s.description} />
-          {s.deprecated && <p set:html={s.deprecated} />}
+          {s.choices && s.choices.length > 0 && (
+            <ul class="setting-choices">
+              {s.choices.map((c) => (
+                <li>
+                  <code>{c.value}</code>: <span set:html={c.text} />
+                </li>
+              ))}
+            </ul>
+          )}
         </dd>
       </div>
     ))
@@ -122,6 +150,9 @@ const settings = Object.entries(properties).map(([name, s]) => {
     margin: 0.5rem 0 0;
   }
   .setting dd p {
+    margin: 0.25rem 0 0;
+  }
+  .setting-choices {
     margin: 0.25rem 0 0;
   }
   .setting-meta {

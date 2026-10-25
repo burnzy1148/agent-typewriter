@@ -5,9 +5,11 @@ import starlight from '@astrojs/starlight';
 import starlightLinksValidator from 'starlight-links-validator';
 
 const repo = 'https://github.com/burnzy1148/agent-typewriter';
+const site = 'https://agent-typewriter.com';
+const bannerAlt = "Agent Typewriter: watch your agent's edits replayed as if a person were typing them";
 
 export default defineConfig({
-  site: 'https://agent-typewriter.com',
+  site,
   trailingSlash: 'always',
   integrations: [
     starlight({
@@ -24,6 +26,15 @@ export default defineConfig({
         },
       ],
       editLink: { baseUrl: `${repo}/edit/develop/site/` },
+      // The Marketplace banner doubles as the link preview image (iMessage, Slack, social posts).
+      head: [
+        { tag: 'meta', attrs: { property: 'og:image', content: `${site}/images/banner.png` } },
+        { tag: 'meta', attrs: { property: 'og:image:width', content: '1280' } },
+        { tag: 'meta', attrs: { property: 'og:image:height', content: '640' } },
+        { tag: 'meta', attrs: { property: 'og:image:alt', content: bannerAlt } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: `${site}/images/banner.png` } },
+        { tag: 'meta', attrs: { name: 'twitter:image:alt', content: bannerAlt } },
+      ],
       customCss: ['./src/styles/custom.css'],
       plugins: [starlightLinksValidator()],
       sidebar: [

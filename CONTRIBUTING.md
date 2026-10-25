@@ -43,7 +43,7 @@ npm run build     # static build in site/dist, fails on broken internal links
 
 - Docs pages are Markdown files in `site/src/content/docs/docs/`, and the sidebar order is in `site/astro.config.mjs`. Every page has an "Edit this page" link to its file.
 - The settings reference is generated from `contributes.configuration` in the root `package.json`, so a new setting needs no docs edit. Describe it well in `package.json` instead.
-- The demo GIF, banner and icon are copied from `images/` at build time. Don't add copies under `site/`.
+- The demo GIF, banner and icon are copied from `images/` at build time. Don't add copies under `site/`. The banner is also the preview image when a site link is shared.
 - PRs that change the site get a build check. PRs from branches in this repository also get a preview link posted on the PR; PRs from forks don't, because their runs can't read the deploy secret. A PR that only changes `site/` skips the extension's tests.
 - Production follows releases: the site deploys when a release merges into `main`, so it always describes the published version.
 

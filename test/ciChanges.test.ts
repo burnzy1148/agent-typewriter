@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { needsExtensionChecks } from '../scripts/ci-changes.mjs';
+import { needsExtensionChecks } from '../scripts/ci-paths.mjs';
 
 test('site-only changes skip the extension checks', () => {
   assert.equal(needsExtensionChecks(['site/src/content/docs/docs/limits.md', 'site/package.json']), false);

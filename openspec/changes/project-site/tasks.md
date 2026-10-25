@@ -4,7 +4,7 @@
 
 - [x] 1.1 Create `site/` as a standalone Astro + Starlight project (own `package.json` and `package-lock.json`, Node 22, no root workspaces), with `site/public/` copies and `dist/` gitignored. Verify `npm ci && npm run build` in `site/` succeeds and root `npm ci` installs nothing from `site/`
 - [x] 1.2 Configure Starlight: title, logo from the extension icon, GitHub social link, `editLink.baseUrl` pointing at `site/` on `develop`, and `starlight-links-validator`. Verify a deliberately broken relative link fails `npm run build`, then remove it
-- [x] 1.3 Add the `prebuild` script that copies `images/demo.gif`, `images/banner.png` and `images/icon.png` into `site/public/`. Verify the built `dist/` contains them and `git status` shows no new tracked files
+- [x] 1.3 Add the `copy-assets` step, run by `dev` and `build`, that copies `images/demo.gif`, `images/banner.png` and `images/icon.png` into the site (gitignored), and use the banner as the Open Graph image. Verify the built `dist/` contains them and `git status` shows no new tracked files
 
 ## 2. Content
 
@@ -16,11 +16,11 @@
 ## 3. Hosting and deploy
 
 - [x] 3.1 Add `site/firebase.json` (`public: dist`, `cleanUrls`, `trailingSlash: true`, long cache on `/_astro/**`, short cache on HTML) and `site/.firebaserc` with default project `agent-typewriter-web`. Verify with `npx firebase-tools emulators:start --only hosting` from `site/` that `/docs/settings/` and `/docs/settings` both serve the page and an unknown path serves the 404 page
-- [ ] 3.2 Add `.github/workflows/site.yml` with `build` (PR and push to `develop`/`main`, path-filtered, uploads `dist`), `preview` (same-repository PRs only, channel per PR, `expires: 7d`, posts the URL) and `deploy` (push to `main` and `workflow_dispatch` on `main`, `live` channel), using the `FIREBASE_SERVICE_ACCOUNT` secret. Verify on this change's PR that `build` passes and a preview URL is posted, and that `deploy` shows as skipped
+- [x] 3.2 Add `.github/workflows/site.yml` with `build` (PR and push to `develop`/`main`, path-filtered, uploads `dist`), `preview` (same-repository PRs only, channel per PR, `expires: 7d`, posts the URL) and `deploy` (push to `main` and `workflow_dispatch` on `main`, `live` channel), using the `FIREBASE_SERVICE_ACCOUNT` secret. Verify on this change's PR that `build` passes and a preview URL is posted, and that `deploy` shows as skipped
 
 ## 4. CI shortcut for site-only PRs
 
-- [x] 4.1 Add `scripts/ci-changes.mjs` exporting the classification (site-only when every path is under `site/` or is `.github/workflows/site.yml`) with a small CLI that writes `extension=true|false` to `$GITHUB_OUTPUT`. Verify with `test/ciChanges.test.ts`: site-only, mixed, `images/` only, `package.json` only, empty list (runs everything), and a rename out of `site/`
+- [x] 4.1 Add `scripts/ci-paths.mjs` exporting the classification (site-only when every path is under `site/` or is `.github/workflows/site.yml`) and `scripts/ci-changes.mjs`, a small CLI that writes `extension=true|false` to `$GITHUB_OUTPUT`. Verify with `test/ciChanges.test.ts`: site-only, mixed, `images/` only, `package.json` only, empty list (runs everything), and a rename out of `site/`
 - [ ] 4.2 Add the `changes` job to `ci.yml` and gate every step after checkout in `test` and `package` on its output, keeping job names unchanged; non-PR events always run everything. Verify on a throwaway site-only PR that the three required checks report success without running tests, and on this change's PR (which touches more than `site/`) that the full suite runs
 
 ## 5. Repository wiring

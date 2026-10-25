@@ -33,7 +33,7 @@ Alternatives: plain HTML (no search or sidebar, awkward past one page), VitePres
 
 ### Shared assets copied at build time
 
-A `prebuild` script in `site/package.json` copies `../images/demo.gif`, `../images/banner.png` and `../images/icon.png` into `site/public/` (gitignored). `npm run demo` keeps writing to `images/`, and the README and site always show the same files. A symlink was rejected because Windows checkouts handle symlinks inconsistently.
+A `copy-assets` step (`site/scripts/copy-assets.mjs`), run by `npm run dev` and `npm run build`, copies `../images/demo.gif` and `../images/banner.png` into `site/public/images/`, and `../images/icon.png` there and into `site/src/assets/` for the Starlight logo. The copies are gitignored. `npm run demo` keeps writing to `images/`, and the README and site always show the same files. The banner is the Open Graph and Twitter card image, so links shared in iMessage, Slack or social posts show it. Images are cached for an hour, so a re-recorded GIF shows up quickly. A symlink was rejected because Windows checkouts handle symlinks inconsistently.
 
 ### Settings reference generated from `package.json`
 
@@ -63,7 +63,7 @@ Alternative: put the site jobs in `ci.yml`. Rejected to keep the extension pipel
 
 ### Site-only PRs skip the extension steps, not the jobs
 
-`ci.yml` gets a `changes` job. On `pull_request` it lists files changed against the base with `git diff --name-only` and passes them to `scripts/ci-changes.mjs`, which sets `extension=false` when every path is under `site/` or is `.github/workflows/site.yml`. The classification is a pure exported function so a unit test covers it. On other events it always sets `extension=true`. `test` and `package` keep their names and `needs: changes`, and each step after checkout has `if: needs.changes.outputs.extension == 'true'`. The jobs run and succeed in seconds, so the required checks report under their exact names.
+`ci.yml` gets a `changes` job. On `pull_request` it lists files changed against the base with `git -c core.quotePath=false diff --name-only --no-renames HEAD^1 HEAD` (the PR merge commit's first parent is the base; `--no-renames` lists both sides of a rename) and pipes them to `scripts/ci-changes.mjs`, which writes `extension=false` when every path is under `site/` or is `.github/workflows/site.yml`. The classification is the pure function in `scripts/ci-paths.mjs`, covered by a unit test. On other events it always sets `extension=true`. `test` and `package` keep their names and `needs: changes`, and each step after checkout has `if: needs.changes.outputs.extension != 'false'`, so a missing output runs everything. The jobs run and succeed in seconds, so the required checks report under their exact names.
 
 A workflow-level `paths-ignore` was rejected because the required checks would never report. A job-level `if:` was rejected because a skipped matrix job reports as `Test (${{ matrix.os }})`, not the two required names. `dorny/paths-filter` would work but adds a third-party action for a few lines of shell.
 

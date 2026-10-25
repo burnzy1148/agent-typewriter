@@ -9,6 +9,10 @@ Settings live under `agentTypewriter.*` in VS Code's settings. A repository can 
 
 **Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
 
+:::caution[Upgrading from before 0.3.0]
+Typing speeds are now in characters per minute. Multiply any `languageSpeeds` values you set before 0.3.0 by 60 to keep the same speed. The deprecated `charsPerSecond` is converted for you.
+:::
+
 ## All settings
 
 This list is generated from the extension's manifest, so it always matches the version these docs describe.
