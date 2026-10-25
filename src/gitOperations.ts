@@ -331,6 +331,16 @@ export function writesNoFiles(label: string): boolean {
   return /^commit\b/.test(label);
 }
 
+/**
+ * Whether the new entries threw a stopped operation's conflicts away. Only the
+ * first can: it is what ended the stopped operation (a resolution commit or a
+ * discard), and a `checkout` after a resolution commit discards nothing. When
+ * older new entries were cut off, any of them may have been it.
+ */
+export function discardedConflicts(reflog: Pick<NewReflog, 'labels' | 'complete'>): boolean {
+  return reflog.complete ? reflog.labels.length > 0 && discardsConflicts(reflog.labels[0]) : reflog.labels.some(discardsConflicts);
+}
+
 /** An entry that throws a stopped operation's conflicts away and has git rewrite the conflicted files. */
 export function discardsConflicts(label: string): boolean {
   return /^(reset|checkout)\b|^rebase \(abort\)/.test(label);
@@ -358,6 +368,10 @@ export function reflogLabels(text: string): string[] {
 export interface NewReflog {
   labels: string[];
   firstCommit?: string;
+  /** True when `labels` starts at the first new entry; false when older new entries were cut off. */
+  complete: boolean;
+  /** Without `logs/HEAD`: the newest entry as git printed it, to find where the next read's new entries end. */
+  top?: string;
 }
 
 /** The new commit of the first line of `logs/HEAD` text: `<old> <new> <who> <when>\t<message>`. */
@@ -367,20 +381,25 @@ export function firstReflogCommit(text: string): string | undefined {
 }
 
 /**
- * Entries of `git reflog show --date=unix --format=%H%x00%gd%x00%gs` lines
- * (newest first) made in or after second `sinceSec`, oldest first.
+ * The entries of `git reflog show --format=%H%x00%gd%x00%gs` lines (newest
+ * first) above `seen`, the newest entry the previous read saw, oldest first.
+ * Times are whole seconds, so an entry is known by its whole line, not its
+ * time. When `seen` is not among the lines, older new entries were cut off:
+ * only the newest label is kept, and the first new commit is unknown.
  */
-export function reflogShowEntries(out: string, sinceSec: number): NewReflog {
+export function reflogShowEntries(out: string, seen: string | undefined): NewReflog {
+  const lines = out.split('\n').filter((l) => l.includes('\0'));
+  const at = seen === undefined ? -1 : lines.indexOf(seen);
+  const complete = seen === undefined || at !== -1;
   const found: Array<{ label: string; commit: string }> = [];
-  for (const line of out.split('\n')) {
-    const [commit, selector, message] = line.split('\0');
-    const at = /@\{(\d+)\}/.exec(selector ?? '')?.[1];
-    if (!commit || at === undefined || message === undefined || Number(at) < sinceSec) continue;
-    const label = messageLabel(message);
-    if (label) found.push({ label, commit });
+  for (const line of complete && at !== -1 ? lines.slice(0, at) : lines) {
+    const [commit, , message] = line.split('\0');
+    const label = message === undefined ? undefined : messageLabel(message);
+    if (commit && label) found.push({ label, commit });
   }
   found.reverse();
-  return { labels: found.map((e) => e.label), firstCommit: found[0]?.commit };
+  if (!complete) return { labels: found.slice(-1).map((e) => e.label), complete: false, top: lines[0] };
+  return { labels: found.map((e) => e.label), firstCommit: found[0]?.commit, complete: true, top: lines[0] ?? seen };
 }
 
 /** What the last reflog line says git did, up to its first colon: `merge f`, `checkout`, `pull`, `reset`. */
@@ -399,9 +418,9 @@ function unmerged(digest: string | undefined): boolean {
  * `git add`, then `--continue` or a commit). None when the operation threw
  * the conflicts away, since git rewrote those files itself.
  */
-export function resolutionsOf(candidates: ReadonlySet<string>, before: IndexDigest, after: IndexDigest, newEntries: readonly string[]): Set<string> {
+export function resolutionsOf(candidates: ReadonlySet<string>, before: IndexDigest, after: IndexDigest, discards: boolean): Set<string> {
   const resolved = new Set<string>();
-  if (newEntries.some(discardsConflicts)) return resolved;
+  if (discards) return resolved;
   for (const path of candidates) if (unmerged(before.get(path)) && !unmerged(after.get(path))) resolved.add(path);
   return resolved;
 }
@@ -415,6 +434,8 @@ interface WatchState {
   stash: string[];
   /** The commit HEAD named, undefined on an unborn branch. */
   head: string | undefined;
+  /** Without `logs/HEAD`: the newest HEAD reflog entry as git printed it. */
+  reflogTop: string | undefined;
 }
 
 /**
@@ -486,9 +507,14 @@ export class GitOperationWatch {
     }
     try {
       const look = await this.look(true);
-      const [entries, stash, head] = await Promise.all([this.readIndex(), this.readStash(), this.readHead()]);
+      const [entries, stash, head, reflog] = await Promise.all([
+        this.readIndex(),
+        this.readStash(),
+        this.readHead(),
+        look.reflogSize === undefined ? this.reflogShow() : Promise.resolve(undefined),
+      ]);
       if (this.disposed) return 'ok';
-      this.state = { takenAt: this.clock.now(), look, index: digestIndex(entries), stash, head };
+      this.state = { takenAt: this.clock.now(), look, index: digestIndex(entries), stash, head, reflogTop: reflog?.top };
       return 'ok';
     } catch (err) {
       if (this.failed(err)) return 'unavailable';
@@ -571,7 +597,7 @@ export class GitOperationWatch {
           // here, which only keeps git from vouching for it.
           this.run(['diff-files', '--name-only', '--relative', '-z'], this.root),
           stashMoved ? this.readStash() : Promise.resolve(prev.stash),
-          this.newReflogEntries(prev.look, look),
+          this.newReflogEntries(prev, look),
           this.readHead(),
         ]);
         if (this.disposed || this.state !== prev) return;
@@ -584,9 +610,10 @@ export class GitOperationWatch {
       const entries = reflog.labels;
       const stashMoved = look.stash !== prev.look.stash;
       const index = digestIndex(byPath);
-      const candidates = await this.candidatesOf(prev, look, index, head, entries);
+      const discards = discardedConflicts(reflog);
+      const candidates = await this.candidatesOf(prev, look, index, head, discards);
       if (this.disposed || this.state !== prev) return;
-      const resolved = resolutionsOf(candidates, prev.index, index, entries);
+      const resolved = resolutionsOf(candidates, prev.index, index, discards);
       // The first new entry is the commit made from the resolution (by `--continue`
       // or a commit); a resolved path that changed after it, a later commit of the
       // sequence rewrote, so that write is git's.
@@ -636,7 +663,7 @@ export class GitOperationWatch {
         if (this.disposed || this.state !== prev) return;
         this.ops.push(op);
       }
-      this.state = { takenAt: now, look, index, stash, head };
+      this.state = { takenAt: now, look, index, stash, head, reflogTop: reflog.top ?? prev.reflogTop };
       this.lockSeenAt = undefined;
     } catch (err) {
       if (this.failed(err) || !look || this.state !== prev) return;
@@ -658,7 +685,7 @@ export class GitOperationWatch {
    * conflict stages (a stash pop or apply that conflicts moves no ref and leaves
    * no state file). What an agent stages itself is none of these.
    */
-  private async candidatesOf(prev: WatchState, look: MarkerLook, index: IndexDigest, head: string | undefined, entries: readonly string[]): Promise<Set<string>> {
+  private async candidatesOf(prev: WatchState, look: MarkerLook, index: IndexDigest, head: string | undefined, discards: boolean): Promise<Set<string>> {
     const paths = new Set<string>();
     const add = (out: Buffer) => {
       for (const p of out.toString('utf8').split('\0')) if (p) paths.add(p);
@@ -671,7 +698,7 @@ export class GitOperationWatch {
       );
     }
     if (head && stopped(prev.look, look)) add(await this.run(['diff-index', '--cached', '--name-only', '--relative', '-z', head], this.root));
-    if (inStoppedOperation(prev.look) && entries.some(discardsConflicts)) for (const p of changedPaths(prev.index, index)) paths.add(p);
+    if (inStoppedOperation(prev.look) && discards) for (const p of changedPaths(prev.index, index)) paths.add(p);
     for (const [p, digest] of index) if (unmerged(digest) && !unmerged(prev.index.get(p))) paths.add(p);
     return paths;
   }
@@ -730,21 +757,18 @@ export class GitOperationWatch {
    * shrank (expired), only its newest entry. Without the file (reftable, or
    * reflogs off) git is asked for the newest entry.
    */
-  private async newReflogEntries(before: MarkerLook, after: MarkerLook): Promise<NewReflog> {
-    if (after.reflogSize === undefined) {
-      // Only entries made since the previous look: an older one would lend its label
-      // to whatever moved a ref now (in reftable any ref update does). Reflog times
-      // are whole seconds, so one from the previous look's second still counts.
-      const out = await this.run(['reflog', 'show', '-n', '20', '--date=unix', '--format=%H%x00%gd%x00%gs', 'HEAD'], this.root).catch(() => Buffer.alloc(0));
-      return reflogShowEntries(out.toString('utf8'), Math.floor(before.at / 1000));
-    }
-    if (after.mtimes.get('logs/HEAD') === before.mtimes.get('logs/HEAD') && after.reflogSize === before.reflogSize) return { labels: [] };
+  private async newReflogEntries(prev: WatchState, after: MarkerLook): Promise<NewReflog> {
+    const before = prev.look;
+    // Only entries made since the previous read: an older one would lend its label
+    // to whatever moved a ref now (in reftable any ref update does).
+    if (after.reflogSize === undefined) return this.reflogShow(prev.reflogTop);
+    if (after.mtimes.get('logs/HEAD') === before.mtimes.get('logs/HEAD') && after.reflogSize === before.reflogSize) return { labels: [], complete: true };
     const grew = before.reflogSize !== undefined && after.reflogSize >= before.reflogSize;
     const start = grew ? before.reflogSize! : Math.max(0, after.reflogSize - 4096);
     // A burst of operations adds a few lines; more than this keeps the newest.
     const length = Math.min(after.reflogSize - start, 256 * 1024);
     const handle = await fsp.open(nodePath.join(this.gitDir, 'logs', 'HEAD'), 'r').catch(() => undefined);
-    if (!handle) return { labels: [] };
+    if (!handle) return { labels: [], complete: false };
     try {
       const buf = Buffer.alloc(length);
       await handle.read(buf, 0, length, after.reflogSize - length);
@@ -754,10 +778,16 @@ export class GitOperationWatch {
       if (!whole) text = text.slice(text.indexOf('\n') + 1);
       const labels = reflogLabels(text);
       // The first new commit is only known when every new line was read.
-      return grew ? { labels, firstCommit: whole ? firstReflogCommit(text) : undefined } : { labels: labels.slice(-1) };
+      return grew ? { labels, firstCommit: whole ? firstReflogCommit(text) : undefined, complete: whole } : { labels: labels.slice(-1), complete: false };
     } finally {
       await handle.close();
     }
+  }
+
+  /** HEAD reflog entries above `seen`, read with git: for a repository without `logs/HEAD` (reftable, or reflogs off). */
+  private async reflogShow(seen?: string): Promise<NewReflog> {
+    const out = await this.run(['reflog', 'show', '-n', '20', '--date=unix', '--format=%H%x00%gd%x00%gs', 'HEAD'], this.root).catch(() => Buffer.alloc(0));
+    return reflogShowEntries(out.toString('utf8'), seen);
   }
 
   /** Stats every marker, reusing a look younger than `lookCacheMs` unless `fresh`. */

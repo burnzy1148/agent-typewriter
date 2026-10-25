@@ -14,7 +14,7 @@
 
 ## 3. Integration checks
 
-- [ ] 3.1 Add an integration test in `it/` (and its launch in `it/runTest.ts` and the `it` script) on a repository with a `feature` branch: while recording, merge with a fast-forward and assert no changes were recorded; write a file as an agent and assert it records from the merged text; merge a conflicting branch, assert nothing recorded, resolve the file on disk and assert one modify from marker text to resolved text; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
+- [x] 3.1 Add an integration test in `it/` (and its launch in `it/runTest.ts` and the `it` script) on a repository with a `feature` branch: while recording, merge with a fast-forward and assert no changes were recorded; write a file as an agent and assert it records from the merged text; merge a conflicting branch, assert nothing recorded, resolve the file on disk and assert one modify from marker text to resolved text; verify `npm run it` passes locally and on CI (Ubuntu and Windows)
 
 ## Workflow follow-up
 
