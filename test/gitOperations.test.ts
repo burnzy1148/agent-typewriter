@@ -9,6 +9,7 @@ import {
   DEFAULT_TIMING,
   digestIndex,
   findGitWrite,
+  discardedConflicts,
   discardsConflicts,
   firstReflogCommit,
   messageLabel,
@@ -122,8 +123,15 @@ test('discardsConflicts: aborts and resets, not continues', () => {
 test('resolutionsOf: a conflict settled since the last look is a resolution, unless git threw it away', () => {
   const before = digestIndex(index(`100644 ${SHA_A} 1\tr.ts\n100644 ${SHA_B} 2\tr.ts\n100644 ${SHA_A} 0\to.ts\n100644 ${SHA_A} 1\tstill.ts\n100644 ${SHA_B} 3\tstill.ts`));
   const after = digestIndex(index(`100644 ${SHA_B} 0\tr.ts\n100644 ${SHA_C} 0\to.ts\n100644 ${SHA_A} 1\tstill.ts\n100644 ${SHA_C} 3\tstill.ts`));
-  assert.deepEqual([...resolutionsOf(new Set(['r.ts', 'o.ts', 'still.ts']), before, after, ['cherry-pick'])], ['r.ts']);
-  assert.deepEqual([...resolutionsOf(new Set(['r.ts', 'o.ts']), before, after, ['reset'])], []);
+  assert.deepEqual([...resolutionsOf(new Set(['r.ts', 'o.ts', 'still.ts']), before, after, false)], ['r.ts']);
+  assert.deepEqual([...resolutionsOf(new Set(['r.ts', 'o.ts']), before, after, true)], []);
+});
+
+test('discardedConflicts: only the first new entry, unless older ones were cut off', () => {
+  assert.equal(discardedConflicts({ labels: ['reset'], complete: true }), true);
+  assert.equal(discardedConflicts({ labels: ['commit (merge)', 'checkout'], complete: true }), false);
+  assert.equal(discardedConflicts({ labels: ['checkout'], complete: false }), true);
+  assert.equal(discardedConflicts({ labels: [], complete: true }), false);
 });
 
 test('writesNoFiles: commits of every kind, nothing else', () => {
@@ -137,10 +145,13 @@ test('findGitWrite: a resolved path is never git\'s, and an older operation does
   assert.equal(findGitWrite([older, newer], 'r.ts', 200, true), undefined);
 });
 
-test('reflogShowEntries: entries since a second, oldest first, with the oldest one\'s commit', () => {
-  const out = [`${SHA_C}\0HEAD@{1700000010}\0checkout: moving from a to b`, `${SHA_B}\0HEAD@{1700000005}\0reset: moving to HEAD`, `${SHA_A}\0HEAD@{1699999000}\0commit: old`].join('\n');
-  assert.deepEqual(reflogShowEntries(out, 1700000005), { labels: ['reset', 'checkout'], firstCommit: SHA_B });
-  assert.deepEqual(reflogShowEntries(out, 1700000011), { labels: [], firstCommit: undefined });
+test('reflogShowEntries: the entries above the one seen last, oldest first, whatever their seconds', () => {
+  const lines = [`${SHA_C}\0HEAD@{1700000005}\0checkout: moving from a to b`, `${SHA_B}\0HEAD@{1700000005}\0reset: moving to HEAD`, `${SHA_A}\0HEAD@{1700000005}\0commit: old`];
+  const out = lines.join('\n');
+  assert.deepEqual(reflogShowEntries(out, lines[2]), { labels: ['reset', 'checkout'], firstCommit: SHA_B, complete: true, top: lines[0] });
+  assert.deepEqual(reflogShowEntries(out, lines[0]), { labels: [], firstCommit: undefined, complete: true, top: lines[0] });
+  // The one seen last is gone from the list: only the newest is known to be new.
+  assert.deepEqual(reflogShowEntries(out, 'older\0HEAD@{1}\0commit: x'), { labels: ['checkout'], complete: false, top: lines[0] });
 });
 
 test('firstReflogCommit: the new commit of the first line', () => {
@@ -424,6 +435,18 @@ test('watch: a conflict resolved and committed stays the agent\'s; the merge is 
   write(repo, 'a.ts', 'resolved\n');
   git(repo, 'add', 'a.ts');
   git(repo, '-c', 'core.editor=true', 'commit', '-q', '--no-edit');
+  assert.equal(await gits(w, 'a.ts'), undefined);
+});
+
+test('watch: a branch made right after committing a resolution does not discard it', { skip: noGit }, async () => {
+  const repo = conflictRepo();
+  const w = await watchOf(repo);
+  assert.throws(() => git(repo, 'merge', '-q', 'feature'));
+  assert.equal(await gits(w, 'a.ts'), 'merge');
+  await sleep(120);
+  git(repo, 'checkout', 'feature', '--', 'a.ts');
+  git(repo, '-c', 'core.editor=true', 'commit', '-q', '--no-edit');
+  git(repo, 'switch', '-qc', 'next');
   assert.equal(await gits(w, 'a.ts'), undefined);
 });
 
@@ -756,6 +779,25 @@ test('watch: in a reftable repository a switch in a linked worktree is git', { s
   git(wt, 'switch', '-q', 'f3');
   assert.equal(await gits(w, 'a.ts'), 'checkout');
   assert.equal(await gits(w, 'c.ts'), 'checkout');
+});
+
+test('watch: in a reftable repository an entry already read is not read again in the same second', { skip: reftable }, async () => {
+  const repo = tempDir('at-rt-');
+  git(repo, 'init', '-q', '-b', 'main', '--ref-format=reftable');
+  write(repo, 'x.ts', 'x\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'one');
+  git(repo, 'switch', '-qc', 'other');
+  write(repo, 'x.ts', 'other\n');
+  git(repo, 'commit', '-qam', 'other');
+  const w = await watchOf(repo);
+  git(repo, 'switch', '-q', 'main');
+  assert.equal(await gits(w, 'x.ts'), 'checkout');
+  // Past the switch's span, most likely in the same second: the agent takes a file from another branch and commits it.
+  await sleep(120);
+  git(repo, 'checkout', 'other', '--', 'x.ts');
+  git(repo, 'commit', '-qm', 'take');
+  assert.equal(await gits(w, 'x.ts'), undefined);
 });
 
 test('watch: a folder outside git is not a repository', { skip: noGit }, async () => {
