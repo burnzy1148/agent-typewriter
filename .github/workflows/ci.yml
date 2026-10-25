@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main, develop]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -72,9 +71,10 @@ jobs:
           if-no-files-found: error
 
   # A run on a tag like v0.1.0 publishes the tested .vsix to the Marketplace and
-  # attaches it to a GitHub release. release.yml starts that run after a release
-  # PR merges; pushing the tag by hand does the same. Needs the VSCE_PAT
-  # repository secret.
+  # attaches it to a GitHub release. Pushing a tag doesn't start one, since tags
+  # go on develop before the release reaches main: release.yml dispatches it
+  # after a release PR merges, or run `gh workflow run ci.yml --ref v<version>`.
+  # Needs the VSCE_PAT repository secret.
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
