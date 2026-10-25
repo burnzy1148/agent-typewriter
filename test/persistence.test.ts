@@ -1,4 +1,4 @@
-import { test, type TestContext } from 'node:test';
+import { afterEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import nodeFs from 'node:fs';
@@ -15,6 +15,17 @@ function ev(relPath: string, before: string, after: string): NewChangeEvent {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'at-store-'));
 const loadFrom = (dir: string) => new TimelineStore(dir, new Timeline(100), () => {}).load();
+
+/** Stores started by the running test. Each is stopped when the test ends, even if it fails, so its timer cannot fire into later tests. */
+const started = new Set<TimelineStore>();
+afterEach(() => {
+  for (const store of started) store.stop();
+  started.clear();
+});
+function start(store: TimelineStore): void {
+  started.add(store);
+  store.start();
+}
 
 /** Slows async writes down so a save stays in flight; resolves once the next one has started. */
 function holdWrites(t: TestContext, ms: number): Promise<void> {
@@ -51,7 +62,7 @@ test('save then load restores the timeline in a new store', async () => {
   const dir = path.join(tempDir(), 'nested');
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   t.push(ev('a.ts', '', 'one'));
   t.push(ev('b.ts', 'x', 'y'));
   t.complete(1);
@@ -64,19 +75,25 @@ test('save then load restores the timeline in a new store', async () => {
   assert.equal(loaded.cursor, 2);
 });
 
-test('saves are throttled while the timeline keeps changing', async () => {
+test('saves are throttled while the timeline keeps changing', async (ctx) => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 100);
-  store.start();
-  const file = store.path;
+  // How many changes each save holds, read from what it writes, so the check does not depend on how fast the disk is.
+  const saved: number[] = [];
+  const real = fs.promises.writeFile.bind(fs.promises);
+  ctx.mock.method(fs.promises, 'writeFile', async (...args: Parameters<typeof real>) => {
+    saved.push(sessionFromBytes(args[1] as Uint8Array).events.length);
+    return real(...args);
+  });
+  start(store);
   for (let i = 0; i < 8; i++) {
     t.push(ev(`f${i}`, '', String(i)));
     await sleep(30);
   }
-  // Changes kept coming for ~240 ms; a debounce would not have written yet.
-  assert.ok(fs.existsSync(file), 'no save during continuous changes');
   await store.flush();
+  // Changes kept coming for ~240 ms; a debounce would have saved them only once they stopped, all in one write.
+  assert.ok(saved.length >= 2 && saved[0] < 8, `no save during continuous changes (saves held ${saved.join(', ')} changes)`);
   assert.equal(store.load()?.events.length, 8);
   store.stop();
 });
@@ -87,7 +104,7 @@ test('cursor-only changes are saved too', async () => {
   t.push(ev('a', '', '1'));
   t.push(ev('b', '', '2'));
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   await store.flush();
   assert.equal(store.load()?.cursor, 1);
   t.seekToEnd();
@@ -103,7 +120,7 @@ test('flushSync writes synchronously and dispose saves pending changes', () => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 60_000);
-  store.start();
+  start(store);
   t.push(ev('a', '', '1'));
   store.dispose();
   assert.equal(new TimelineStore(dir, new Timeline(100), () => {}).load()?.events.length, 1);
@@ -144,7 +161,7 @@ test('flush does not start a save alongside one the timer started', async (t) =>
     await real(...args);
     active--;
   });
-  store.start();
+  start(store);
   tl.push(ev('a', '', '1'));
   await firstStarted;
   tl.push(ev('b', '', '2'));
@@ -160,7 +177,7 @@ test('missing file loads as nothing, deleteSaved removes the file', async () => 
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10);
   assert.equal(store.load(), undefined);
-  store.start();
+  start(store);
   t.push(ev('a', '', '1'));
   await store.flush();
   assert.ok(fs.existsSync(store.path));
@@ -176,7 +193,7 @@ test('the size cap leaves out the oldest changes and says so once', async () => 
   const logs: string[] = [];
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, (l) => logs.push(l), 10, 10);
-  store.start();
+  start(store);
   t.push(ev('a', 'xxxx', 'yyyy'));
   t.push(ev('b', 'xx', 'yy'));
   t.push(ev('c', 'x', 'y'));
@@ -203,7 +220,7 @@ test('the workspace storage file loads as a session file', async () => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   t.push(ev('a.ts', '', 'one'));
   await store.flush();
   store.stop();
@@ -222,7 +239,7 @@ test('flushSync during an in-flight save writes the newest state, once', async (
   const dir = tempDir();
   const tl = new Timeline(100);
   const store = new TimelineStore(dir, tl, () => {}, 10);
-  store.start();
+  start(store);
   tl.push(ev('a', '', '1'));
   await store.flush();
 
@@ -253,7 +270,7 @@ test('stop and deleteSaved during an in-flight save leave nothing saved', async 
   const dir = tempDir();
   const tl = new Timeline(100);
   const store = new TimelineStore(dir, tl, () => {}, 10);
-  store.start();
+  start(store);
   tl.push(ev('a', '', 'secret one'));
   await store.flush();
 
@@ -267,7 +284,7 @@ test('stop and deleteSaved during an in-flight save leave nothing saved', async 
 
   // Turned back on, it saves the current buffer again.
   t.mock.restoreAll();
-  store.start();
+  start(store);
   tl.push(ev('c', '', 'three'));
   await store.flush();
   assert.equal(loadFrom(dir)?.events.length, 3);
@@ -278,7 +295,7 @@ test('a saved timeline that cannot be read is reported and moved aside, not over
   const dir = tempDir();
   const tl = new Timeline(100);
   const first = new TimelineStore(dir, tl, () => {}, 10);
-  first.start();
+  start(first);
   for (const f of ['a', 'b', 'c']) tl.push(ev(f, '', f));
   await first.flush();
   first.stop();
@@ -290,7 +307,7 @@ test('a saved timeline that cannot be read is reported and moved aside, not over
   assert.match(logs.join('\n'), /could not read the saved timeline \(EBUSY/i);
   t.mock.restoreAll();
 
-  store.start();
+  start(store);
   await store.flush();
   store.stop();
   const aside = path.join(dir, 'timeline.unreadable.json.gz');
@@ -307,7 +324,7 @@ test('an unreadable saved timeline that cannot be moved aside is not saved over'
   const dir = tempDir();
   const tl = new Timeline(100);
   const first = new TimelineStore(dir, tl, () => {}, 10);
-  first.start();
+  start(first);
   for (const f of ['a', 'b', 'c']) tl.push(ev(f, '', f));
   await first.flush();
   first.stop();
@@ -319,7 +336,7 @@ test('an unreadable saved timeline that cannot be moved aside is not saved over'
   lockFile(t, store.path, ['readFileSync', 'renameSync']);
   assert.equal(store.load(), undefined);
   assert.match(logs.join('\n'), /will not be saved/);
-  store.start();
+  start(store);
   t2.push(ev('new', '', 'x'));
   await store.flush();
   t2.push(ev('newer', '', 'y'));
@@ -338,7 +355,7 @@ test('highlight clears are saved with the timeline', async () => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   t.push(ev('a.ts', '', 'one'));
   t.seekToEnd();
   t.clearHighlights();
@@ -351,7 +368,7 @@ test('a timeline saved without clears loads with none', async () => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   t.push(ev('a.ts', '', 'one'));
   await store.flush();
   store.stop();
@@ -364,7 +381,7 @@ test('two lanes save and restore with their cursors and the followed lane', asyn
   t.defineLane({ id: 'main', label: 'main', root: '/w', color: 1, recording: true });
   t.defineLane({ id: 'feat', label: 'feat', root: '/f', color: 2, recording: true });
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   t.push({ ...ev('a.ts', '', '1'), lane: 'main' });
   t.push({ ...ev('feat/a.ts', '', '1'), lane: 'feat' });
   t.complete(1);
@@ -383,7 +400,7 @@ test('each save encodes only changes it has not encoded before', async () => {
   const dir = tempDir();
   const t = new Timeline(3);
   const store = new TimelineStore(dir, t, () => {}, 10);
-  store.start();
+  start(store);
   for (let i = 0; i < 3; i++) t.push({ ...ev(`f${i}`, '', String(i)), lane: i % 2 ? 'b' : 'a' });
   await store.flush();
   assert.equal(store.encodedCount, 3);
@@ -399,7 +416,7 @@ test('the size cap counts every lane', async () => {
   const dir = tempDir();
   const t = new Timeline(100);
   const store = new TimelineStore(dir, t, () => {}, 10, 10);
-  store.start();
+  start(store);
   t.push({ ...ev('a', 'xxxx', 'yyyy'), lane: 'main' });
   t.push({ ...ev('b', 'xx', 'yy'), lane: 'feat' });
   t.push({ ...ev('c', 'x', 'y'), lane: 'main' });
