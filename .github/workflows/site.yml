@@ -9,7 +9,8 @@ name: Site
 #   a release PR that touches the site deploys it; workflow_dispatch on main re-deploys.
 #
 # Needs the FIREBASE_SERVICE_ACCOUNT repository secret: a service account key for the
-# agent-typewriter-web project with the Firebase Hosting Admin role.
+# agent-typewriter-web project with the Firebase Hosting Admin and Service Usage Consumer
+# roles (the deploy checks that the Hosting API is enabled, which needs serviceusage.services.get).
 
 on:
   push:
