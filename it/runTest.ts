@@ -321,6 +321,46 @@ exports.run = async () => {
       extensionTestsEnv: { ...lanesEnv, IT_LANES_PHASE: phase },
     });
   }
+
+  // Git operations (gitOperations.ts): main is behind `feature`, which a
+  // fast-forward merge brings in, and `clash` changes the same line of
+  // src/a.ts as feature does.
+  const opsRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-gitops-'));
+  const opsWrite = (rel: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(opsRepo, rel)), { recursive: true });
+    fs.writeFileSync(path.join(opsRepo, rel), text);
+  };
+  opsWrite('src/a.ts', 'export const a = 1;\n');
+  opsWrite('.gitignore', '.vscode/\n');
+  gitAt(opsRepo, 'init', '-q', '-b', 'main');
+  gitAt(opsRepo, 'add', '-A');
+  gitAt(opsRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(opsRepo, 'checkout', '-q', '-b', 'clash');
+  opsWrite('src/a.ts', 'export const a = "clash";\n');
+  gitAt(opsRepo, 'commit', '-q', '-am', 'clash');
+  gitAt(opsRepo, 'checkout', '-q', '-b', 'feature', 'main');
+  opsWrite('src/a.ts', 'export const a = 2;\n');
+  opsWrite('src/c.ts', 'export const c = 1;\n');
+  gitAt(opsRepo, 'add', '-A');
+  gitAt(opsRepo, 'commit', '-q', '-m', 'feature');
+  gitAt(opsRepo, 'checkout', '-q', 'main');
+  opsWrite(
+    '.vscode/settings.json',
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.persistHistory': false,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'gitOperations.js'),
+    launchArgs: [opsRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+  });
 }
 
 main().catch((err) => {

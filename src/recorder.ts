@@ -32,6 +32,7 @@ import {
 import { activeProfileOf } from './profiles';
 import { decideOwnSave } from './ownSave';
 import { KeyedSerial } from './keyedSerial';
+import { GitOperationWatch, type GitOperation } from './gitOperations';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import { pickRenamePartner } from './renames';
 import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
@@ -97,6 +98,21 @@ const INIT_RETRIES = 60;
 /** Longest wait between checks of whether a chosen worktree is gone. */
 const GONE_CHECK_MAX_MS = 5000;
 
+/** Longest a write holds later changes back while a git operation settles: the lock wait plus reading the result. */
+const GIT_HOLD_MAX_MS = 15_000;
+
+/** Quiet time after a git operation's last skipped write before its summary line is logged. */
+const GIT_SUMMARY_DELAY_MS = 1000;
+
+/** Whether a git operation made a write, and the place in write order held while that took a wait. */
+interface GitVerdict {
+  op?: GitOperation;
+  /** The write time to record the change at. */
+  key(): number;
+  /** Lets later changes go; call once the change is recorded or skipped. */
+  end(): void;
+}
+
 /**
  * Watches the workspace and turns each settled file write into a timeline
  * event carrying the full before/after text.
@@ -155,6 +171,12 @@ export class Recorder implements vscode.Disposable {
   private readonly initWaits = new Map<string, number>();
   /** While auto-record is on, a watcher per recorded repository's common git directory, by its key. */
   private readonly commonWatchers = new Map<string, vscode.Disposable[]>();
+  /** Git operation tracking per recorded checkout (scope key) while `ignoreGitOperations` is on. */
+  private readonly gitWatches = new Map<string, GitOperationWatch>();
+  /** Pending summary lines of git operations whose writes were skipped. */
+  private readonly gitSummaries = new Map<GitOperation, { timer: ReturnType<typeof setTimeout>; lane: string }>();
+  /** Set once the output channel said git operations are recorded because git could not run. */
+  private gitOpsOffNoted = false;
   /** Chosen worktree labels per folder URI, by worktree `pathKey`, and folder prefixes, when `choices` cannot keep them. */
   private readonly labels = new Map<string, Map<string, string>>();
   /** Remembered worktree labels checked this session against the folder's top-level entries, as `folder\0worktree` keys. */
@@ -549,6 +571,7 @@ export class Recorder implements vscode.Disposable {
     );
 
     this.gitUnavailable = false;
+    this.gitOpsOffNoted = false;
     this.ignoreNoted.clear();
     this.ignoreRetried = false;
     this.followPending = true;
@@ -583,6 +606,7 @@ export class Recorder implements vscode.Disposable {
     this.initWaits.clear();
     for (const subs of this.commonWatchers.values()) for (const d of subs) d.dispose();
     this.commonWatchers.clear();
+    void this.syncGitWatches();
     for (const burst of this.timers.values()) {
       clearTimeout(burst.timer);
       burst.done();
@@ -608,6 +632,7 @@ export class Recorder implements vscode.Disposable {
     this.dropHeldDeletes();
     this.ignored.clear();
     this.reorder.drain();
+    this.flushGitSummaries();
     // After the drain: a lane whose first changes were still held keeps its label and color.
     for (const lane of lanes) this.timeline.setLaneRecording(lane, false);
     this.snapshots.clear();
@@ -655,6 +680,11 @@ export class Recorder implements vscode.Disposable {
     await this.captureBaseline();
     this.log.appendLine(`Baselines rebuilt: watching ${this.watchedCount} files.`);
     this.note(`baselines rebuilt: watching ${this.watchedCount} files`);
+  }
+
+  /** Starts or stops following git operations after `ignoreGitOperations` changes. */
+  refreshGitOperations(): Promise<void> {
+    return this.syncGitWatches();
   }
 
   /** Adds every held change to the timeline now, in write order. */
@@ -726,6 +756,8 @@ export class Recorder implements vscode.Disposable {
       for (const scope of next.values()) this.defineLane(scope);
       this.followFirstLane();
       this.watchCommonDirs();
+      await this.syncGitWatches();
+      if (stale()) return;
       // A chosen worktree git calls prunable is being removed: fall back once its root is gone.
       // Any other is checked now and then too, in case its watcher says nothing as it goes.
       for (const scope of next.values()) if (!scope.own) this.checkCheckoutGone(scope, scope.prunable ? undefined : GONE_CHECK_MAX_MS, true);
@@ -1809,18 +1841,32 @@ export class Recorder implements vscode.Disposable {
         // Its `.git` may just not be gone yet: wait until deletes there stop.
         if (!isDir && previous !== undefined) {
           this.snapshots.delete(key);
-          // Unless it is half of a rename whose create in this checkout is
-          // already held: that shows the checkout is not being removed.
-          const deletedAt = burst.deletedAt ?? burst.lastArrival;
-          const event = changeEvent(uri, relPath, 'delete', previous.text, '', previous.eol, deletedAt, scope.key);
-          if (!this.recordRename(event, deletedAt, scope.root.toString())) this.holdDelete(scope, uri, relPath, previous, burst);
+          const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, undefined, s.reorderWindowMs + 1000);
+          try {
+            if (dropped()) return;
+            if (git.op) return this.skipGitWrite(git.op, scope, uri, relPath, false);
+            // Unless it is half of a rename whose create in this checkout is
+            // already held: that shows the checkout is not being removed.
+            const deletedAt = git.key();
+            const event = changeEvent(uri, relPath, 'delete', previous.text, '', previous.eol, deletedAt, scope.key);
+            if (!this.recordRename(event, deletedAt, scope.root.toString())) this.holdDelete(scope, uri, relPath, previous, burst);
+          } finally {
+            git.end();
+          }
           return;
         }
       }
       if (previous !== undefined) {
         this.snapshots.delete(key);
         // Keyed by its own delete event: earlier writes in the burst were before it.
-        this.record(uri, relPath, 'delete', previous.text, '', previous.eol, burst.deletedAt ?? burst.lastArrival);
+        const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, undefined, s.reorderWindowMs + 1000);
+        try {
+          if (dropped()) return;
+          if (scope && git.op) return this.skipGitWrite(git.op, scope, uri, relPath, false);
+          this.record(uri, relPath, 'delete', previous.text, '', previous.eol, git.key());
+        } finally {
+          git.end();
+        }
         // A change event is all a file swapped for a directory may get; the files in it are new.
         if (isDir && !burst.created) await this.expandCreatedDirectory(uri);
       } else {
@@ -1877,32 +1923,139 @@ export class Recorder implements vscode.Disposable {
       this.snapshots.set(key, snap);
       return;
     }
+    let kind: ChangeKind;
+    let before: string;
     if (decision.kind === 'after-own') {
       // Something wrote after the user's save: replay only that, from the saved text.
-      this.snapshots.set(key, snap);
-      const kind = previous === undefined && created ? 'create' : 'modify';
-      this.record(uri, relPath, kind, decision.before, snap.text, snap.eol, writtenAt);
-      return;
-    }
-
-    // Always store the new snapshot, so a line-ending-only rewrite updates eol
-    // for the next change without being recorded itself.
-    this.snapshots.set(key, snap);
-    if (previous === undefined) {
+      kind = previous === undefined && created ? 'create' : 'modify';
+      before = decision.before;
+    } else if (previous === undefined) {
       // No baseline: a brand-new file is typed from empty; an unknown existing
       // file just gets its baseline now.
-      if (created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt);
-      else {
+      this.snapshots.set(key, snap);
+      if (!created) {
         this.note(`baseline captured ${relPath}`);
         this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
+        return;
       }
-      return;
-    }
-    if (previous.text === snap.text) {
+      kind = 'create';
+      before = '';
+    } else if (previous.text === snap.text) {
+      // Always store the new snapshot, so a line-ending-only rewrite updates eol
+      // for the next change without being recorded itself.
+      this.snapshots.set(key, snap);
       this.note(`unchanged ${relPath}`);
       return;
+    } else {
+      kind = 'modify';
+      before = previous.text;
     }
-    this.record(uri, relPath, 'modify', previous.text, snap.text, snap.eol, writtenAt);
+    this.snapshots.set(key, snap);
+    const git = await this.gitVerdict(scope, uri, writtenAt, true, exists.mtime);
+    try {
+      if (dropped()) return;
+      if (scope && git.op) return this.skipGitWrite(git.op, scope, uri, relPath, true);
+      this.record(uri, relPath, kind, before, snap.text, snap.eol, git.key());
+    } finally {
+      git.end();
+    }
+  }
+
+  /**
+   * Gives each recorded checkout in a git repository a git operation watch
+   * while recording with `ignoreGitOperations` on, and drops the rest. A
+   * watch reads the index when it starts, so it must exist before the
+   * operations it is to recognize; resolves once new ones have.
+   */
+  private syncGitWatches(): Promise<void> {
+    const on = this.running && this.settings().ignoreGitOperations;
+    for (const [key, watch] of this.gitWatches) {
+      const scope = on ? this.scopes.get(key) : undefined;
+      if (scope?.repo && scope.root.fsPath === watch.root) continue;
+      watch.dispose();
+      this.gitWatches.delete(key);
+    }
+    if (!on) return Promise.resolve();
+    const started: Promise<void>[] = [];
+    for (const scope of this.scopes.values()) {
+      if (!scope.repo || scope.root.scheme !== 'file' || this.gitWatches.has(scope.key)) continue;
+      const watch = new GitOperationWatch(scope.root.fsPath);
+      this.gitWatches.set(scope.key, watch);
+      started.push(
+        watch.status().then((status) => {
+          if (status === 'unavailable' && watch.failure) this.noteGitOpsOff(watch.failure);
+        }),
+      );
+    }
+    return Promise.all(started).then(() => {});
+  }
+
+  private noteGitOpsOff(reason: string): void {
+    if (this.gitOpsOffNoted || !this.running) return;
+    this.gitOpsOffNoted = true;
+    this.log.appendLine(`Git operations are recorded like any other change: git could not run (${reason}).`);
+  }
+
+  /**
+   * Whether a git operation made this write (`ignoreGitOperations`), waiting
+   * for one in progress to settle. Only while it has to wait are later
+   * changes held back, so this one keeps its place at `writtenAt`; an answer
+   * from a stat alone holds nothing. End the verdict once the change is
+   * recorded or skipped. `at` is the file's own mtime, unclamped, since
+   * git's span is on the filesystem's clock; a delete has none, so it passes
+   * when its watcher event came and `lateMs` for how late that may be.
+   */
+  private async gitVerdict(scope: Scope | undefined, uri: vscode.Uri, writtenAt: number, exists: boolean, at = writtenAt, lateMs = 0): Promise<GitVerdict> {
+    const watch = scope && this.settings().ignoreGitOperations ? this.gitWatches.get(scope.key) : undefined;
+    if (!scope || !watch) return { key: () => writtenAt, end: () => {} };
+    let hold: OrderHold | undefined;
+    try {
+      const op = await watch.classify(this.relOf(scope, uri), at, exists, lateMs, () => (hold = this.reorder.hold(writtenAt, GIT_HOLD_MAX_MS)));
+      if (watch.failure) this.noteGitOpsOff(watch.failure);
+      return { op, key: () => hold?.key() ?? writtenAt, end: () => hold?.end() };
+    } catch (err) {
+      hold?.end();
+      throw err;
+    }
+  }
+
+  /**
+   * A write git made: nothing is recorded, and the file's baseline is its new
+   * text. A file git left clean at stage 0 gets a git baseline on its new blob
+   * instead of the snapshot flush stored; a removed file loses both.
+   */
+  private skipGitWrite(op: GitOperation, scope: Scope, uri: vscode.Uri, relPath: string, exists: boolean): void {
+    const key = uri.toString();
+    this.note(`written by git (${op.label}), skipped ${relPath}`);
+    if (!exists) {
+      this.snapshots.delete(key);
+      this.gitBaselines.delete(key);
+    } else {
+      const rel = this.relOf(scope, uri);
+      const sha = op.blobs.get(rel);
+      if (sha && this.settings().gitBaselines && !this.gitUnavailable) {
+        this.snapshots.delete(key);
+        this.gitBaselines.set(key, { folder: scope.root.fsPath, path: rel, sha });
+      }
+    }
+    op.skipped++;
+    const pending = this.gitSummaries.get(op);
+    if (pending) clearTimeout(pending.timer);
+    const lane = scope.own ? scope.folder.name : `${scope.folder.name} (${scope.name})`;
+    this.gitSummaries.set(op, { lane, timer: setTimeout(() => this.logGitSummary(op), GIT_SUMMARY_DELAY_MS) });
+  }
+
+  private logGitSummary(op: GitOperation): void {
+    const pending = this.gitSummaries.get(op);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.gitSummaries.delete(op);
+    this.log.appendLine(`Skipped ${op.skipped} file${op.skipped === 1 ? '' : 's'} written by git (${op.label}) in ${pending.lane}.`);
+    op.skipped = 0;
+  }
+
+  private flushGitSummaries(): void {
+    for (const op of [...this.gitSummaries.keys()]) this.logGitSummary(op);
   }
 
   /** True when the chosen checkout's `.git` or the recorded root is gone. */

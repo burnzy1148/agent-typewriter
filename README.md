@@ -222,6 +222,7 @@ Agents often work side by side, each in its own worktree. Up to 5 checkouts can 
 | `historyLimit` | 500 | Changes kept for replay |
 | `persistHistory` | true | Keep recorded changes across reloads and restarts, in VS Code's storage for the workspace. Turning it off deletes the saved history |
 | `ignoreOwnSaves` | true | Skip changes you saved from a VS Code editor (matched by content, so an outside write right after your save is still replayed) |
+| `ignoreGitOperations` | true | Skip files git rewrites when you merge, pull, switch branches, rebase, cherry-pick, revert, reset to another commit, or stash and pop. Read-only; records everything when git is not available. See [A note on `ignoreGitOperations`](#a-note-on-ignoregitoperations) |
 | `viewColumn` | beside | Replay in a column beside you, or in the active column |
 | `mirrorStatusRow` | true | Show the playback controls and status row above the first line of the replay editor. Also hidden when `editor.codeLens` is off |
 | `highlightAdditions` | true | Keep added text highlighted, like a git diff, until highlights are cleared. Off: each typed edit only flashes briefly |
@@ -236,6 +237,16 @@ Agents often work side by side, each in its own worktree. Up to 5 checkouts can 
 A save is skipped only when the file on disk holds exactly what your editor saved. If something else writes the file right after your save, as the Claude Code VS Code extension does when it saves your unsaved edits before applying its own, only that later write is replayed, starting from the text you saved.
 
 Claude Code in a terminal writes straight to disk, which is what this extension expects. If an agent instead edits VS Code's own editor buffers and then saves them, those saves look like yours and get skipped. Turn `ignoreOwnSaves` off in that case.
+
+### A note on `ignoreGitOperations`
+
+A file counts as git's only when git itself shows it: the operation changed that file in the index, and the file on disk matches what git left there. The text git wrote becomes the file's new starting point, so the next real edit replays from it, and the output channel says how many files each operation skipped. To watch a branch's work typed out, use **Replay Git Commits** instead.
+
+These are still replayed:
+
+- Conflict resolutions. The conflict markers git writes are skipped; the resolved file replays from them. Picking a side with `git checkout --ours` or `--theirs` counts as resolving. A resolution you save from an editor follows `ignoreOwnSaves`.
+- Edits made while an operation runs, unless git wrote that same file with that same text.
+- `git restore`, `git checkout -- <path>`, `git reset --hard` to the current commit, and `git stash apply`. Git leaves nothing that tells them apart from an agent writing a file back to its committed text.
 
 ## Limits
 

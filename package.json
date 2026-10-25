@@ -779,6 +779,11 @@
           "default": true,
           "description": "Do not replay changes you saved from a VS Code editor yourself. Saves are matched by content: if something else writes the file right after your save, that write is still replayed. Turn off if your agent edits VS Code's editor buffers and then saves them."
         },
+        "agentTypewriter.ignoreGitOperations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Do not replay files that git rewrites when you merge, pull, switch branches, rebase, cherry-pick, revert, reset to another commit, or stash and pop. Conflict resolutions, edits made during the operation, git restore and git stash apply are still replayed. Needs the git command; the repository is only read."
+        },
         "agentTypewriter.viewColumn": {
           "type": "string",
           "enum": [
@@ -835,7 +840,7 @@
     "tour": "node scripts/replay-tour.mjs",
     "demo": "node scripts/demo/record.mjs",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts it/lanes.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
+    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts it/lanes.ts it/gitOperations.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",

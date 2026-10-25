@@ -899,6 +899,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       await recorder.refreshFilter('autoRecordWorktrees changed');
     }
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
+    if (affects('ignoreGitOperations')) await recorder.refreshGitOperations();
     if (affects('persistHistory')) applyPersistHistory();
     if (affects('highlightAdditions') || affects('markDeletions')) highlights.refresh();
     if (affects('autoFollow')) {
