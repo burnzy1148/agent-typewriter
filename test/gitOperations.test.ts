@@ -118,10 +118,13 @@ async function watchOf(root: string, run: GitRunner = execGit): Promise<GitOpera
   return w;
 }
 
-/** Classifies the file's current state the way the recorder would: its mtime, or now for a delete. */
+/** How late a delete's watcher event may come after git's last marker, as the recorder allows with a 250 ms reorder window. */
+const DELETE_LATE_MS = 1250;
+
+/** Classifies the file's current state the way the recorder would: its mtime, or now and some lateness for a delete. */
 async function gits(w: GitOperationWatch, rel: string): Promise<string | undefined> {
   const st = fs.statSync(path.join(w.root, rel), { throwIfNoEntry: false });
-  return (await w.classify(rel, st?.mtimeMs ?? Date.now(), st !== undefined))?.label;
+  return (await w.classify(rel, st?.mtimeMs ?? Date.now(), st !== undefined, st ? 0 : DELETE_LATE_MS))?.label;
 }
 
 test('watch: a fast-forward merge is git; an edit of an untouched file during it is not', { skip: noGit }, async () => {
