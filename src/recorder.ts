@@ -1925,6 +1925,7 @@ export class Recorder implements vscode.Disposable {
     }
     let kind: ChangeKind;
     let before: string;
+    let reportedAt: number | undefined;
     if (decision.kind === 'after-own') {
       // Something wrote after the user's save: replay only that, from the saved text.
       kind = previous === undefined && created ? 'create' : 'modify';
@@ -1940,6 +1941,8 @@ export class Recorder implements vscode.Disposable {
       }
       kind = 'create';
       before = '';
+      // Its delete, if it is a rename's other half, may be reported just after it.
+      reportedAt = burst.lastArrival;
     } else if (previous.text === snap.text) {
       // Always store the new snapshot, so a line-ending-only rewrite updates eol
       // for the next change without being recorded itself.
@@ -1955,7 +1958,7 @@ export class Recorder implements vscode.Disposable {
     try {
       if (dropped()) return;
       if (scope && git.op) return this.skipGitWrite(git.op, scope, uri, relPath, true);
-      this.record(uri, relPath, kind, before, snap.text, snap.eol, git.key());
+      this.record(uri, relPath, kind, before, snap.text, snap.eol, git.key(), reportedAt);
     } finally {
       git.end();
     }
@@ -2199,7 +2202,7 @@ export class Recorder implements vscode.Disposable {
     entry.resolve();
   }
 
-  /** Hands a change to the reorder buffer; `writtenAt` orders it and becomes its recorded time. */
+  /** Hands a change to the reorder buffer; `writtenAt` orders it and becomes its recorded time. With `reportedAt`, it waits a window after that too. */
   private record(
     uri: vscode.Uri,
     relPath: string,
@@ -2208,11 +2211,12 @@ export class Recorder implements vscode.Disposable {
     after: string,
     eol: Eol,
     writtenAt: number,
+    reportedAt?: number,
   ): void {
     const event = changeEvent(uri, relPath, kind, before, after, eol, writtenAt, this.scopeOf(uri)?.key);
     if (this.recordRename(event, writtenAt)) return;
     this.note(`recorded ${kind} ${relPath}`);
-    this.reorder.add(event, writtenAt, event.uri);
+    this.reorder.add(event, writtenAt, event.uri, reportedAt);
   }
 
   /**
