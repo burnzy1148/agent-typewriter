@@ -1891,7 +1891,8 @@ export class Recorder implements vscode.Disposable {
     if (previous === undefined) {
       // No baseline: a brand-new file is typed from empty; an unknown existing
       // file just gets its baseline now.
-      if (created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt);
+      // Its delete, if it is a rename's other half, may be reported just after it.
+      if (created) this.record(uri, relPath, 'create', '', snap.text, snap.eol, writtenAt, burst.lastArrival);
       else {
         this.note(`baseline captured ${relPath}`);
         this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
@@ -2046,7 +2047,7 @@ export class Recorder implements vscode.Disposable {
     entry.resolve();
   }
 
-  /** Hands a change to the reorder buffer; `writtenAt` orders it and becomes its recorded time. */
+  /** Hands a change to the reorder buffer; `writtenAt` orders it and becomes its recorded time. With `reportedAt`, it waits a window after that too. */
   private record(
     uri: vscode.Uri,
     relPath: string,
@@ -2055,11 +2056,12 @@ export class Recorder implements vscode.Disposable {
     after: string,
     eol: Eol,
     writtenAt: number,
+    reportedAt?: number,
   ): void {
     const event = changeEvent(uri, relPath, kind, before, after, eol, writtenAt, this.scopeOf(uri)?.key);
     if (this.recordRename(event, writtenAt)) return;
     this.note(`recorded ${kind} ${relPath}`);
-    this.reorder.add(event, writtenAt, event.uri);
+    this.reorder.add(event, writtenAt, event.uri, reportedAt);
   }
 
   /**
