@@ -702,20 +702,28 @@
         },
         "agentTypewriter.fileSwitchDelayMs": {
           "type": "number",
-          "default": 600,
-          "description": "Pause when playback flips to a different file, so the switch reads like a person changing tabs."
+          "default": 1000,
+          "minimum": 0,
+          "maximum": 15000,
+          "description": "Pause on the new file's mirror before its first edit, so the switch reads like a person changing tabs. Divided by the playback speed."
         },
         "agentTypewriter.smoothScroll": {
           "type": "boolean",
           "default": true,
-          "description": "Scroll to the next edit in the same file, after a short pause, instead of jumping there. Edits already in view only move the caret."
+          "description": "Scroll to the next edit in the same file instead of jumping there. Edits already in view only move the caret."
+        },
+        "agentTypewriter.readPauseSeconds": {
+          "type": "number",
+          "default": 1.5,
+          "minimum": 0,
+          "maximum": 15,
+          "description": "Time to read what was just typed before the view leaves it, for an off-screen edit in the same file or a switch to another file. Counts from the last edit, so idle time counts. Divided by the playback speed; 0 turns it off."
         },
         "agentTypewriter.scrollPauseMs": {
           "type": "number",
-          "default": 400,
           "minimum": 0,
-          "maximum": 5000,
-          "description": "Pause before scrolling to the next edit in the same file, so the last lines typed can be read. Divided by the playback speed."
+          "description": "Deprecated: use readPauseSeconds. Applies, divided by 1000, where readPauseSeconds is not set.",
+          "markdownDeprecationMessage": "Use `#agentTypewriter.readPauseSeconds#` instead. A value here still applies, divided by 1000, where `readPauseSeconds` is not set."
         },
         "agentTypewriter.scrollLinesPerSecond": {
           "type": "number",

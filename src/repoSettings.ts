@@ -24,6 +24,8 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   maxAnimatedChars: 'number',
   fileSwitchDelayMs: 'number',
   smoothScroll: 'boolean',
+  readPauseSeconds: 'number',
+  /** Deprecated; divided by 1000, it stands in for readPauseSeconds where that is not set. */
   scrollPauseMs: 'number',
   scrollLinesPerSecond: 'number',
   arrowNavigation: 'boolean',
