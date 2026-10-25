@@ -1,17 +1,22 @@
 // Records the README demo (images/demo.gif) on macOS. It packages the
 // extension, installs it into a throwaway VS Code profile so personal settings
 // and extensions stay out of the shot, opens the replay tour's repository
-// (scripts/tour-scenarios.mjs), plays a few of its agent steps, and
-// screen-records the window with ffmpeg.
+// (scripts/tour-scenarios.mjs), plays its lane steps, and screen-records the
+// window with ffmpeg. The shot shows two agents in their own git worktrees:
+// each checkout records in its own colored lane, and auto-follow types one
+// lane and then moves on to the other.
 //
-//   npm run demo -- [--screen 0] [--origin 0,0] [--at 120,120] [--seconds 28]
+//   npm run demo -- [--screen 0] [--origin 0,0] [--at 120,120] [--seconds 30] [--dry-run]
 //
 // --screen is ffmpeg's avfoundation screen index (ffmpeg -f avfoundation
 // -list_devices true -i ""), --origin that screen's top-left in global
 // coordinates, and --at where the window goes on it. Needs ffmpeg and the
 // Screen Recording permission for the terminal running this. Keep the mouse
 // pointer off the window (ffmpeg may draw it anyway) and leave the window alone
-// while it records.
+// while it records. --dry-run plays the shot without recording, to check its
+// timing without the permission. Either way .demo-out/trace.jsonl gets a line
+// per lane change (followed lane, what is typing, each lane's queue), and a
+// summary of who was followed when is printed at the end.
 import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -25,7 +30,8 @@ const { values: opts } = parseArgs({
     screen: { type: 'string', default: '0' },
     origin: { type: 'string', default: '0,0' },
     at: { type: 'string', default: '120,120' },
-    seconds: { type: 'string', default: '28' },
+    seconds: { type: 'string', default: '30' },
+    'dry-run': { type: 'boolean', default: false },
   },
 });
 const [originX, originY] = opts.origin.split(',').map(Number);
@@ -33,18 +39,18 @@ const [atX, atY] = opts.at.split(',').map(Number);
 const width = 1280;
 const height = 820;
 // Tour steps to play, by id, each followed by a pause in ms before the next.
-// The pauses let each change mostly play first, so catch-up does not rush it.
+// The pause after add-worktrees lets both new lanes appear in the Checkouts
+// view and settle before their agents start writing.
 const shot = [
-  ['create-file', 4000],
-  ['change-word', 6000],
-  ['backspace-words', 4000],
-  ['delete-block', 4500],
-  ['edits-far-apart', 0],
+  ['add-worktrees', 2500],
+  ['two-agents', 0],
 ];
 
 const root = path.resolve(import.meta.dirname, '../..');
 const outDir = path.join(root, '.demo-out');
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'typewriter-demo-'));
+// Resolved, because git reports worktrees by their real path and the
+// Checkouts view would otherwise show macOS's /private/var/... in full.
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'typewriter-demo-')));
 const userData = path.join(tmp, 'user-data');
 const extensionsDir = path.join(tmp, 'extensions');
 const repo = path.join(tmp, 'shop');
@@ -77,7 +83,7 @@ run(cli, ['--user-data-dir', userData, '--extensions-dir', extensionsDir, '--ins
 makeRepo(repo, {
   'agentTypewriter.persistHistory': false,
   'agentTypewriter.viewColumn': 'active',
-  'agentTypewriter.charsPerMinute': 1100,
+  'agentTypewriter.charsPerMinute': 1400,
 });
 writeJson(path.join(userData, 'User/settings.json'), {
   'workbench.colorTheme': 'Default Dark Modern',
@@ -117,19 +123,23 @@ writeJson(path.join(userData, 'User/globalStorage/storage.json'), {
   },
 });
 
+const trace = path.join(outDir, 'trace.jsonl');
+fs.rmSync(trace, { force: true });
 const code = spawn(vscode, ['--user-data-dir', userData, '--extensions-dir', extensionsDir, '--skip-welcome', '--skip-release-notes', repo], {
-  env,
+  env: { ...env, AGENT_TYPEWRITER_DEMO_TRACE: trace },
   stdio: 'ignore',
 });
 await sleep(8000);
 
 const raw = path.join(outDir, 'demo.mkv');
-const ffmpeg = spawn(
-  'ffmpeg',
-  ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'avfoundation', '-capture_cursor', '0', '-framerate', '30', '-pixel_format', 'bgr0', '-i', `${opts.screen}:none`,
-    '-vf', `crop=${width}:${height}:${atX}:${atY}`, '-c:v', 'libx264rgb', '-preset', 'ultrafast', '-crf', '0', raw],
-  { stdio: ['pipe', 'inherit', 'inherit'] },
-);
+const ffmpeg = opts['dry-run']
+  ? undefined
+  : spawn(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'avfoundation', '-capture_cursor', '0', '-framerate', '30', '-pixel_format', 'bgr0', '-i', `${opts.screen}:none`,
+        '-vf', `crop=${width}:${height}:${atX}:${atY}`, '-c:v', 'libx264rgb', '-preset', 'ultrafast', '-crf', '0', raw],
+      { stdio: ['pipe', 'inherit', 'inherit'] },
+    );
 await sleep(1500);
 const started = Date.now();
 const ws = workspace(repo);
@@ -138,9 +148,26 @@ for (const [id, pause] of shot) {
   await sleep(pause);
 }
 await sleep(Number(opts.seconds) * 1000 - (Date.now() - started));
-ffmpeg.stdin.write('q');
-await new Promise((r) => ffmpeg.on('exit', r));
+if (ffmpeg) {
+  ffmpeg.stdin.write('q');
+  await new Promise((r) => ffmpeg.on('exit', r));
+}
 code.kill();
+
+// Who was followed and typing when, in seconds into the shot.
+const lines = fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+let said = '';
+for (const t of lines) {
+  const queues = t.lanes.map((l) => `${l.label}${l.recording ? '' : ' (stopped)'} ${l.queued}`).join(', ');
+  const line = `follows ${t.followed}${t.playing ? `, typing ${t.playing}` : ''}; queued: ${queues}`;
+  if (line !== said) console.log(`${((t.at - started) / 1000).toFixed(1).padStart(5)}s  ${line}`);
+  said = line;
+}
+if (opts['dry-run']) {
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log(`Dry run: nothing recorded. Trace in ${path.relative(root, trace)}`);
+  process.exit(0);
+}
 
 // Hold the last frame so the loop does not restart the moment typing ends.
 const gif = path.join(root, 'images/demo.gif');

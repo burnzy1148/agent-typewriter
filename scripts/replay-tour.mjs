@@ -1,8 +1,9 @@
 // A hands-on tour of replay for manual testing. It builds the extension, makes
 // a throwaway git repository, opens it in a VS Code window running the
 // extension from this checkout (in a throwaway profile), then plays the part
-// of an agent: one scenario per step, each saying what to watch for. A
-// checklist of things to try by hand follows at the end.
+// of an agent: one scenario per step, each saying what to watch for. The last
+// steps add two git worktrees and play two agents in them at once, each in its
+// own lane. A checklist of things to try by hand follows at the end.
 // The repository and the steps live in tour-scenarios.mjs, which the README
 // demo recorder (demo/record.mjs) shares.
 //
@@ -60,6 +61,12 @@ Things to try by hand now (Explorer > Playback, and the replay editor):
   [ ] Agent Typewriter: Replay Git Commits..., range main..feature: three commits
       replay (a new file, an edit, a rename) without touching the repository.
   [ ] Close a mirror tab mid-typing: it reopens and typing carries on.
+  [ ] In the Checkouts view, click the eye on the coupons lane: playback
+      follows it again, and the header and status bar name it. Turn
+      Auto-Follow off in the view's title bar, edit a file in the tax worktree
+      (.claude/worktrees/tax): it queues in tax's row but nothing is typed.
+  [ ] Clear the tax checkout's box: it stops recording, keeps its changes, and
+      can still be followed. Tick it again to record it.
 
 The repository stays at ${repo} for more experiments; delete it when done.
 `;

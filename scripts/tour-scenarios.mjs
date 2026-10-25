@@ -1,6 +1,7 @@
 // The scenarios shared by replay-tour.mjs and demo/record.mjs: the starting
 // files of a small git repository and the agent steps that edit it, each
-// saying what replay should show.
+// saying what replay should show. The last steps add two git worktrees and
+// play two agents working in them at once, each recorded in its own lane.
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -53,11 +54,14 @@ export function workspace(repo) {
     edit: (rel, fn) => write(rel, fn(read(rel))),
     rename: (from, to) => fs.renameSync(path.join(repo, from), path.join(repo, to)),
     remove: (rel) => fs.rmSync(path.join(repo, rel)),
+    git: gitIn(repo),
   };
 }
 
 // Makes the repository, with a feature branch for Replay Git Commits. Settings
-// are merged into its .vscode/settings.json.
+// are merged into its .vscode/settings.json. Worktrees the lane steps add get
+// their own lanes (autoRecordWorktrees), and playback moves on to the next
+// lane once the followed one is caught up (autoFollow).
 export function makeRepo(repo, settings = {}) {
   const git = gitIn(repo);
   const { write, edit } = workspace(repo);
@@ -69,6 +73,8 @@ export function makeRepo(repo, settings = {}) {
     'agentTypewriter.autoStart': true,
     'agentTypewriter.extensions': ['ts', 'md'],
     'agentTypewriter.persistHistory': true,
+    'agentTypewriter.autoRecordWorktrees': 'fill',
+    'agentTypewriter.autoFollow': true,
     ...settings,
   }, null, 2) + '\n');
   git('add', '-A');
@@ -86,6 +92,10 @@ export function makeRepo(repo, settings = {}) {
 }
 
 // ------------------------------------------------------------------ steps
+
+// Where the lane steps' two agents work: worktrees on branches of the same name.
+const COUPONS = '.claude/worktrees/coupons';
+const TAX = '.claude/worktrees/tax';
 
 export const steps = [
   {
@@ -190,5 +200,29 @@ export const steps = [
     look: 'doomed.ts is selected whole and shown red, then emptied. The empty mirror keeps one red triangle at line 1; hover it for the deleted text.',
     run: (ws) => ws.remove('src/doomed.ts'),
   },
+  {
+    id: 'add-worktrees',
+    title: 'Two agents get their own checkouts',
+    look: 'Two git worktrees appear under .claude/worktrees, on branches coupons and tax. In the Checkouts view (Agent Typewriter in the Activity Bar), each is ticked within a few seconds and gets its own lane color: main blue, coupons green, tax orange. The eye stays on main.',
+    run: (ws) => {
+      ws.git('worktree', 'add', '-q', '-b', 'coupons', COUPONS);
+      ws.git('worktree', 'add', '-q', '-b', 'tax', TAX);
+    },
+  },
+  {
+    id: 'two-agents',
+    title: 'Two agents at once',
+    look: 'The coupons and tax agents edit their own worktrees, taking turns. Each change queues in its checkout\'s lane. Auto-follow moves the eye to coupons and types its changes in green-tinted tabs while tax\'s queue grows in the Checkouts view. Once coupons is caught up and quiet for 3 seconds, playback follows tax, in orange-tinted tabs. Each lane has its own cart.ts tab.',
+    run: async (ws) => {
+      ws.write(`${COUPONS}/src/coupons.ts`, 'export interface Coupon {\n  code: string;\n  percentOff: number;\n}\n');
+      await sleep(600);
+      ws.edit(`${TAX}/src/cart.ts`, (s) => s + '\nexport const TAX_RATE = 0.08;\n');
+      await sleep(600);
+      ws.edit(`${COUPONS}/src/cart.ts`, (s) => s + '\nexport function applyCoupon(amount: number, percentOff: number): number {\n  return amount * (1 - percentOff / 100);\n}\n');
+      await sleep(600);
+      ws.edit(`${TAX}/src/cart.ts`, (s) => s + '\nexport function withTax(amount: number): number {\n  return amount * (1 + TAX_RATE);\n}\n');
+      await sleep(600);
+      ws.edit(`${TAX}/docs/notes.md`, (s) => s + '- Tax is 8% for now.\n');
+    },
+  },
 ];
-
