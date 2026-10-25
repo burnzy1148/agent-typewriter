@@ -33,13 +33,14 @@ const settingLink = (id: string) => `<a href="#${anchor(id)}"><code>${anchor(id)
 // after code spans are swapped for placeholders, so it can wrap one.
 function markdown(md: string): string {
   const spans: string[] = [];
-  const text = escape(md).replace(/`([^`]+)`/g, (_, code: string) => {
-    const link = /^#(agentTypewriter\.[\w.]+)#$/.exec(code);
+  // NUL marks the code span placeholders below, so drop any in the source.
+  const text = escape(md.replace(/\u0000/g, '')).replace(/`([^`]+)`/g, (_, code: string) => {
+    const link = /^#(agentTypewriter(?:\.\w+)+)#$/.exec(code);
     spans.push(link ? settingLink(link[1]) : `<code>${code}</code>`);
     return `\u0000${spans.length - 1}\u0000`;
   });
   return text
-    .replace(/#(agentTypewriter\.[\w.]+)#/g, (_, id: string) => settingLink(id))
+    .replace(/#(agentTypewriter(?:\.\w+)+)#/g, (_, id: string) => settingLink(id))
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\u0000(\d+)\u0000/g, (_, i: string) => spans[Number(i)]);
 }

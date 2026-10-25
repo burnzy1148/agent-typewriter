@@ -28,11 +28,14 @@ jobs:
 
       - name: Classify changed paths
         id: classify
+        # A failure here leaves the output unset, which runs everything.
+        continue-on-error: true
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # The PR merge commit's first parent is the base branch. --no-renames
             # lists both sides of a rename, so a file moved into site/ still counts.
-            git -c core.quotePath=false diff --name-only --no-renames HEAD^1 HEAD | node scripts/ci-changes.mjs
+            # -z gives exact, unquoted paths separated by NUL.
+            git diff -z --name-only --no-renames HEAD^1 HEAD | node scripts/ci-changes.mjs
           else
             echo "extension=true" | tee -a "$GITHUB_OUTPUT"
           fi
