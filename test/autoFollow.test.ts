@@ -94,3 +94,27 @@ test('a lane followed by hand gets its own quiet period before auto-follow moves
   assert.equal(tl.followed, 'a', 'after its quiet period, auto-follow moves on as usual');
   on.dispose();
 });
+
+test('auto-follow leaves an ignored lane queued, and moves away from it when it is followed and quiet', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const tl = new Timeline(100);
+  tl.defineLane({ id: 'main', label: 'main', root: '/w', color: 1, recording: true });
+  tl.defineLane({ id: 'review', label: 'abc1234', root: '/w/.claude/worktrees/review-1', color: 2, recording: true });
+  const auto = new AutoFollow(tl, () => true, (lane) => lane.id === 'review');
+  tl.push(ev('review/a.ts', 'review'));
+  tl.push(ev('review/b.ts', 'review'));
+  t.mock.timers.tick(AUTO_FOLLOW_IDLE_MS * 3);
+  assert.equal(tl.followed, 'main', 'never moves to the ignored lane');
+  assert.equal(tl.pendingCount('review'), 2);
+  // Followed by hand, played out, it gives way to a lane with a change once quiet.
+  tl.follow('review');
+  for (const e of tl.laneEvents('review')) {
+    tl.begin(e.seq);
+    tl.complete(e.seq);
+  }
+  tl.defineLane({ id: 'feat', label: 'feat', root: '/f', color: 3, recording: true });
+  tl.push(ev('feat/a.ts', 'feat'));
+  t.mock.timers.tick(AUTO_FOLLOW_IDLE_MS);
+  assert.equal(tl.followed, 'feat');
+  auto.dispose();
+});

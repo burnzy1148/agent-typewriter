@@ -120,6 +120,8 @@ export interface WorkspaceFolder {
 
 export interface MockWatcher {
   base: Uri;
+  /** The glob it was made with, relative to `base`; `fire` does not check it. */
+  pattern: string;
   disposed: boolean;
   create: EventEmitter<Uri>;
   change: EventEmitter<Uri>;
@@ -230,6 +232,7 @@ export const workspace = {
   createFileSystemWatcher(pattern: RelativePattern) {
     const w: MockWatcher = {
       base: pattern.baseUri,
+      pattern: pattern.pattern,
       disposed: false,
       create: new EventEmitter<Uri>(),
       change: new EventEmitter<Uri>(),

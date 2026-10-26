@@ -61,3 +61,13 @@ test('the first five folders record by default, the rest are named', () => {
   assert.deepEqual(r.recorded, ['a', 'b', 'c', 'd', 'e']);
   assert.deepEqual(r.left, ['f', 'g']);
 });
+
+test('autoFollowTarget skips an ignored lane, even with the oldest pending change', () => {
+  const lanes: LaneActivity[] = [
+    { id: 'main', recording: true, lastActivity: 0 },
+    { id: 'review', recording: true, lastActivity: 0, firstPendingSeq: 1, ignored: true },
+    { id: 'feat', recording: true, lastActivity: 0, firstPendingSeq: 5 },
+  ];
+  assert.equal(autoFollowTarget(lanes, 'main'), 'feat');
+  assert.equal(autoFollowTarget(lanes.slice(0, 2), 'main'), undefined, 'only an ignored lane has changes');
+});

@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { laneOf, type LaneInfo, type Timeline } from './timeline';
 import { laneIcon, laneName } from './timelineView';
-import { laneKeyOf, realPathAsync, realPathKey } from './worktrees';
+import { checkoutKeyOfLane, laneKeyOf, realPathAsync, realPathKey } from './worktrees';
+import { suggestIgnorePattern } from './worktreeIgnore';
 
 /** What the Checkouts view lists for one workspace folder. */
 export interface FolderCheckoutsModel {
@@ -95,8 +96,8 @@ export class CheckoutRow extends vscode.TreeItem {
     this.tooltip = `${name || folder.name}\n${checkoutPath}${recorded ? '\nRecorded' : ''}${following !== undefined ? '\nFollowed: its changes are the ones typed' : ''}`;
     this.iconPath = info ? laneIcon(info) : new vscode.ThemeIcon('circle-large-outline');
     if (info) markFollowed(this, info, following);
-    // The followed lane offers no follow action.
-    this.contextValue = !info ? 'checkout' : followed ? 'lane.followed' : 'lane';
+    // The followed lane offers no follow action; a folder's own checkout (no worktree path in its lane id) can't be ignored.
+    this.contextValue = (!info ? 'checkout' : followed ? 'lane.followed' : 'lane') + (lane.includes('\0') ? '' : '.own');
   }
 }
 
@@ -114,8 +115,31 @@ export class LaneRow extends vscode.TreeItem {
     this.tooltip = `${laneName(lane)}${lane.root ? `\n${lane.root}` : ''}\nNot recording${following !== undefined ? '\nFollowed: its changes are the ones typed' : ''}`;
     this.iconPath = laneIcon(lane);
     markFollowed(this, lane, following);
-    this.contextValue = followed ? 'lane.followed' : 'lane';
+    this.contextValue = (followed ? 'lane.followed' : 'lane') + (checkoutKeyOfLane(lane.id) ? '' : '.own');
   }
+}
+
+/** What the ignore action needs: ask for the pattern, and read and save the workspace's patterns. */
+export interface IgnorePatternIo {
+  ask(suggested: string): PromiseLike<string | undefined>;
+  current(): string[];
+  save(patterns: string[]): PromiseLike<void>;
+}
+
+/**
+ * Asks for a pattern for worktrees like this row's, suggested from its
+ * directory name, and adds it to `autoIgnoreWorktrees` unless it is there.
+ * Cancelling or an empty answer changes nothing. The pattern added, if any.
+ */
+export async function ignoreWorktreesLike(row: CheckoutRow | LaneRow, io: IgnorePatternIo): Promise<string | undefined> {
+  // A lane row's root may sit below its checkout (a nested workspace folder); its id names the checkout.
+  const checkoutPath = row instanceof CheckoutRow ? row.checkoutPath : checkoutKeyOfLane(row.lane.id);
+  if (!checkoutPath) return undefined;
+  const pattern = (await io.ask(suggestIgnorePattern(checkoutPath)))?.trim();
+  if (!pattern) return undefined;
+  const current = io.current();
+  if (!current.includes(pattern)) await io.save([...current, pattern]);
+  return pattern;
 }
 
 /** Holds the lanes in the buffer that no listed checkout records. */
