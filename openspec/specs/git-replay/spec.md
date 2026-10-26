@@ -92,7 +92,7 @@ Git LFS pointers SHALL be skipped rather than typed, and their content SHALL NOT
 - **THEN** that commit is skipped instead of replaying every file as created
 
 ### Requirement: Replay replaces the buffer and starts playing
-Replaying SHALL replace the buffer, after asking when the buffer is not empty. When watching, replaying SHALL stop watching so that live edits do not mix into the replayed history, and the confirmation SHALL say so. After replaying, every change SHALL be pending and playback SHALL start at the first one. When the range holds more changes than `agentTypewriter.historyLimit`, the user SHALL get the same choice as when loading a session file: raise the limit or keep only the newest changes.
+Replaying SHALL replace the buffer, after asking when the buffer is not empty. When watching, replaying SHALL stop watching so that live edits do not mix into the replayed history, and the confirmation SHALL say so. After replaying, every change SHALL be pending and playback SHALL start at the first one. When the range holds more changes than `agentTypewriter.historyLimit` or more change text than `agentTypewriter.historySizeMB`, the user SHALL get the same choice as when loading a session file: raise the limits or keep only the newest changes that fit.
 
 #### Scenario: Replay starts playing
 - **WHEN** the user picks a range and the replay is built
@@ -108,7 +108,11 @@ Replaying SHALL replace the buffer, after asking when the buffer is not empty. W
 - **THEN** the buffer, playback and watching are unchanged
 
 ### Requirement: Scripted replay
-The command SHALL accept a range (and optionally a workspace folder) as an argument, which skips the pickers and the confirmation and keeps the newest changes within `agentTypewriter.historyLimit`. A scripted replay SHALL start paused at the first change unless the argument asks it to play.
+The command SHALL accept a range (and optionally a workspace folder) as an argument, which skips the pickers and the confirmation and keeps the newest changes within `agentTypewriter.historyLimit` and `agentTypewriter.historySizeMB`. A scripted replay SHALL start paused at the first change unless the argument asks it to play.
+
+#### Scenario: Range larger than the size bound
+- **WHEN** a script replays a range whose changes hold more text than `historySizeMB`
+- **THEN** the buffer holds the newest replayed changes that fit, and a warning says how many of the range's changes were loaded
 
 #### Scenario: Scripted replay
 - **WHEN** a script runs the command with the range `main..feature` and no request to play

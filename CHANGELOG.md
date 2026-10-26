@@ -2,11 +2,15 @@
 
 ## Unreleased
 
+- Changes are typed in the order a person writes them: a new block gets its closing line right after its opening line, then its body is filled in between, and a function's signature comes before its body, even with its parameters on several lines (`naturalOrder`, default on). Moving back into the block and past its closing line never waits for the read pause or scrolls. Edits in different places are still typed top to bottom.
 - The default typing speed (`charsPerMinute`) is 1000 characters per minute (was 350). A speed you set yourself is kept.
 - Docs moved to [agent-typewriter.com](https://agent-typewriter.com), with search and a settings reference generated from the extension, and the Marketplace listing links there. The README keeps install and quick start.
 - Replay waits for a read pause before the view leaves what it just typed: before scrolling or jumping to an off-screen edit, and before switching to another file, while the old file is still in view (`readPauseSeconds`, default 1.5). Time already passed counts, so a change that arrives after an idle gap switches at once. Seeks, skips and catch up skip it; finish current ends it.
 - `fileSwitchDelayMs`, the pause on the new file before its first edit, now defaults to 1000 (was 600) and is capped at 15000.
 - `scrollPauseMs` is deprecated but still honored, divided by 1000, wherever `readPauseSeconds` is not set. The output channel says when it is in effect.
+- The buffer is bounded by the size of its change text as well as by count: `historySizeMB` (default 64) beside `historyLimit`. Large files no longer let the buffer grow to hundreds of megabytes. Loading a session or replaying commits that exceed either limit offers to raise it.
+- Saved history is kept as an append-only log per lane: a save writes only what changed instead of the whole timeline, a change's text is read back from the log when it is played instead of staying in memory, and a crash mid-save loses at most the change being written. A timeline saved by an earlier version is migrated on the first activation.
+- **BREAKING**: the separate 64 MB cap on saved history is gone; the saved history is always the buffer. After downgrading to an earlier version, the buffer starts empty.
 - **BREAKING**: with `smoothScroll` off, an off-screen edit now waits for the read pause before the jump. Set `readPauseSeconds` to 0 for the old behavior.
 
 ## 0.3.0 (2026-10-24)

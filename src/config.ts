@@ -38,6 +38,8 @@ export interface Settings extends FilterSettings {
   /** Walk the caret to nearby edits with arrow keys instead of clicking there. */
   arrowNavigation: boolean;
   arrowKeysPerSecond: number;
+  /** Type blocks outside in (closing line before the body) instead of top to bottom. */
+  naturalOrder: boolean;
   debounceMs: number;
   /** Resolved reorder window in ms ("auto" already mapped to the platform default). */
   reorderWindowMs: number;
@@ -47,6 +49,8 @@ export interface Settings extends FilterSettings {
   /** Size budget for in-memory baselines. */
   baselineBudgetMB: number;
   historyLimit: number;
+  /** Megabytes of change text the buffer keeps, a character counted as a byte. */
+  historySizeMB: number;
   /** Keep the timeline in workspace storage across reloads. */
   persistHistory: boolean;
   ignoreOwnSaves: boolean;
@@ -116,12 +120,14 @@ export function readSettings(): Settings {
     scrollLinesPerSecond: num('scrollLinesPerSecond', 60, 1),
     arrowNavigation: c.get('arrowNavigation', true),
     arrowKeysPerSecond: num('arrowKeysPerSecond', 15, 1),
+    naturalOrder: c.get('naturalOrder', true),
     debounceMs: num('debounceMs', 200, 0),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
     maxFileSizeKB: num('maxFileSizeKB', 512, 1),
     gitBaselines: c.get('gitBaselines', true),
     baselineBudgetMB: num('baselineBudgetMB', 256, 0),
     historyLimit: num('historyLimit', 500, 10),
+    historySizeMB: num('historySizeMB', 64, 1),
     persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
     ignoreGitOperations: c.get('ignoreGitOperations', true),
