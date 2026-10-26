@@ -6,7 +6,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Jobs only read the repository by default; release adds what it needs to publish.
+# Jobs only read the repository by default; release and prerelease-tag add
+# what they need to publish or tag.
 permissions:
   contents: read
 
@@ -200,10 +201,44 @@ jobs:
           path: '*.vsix'
           if-no-files-found: error
 
+  # A push to develop that passes everything gets the next pre-release tag,
+  # pre-v<version> (scripts/prerelease-tag.sh decides). Tagging publishes
+  # nothing: prerelease.yml publishes a tag when a maintainer runs it. A merge
+  # whose run a newer push cancels gets no tag of its own; the next tag covers it.
+  # Runs one at a time, so two runs never pick the same version.
+  prerelease-tag:
+    name: Tag pre-release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && needs.changes.outputs.extension != 'false'
+    needs: [changes, test, package, integration-full]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: prerelease-tag
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Tag the commit
+        run: |
+          tag=$(scripts/prerelease-tag.sh)
+          if [ -n "$tag" ]; then
+            git push origin "refs/tags/$tag"
+            echo "Tagged ${GITHUB_SHA} $tag"
+          fi
+
   # A run on a tag like v0.1.0 publishes the tested .vsix to the Marketplace and
   # attaches it to a GitHub release. Pushing a tag doesn't start one, since tags
   # go on develop before the release reaches main: release.yml dispatches it
   # after a release PR merges, or run `gh workflow run ci.yml --ref v<version>`.
+  # Pre-release tags start with pre-v, so they never match here. The release
+  # notes start at the previous stable tag, skipping pre-releases in between.
   # Needs the VSCE_PAT repository secret.
   release:
     name: Publish release
@@ -213,7 +248,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Full history brings the earlier v* tags the release notes start from.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -240,6 +278,8 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Create GitHub release
-        run: gh release create "$GITHUB_REF_NAME" *.vsix --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          start=$(node scripts/version-cli.mjs previous-stable-tag "${GITHUB_REF_NAME#v}")
+          gh release create "$GITHUB_REF_NAME" *.vsix --title "$GITHUB_REF_NAME" --generate-notes ${start:+--notes-start-tag "$start"}
         env:
           GH_TOKEN: ${{ github.token }}
