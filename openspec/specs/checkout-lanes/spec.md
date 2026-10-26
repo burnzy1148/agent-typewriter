@@ -245,6 +245,10 @@ A worktree auto-record picks up SHALL be watched, with baselines taken, but SHAL
 - **WHEN** auto-record is `fill`, a new worktree `fix` waits, and an agent writes `src/a.ts` there
 - **THEN** a `fix` lane is added, its first change is that write, and the change's before text is the file as it was checked out
 
+#### Scenario: Made again at the same path before a listing
+- **WHEN** a waiting worktree is removed and made again at the same path from another commit before worktrees are listed again, and an agent then writes there
+- **THEN** git's checkout of it is no first change, and the agent's first change starts from the new checkout's text
+
 #### Scenario: A git operation is not a first change
 - **WHEN** `ignoreGitOperations` is on, a new worktree waits, and `git checkout` in it rewrites files
 - **THEN** it still has no lane

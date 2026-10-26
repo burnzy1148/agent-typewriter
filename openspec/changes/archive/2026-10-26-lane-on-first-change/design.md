@@ -32,7 +32,7 @@ A waiting worktree is a `Scope` with `waiting: true`, kept in `this.scopes` next
 
 `Recorder.waiting` maps a lane key to its folder and checkout path. `resolveScopes()` adds a waiting scope for each entry of its folder that git still lists, is not being removed (prunable) and whose root exists, after the chosen ones, and never for a checkout the folder already records. It logs nothing and saves nothing for an entry it drops: `autoRecord()` prunes entries without a waiting scope.
 - Not in the choice set, so not in `checkouts.json`, and not restored after a reload. After a reload or a stop and start the worktree is in the first listing and so not new, the same rule as for worktrees made while recording was off.
-- The display label is given and remembered when the scope is resolved, as for a chosen worktree, so the first change's paths match the lane's later ones. The label store isn't shown anywhere. The lane color is only picked in `defineLane`, so a waiting worktree takes no color.
+- The display label is given when the scope is resolved, so the first change's paths match the lane's later ones, but it is kept in `waitingLabels` for the session and saved only once the worktree gets a lane (ticked or promoted). A throwaway worktree so leaves no label in `checkouts.json`, and its name never pushes a later worktree onto a disambiguated label. The lane color is only picked in `defineLane`, so a waiting worktree takes no color.
 - One entry per checkout: when several folders list the same new worktree (a multi-root workspace of one repository's worktrees), it waits in the first folder that lists it. Before, it got an empty lane in each later folder too, because `scopeOf` sends a path to the first scope with that root.
 
 ### `autoRecord()` decides in this order
@@ -61,6 +61,17 @@ It returns true when a choice set or the waiting set changed, so `refreshScopes(
 
 Watchers often report a worktree removed at once as just its directory, so its files' baselines were left behind. Once git no longer lists a worktree nested in the folder, its paths fall to the folder's own scope, where those baselines pass the filter and survive `refreshFilter`'s purge. A review worktree made again at the same path from another commit would then record its first change from the old commit's text. `refreshScopes()` now forgets the baselines under the root of any other-worktree scope it drops when no remaining scope records that root.
 - Considered: only for waiting scopes. Rejected: a removed lane's worktree has the same problem, and the fix costs nothing extra.
+
+### A worktree made again before the next listing is new again
+
+Each worktree event restarts the 300 ms wait before worktrees are listed again, so `git worktree remove X && git worktree add X <ref>` can reach one listing that still shows X. Its waiting scope then keeps the old checkout's baselines, and the files git checks out for the new one arrive as creates that would count as a first change. `resolveScopes()` therefore remembers the identity (inode, mtime, birth time) of each waiting worktree's `.git` file, which `git worktree add` writes anew. When a listing finds a different one, it forgets the baselines under the root, drops the worktree from `knownWorktrees` and gives it no scope, so `autoRecord()` lets it wait afresh as a new worktree, and the next full refresh takes new baselines. A change read in between is dropped: it can't be told from git's checkout.
+- Considered: ending the wait on the `worktrees/<name>` delete event in the common git directory. Rejected: it needs a mapping from admin names to paths, and watchers coalesce or drop such events; the listing sees every case.
+
+### Lane decisions and baseline capture
+
+`laneFor()` runs `refreshScopes()` outside `refreshFilter()`, so a decision can drop a scope while a capture is still reading its files. `captureBaseline()` checks `passes()` again just before it stores each baseline, so it never keeps one for a checkout no longer recorded. Running decisions behind `refreshFilter()` instead was rejected: a first change, and every lane's changes held behind it, would wait for a full baseline walk.
+
+`enqueue()` also holds a change while a lane decision for its worktree is still being handed out, not only while the scope is waiting, so a later change of the same file never overtakes the first one.
 
 ### Ticking a waiting worktree
 
