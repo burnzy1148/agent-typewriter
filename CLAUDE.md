@@ -12,7 +12,9 @@ A VS Code extension that watches files change on disk and replays each change as
 ## Architecture
 
 - `src/planner.ts`: diffs before/after text into ordered hunks to type, each offset relative to the text after earlier hunks.
-- `src/timeline.ts`: ordered, bounded buffer of recorded change events with a playback cursor and seek.
+- `src/timeline.ts`: ordered buffer of recorded change events, bounded by count and by text size, with a playback cursor and seek.
+- `src/changeText.ts`: holds each change's before/after text, in memory until it is saved, then read back from the log through a small cache.
+- `src/persistence.ts`: saves the timeline as an append-only log per lane in workspace storage (segment files plus a small state file), with recovery from torn writes and migration from the old one-file format.
 - `src/recorder.ts`: watches the workspace, keeps file snapshots, and records each settled write as a before/after event.
 - `src/player.ts`: consumes the timeline in order and types each change into its mirror editor.
 - `src/mirrorFs.ts`: in-memory filesystem behind the `agent-typewriter:` mirror documents that replay is typed into.
