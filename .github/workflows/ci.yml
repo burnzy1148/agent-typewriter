@@ -111,6 +111,40 @@ jobs:
         env:
           IT_GROUP: ${{ matrix.group }}
 
+  # Run alone, a part of suite.ts starts from a baseline it sets up itself
+  # (startFrom). This runs every part in one launch, as before the split, which
+  # also checks that baseline against what the earlier parts really leave. It
+  # takes about 10 minutes, so it runs after a merge rather than on each PR,
+  # and a release waits for it.
+  integration-full:
+    name: Integration tests (one launch)
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.extension != 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Cache VS Code test download
+        uses: actions/cache@v6
+        with:
+          path: .vscode-test
+          key: vscode-test-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install xvfb
+        run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
+
+      - name: Integration tests
+        run: npm run it
+        env:
+          IT_GROUP: suite
+
   # The required checks. Each passes when the unit and integration jobs passed,
   # or were skipped because the PR changes only the site; a missing changes
   # output fails it, so nothing passes untested.
@@ -174,7 +208,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, package]
+    needs: [test, package, integration-full]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -64,7 +64,7 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 
 - Branch from `develop` and open the PR against `develop`, the default branch. `main` only receives releases.
 - Add or update tests for the behavior you change. Integration tests live in `it/`, unit tests in `test/`.
-- CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows, and packages the `.vsix`, all in parallel jobs. It must be green before merge.
+- CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows, and packages the `.vsix`, all in parallel jobs. It must be green before merge. After a merge it also runs all of `it/suite.ts` in one launch on Ubuntu, and a release waits for that.
 - If the PR implements an OpenSpec change, archive the change on the branch once its tasks are done, so the updated specs land with the code.
 - Add a line under `## Unreleased` at the top of [CHANGELOG.md](CHANGELOG.md) for user-visible changes. Add that heading if the top section is already a released version.
 - Feature PRs are squash-merged into `develop`.

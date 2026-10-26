@@ -54,14 +54,16 @@ type Part = keyof typeof PARTS;
  * What the parts before `part` leave that its checks were written against:
  * settings (a CRLF files.eol, fast typing, a wide reorder window, the profile
  * section 16 saves, which watches every file, and the repository file), the
- * Playback panel section 12 opens, and for edits, ACT's history settings.
+ * Playback panel section 12 opens, the real file sections 5 and 9 leave open
+ * beside the mirrors, and for edits, ACT's history settings.
  * Running alone, a part starts by setting these up. In one launch they are
  * already so; checking that they are means a change to what an earlier part
  * leaves fails here instead of quietly changing what the later parts test.
  */
 async function startFrom(c: Context, part: Part, alone: boolean): Promise<void> {
   if (part === 'recording') return;
-  const { api, timeline, idle, scrubber, reorderWindow, cfg, WS, repoFile } = c;
+  const { api, timeline, idle, scrubber, reorderWindow, cfg, WS, repoFile, uriOf } = c;
+  const existing = uriOf('src/existing.ts');
   const exclude = cfg().inspect<string[]>('exclude')?.defaultValue;
   const workspace: [string, string, unknown][] = [
     ['files', 'eol', '\r\n'],
@@ -89,6 +91,7 @@ async function startFrom(c: Context, part: Part, alone: boolean): Promise<void> 
     fs.writeFileSync(repoFile, JSON.stringify(file));
     for (const [section, key, value] of workspace) await vscode.workspace.getConfiguration(section).update(key, value, WS);
     for (const [key, value] of user) await cfg().update(key, value, vscode.ConfigurationTarget.Global);
+    await vscode.window.showTextDocument(existing, { viewColumn: vscode.ViewColumn.One, preview: false });
     await vscode.commands.executeCommand('agentTypewriter.scrubber.focus');
     await until('playback panel to resolve', () => scrubber.isResolved, 10000);
     await until('the saved profile to apply', () => api.recorder.describeFilter().startsWith('mine: '), 10000);
@@ -107,6 +110,11 @@ async function startFrom(c: Context, part: Part, alone: boolean): Promise<void> 
   for (const [key, value] of user) assert.deepEqual(cfg().inspect(key)?.globalValue, value, `${part} starts from a different user ${key}`);
   assert.deepEqual(JSON.parse(fs.readFileSync(repoFile, 'utf8')), file, `${part} starts from a different repository file`);
   assert.ok(scrubber.isResolved, `${part} starts without the Playback panel`);
+  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs);
+  assert.ok(
+    tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === existing.toString()),
+    `${part} starts without src/existing.ts open`,
+  );
 }
 
 /** Activates the extension, starts recording, and gathers what every part uses. */
