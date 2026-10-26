@@ -371,6 +371,10 @@ async function workspaceLaunches() {
   gitAt(ignoreRepo, 'add', '-A');
   gitAt(ignoreRepo, 'commit', '-q', '-m', 'pr');
   gitAt(ignoreRepo, 'checkout', '-q', 'main');
+  // The worktree parents exist before VS Code starts, as in a repository agents already use. On Linux
+  // the watcher can miss writes in a directory tree created several levels deep at once while it runs.
+  fs.mkdirSync(path.join(ignoreRepo, '.claude', 'worktrees'), { recursive: true });
+  fs.mkdirSync(path.join(ignoreRepo, '.worktrees'));
   fs.mkdirSync(path.join(ignoreRepo, '.vscode'));
   fs.writeFileSync(
     path.join(ignoreRepo, '.vscode/settings.json'),
