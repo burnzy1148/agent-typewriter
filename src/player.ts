@@ -299,8 +299,8 @@ export class Player implements vscode.Disposable {
     for (const h of hunks) {
       if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
       if (this.finishNow) {
-        // Pressed before this edit's read pause began: it is brought into view
-        // at once, as from the pause, and the rest of the change put in below.
+        // Pressed before this edit was reached: it is brought into view at
+        // once, as from the read pause, and the rest of the change put in after the loop.
         if (!(editor = await this.navigate(e.relPath, editor, h.offset, false, false, epoch))) return;
         break;
       }
