@@ -46,6 +46,7 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   highlightAdditions: 'boolean',
   markDeletions: 'boolean',
   autoRecordWorktrees: { enum: ['off', 'fill', 'rotate'] },
+  autoIgnoreWorktrees: 'stringArray',
   autoFollow: 'boolean',
 };
 

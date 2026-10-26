@@ -54,6 +54,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     highlightAdditions: true,
     markDeletions: true,
     autoRecordWorktrees: 'off',
+    autoIgnoreWorktrees: [],
     autoFollow: false,
     ...over,
   };

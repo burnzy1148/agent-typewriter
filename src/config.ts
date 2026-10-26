@@ -65,6 +65,8 @@ export interface Settings extends FilterSettings {
   markDeletions: boolean;
   /** Give worktrees added while recording their own lane: never, while there is room, or by stopping the idlest lane. */
   autoRecordWorktrees: 'off' | 'fill' | 'rotate';
+  /** Globs for worktrees auto-record and auto-follow leave alone: a path or directory name, or `branch:` and a branch. */
+  autoIgnoreWorktrees: string[];
   /** Move playback to the lane with the oldest queued change once the followed lane is caught up and idle. */
   autoFollow: boolean;
 }
@@ -134,6 +136,7 @@ export function readSettings(): Settings {
     viewColumn: c.get('viewColumn', 'beside'),
     mirrorStatusRow: c.get('mirrorStatusRow', true),
     autoRecordWorktrees: oneOf(c.get<unknown>('autoRecordWorktrees', 'off'), ['off', 'fill', 'rotate'] as const, 'off'),
+    autoIgnoreWorktrees: c.get('autoIgnoreWorktrees', [], isStringArray),
     autoFollow: c.get<unknown>('autoFollow', false) === true,
     ...readHighlightSettings(),
   };

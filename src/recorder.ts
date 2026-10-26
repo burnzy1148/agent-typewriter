@@ -9,6 +9,7 @@ import { decodeBytes, isAscii, isBinaryText, looksBinary } from './textDecode';
 import {
   carriedProvisional,
   checkoutDisplayPath,
+  checkoutKeyOfLane,
   checkoutName,
   commonDirOf,
   folderCheckoutChoice,
@@ -35,9 +36,10 @@ import { KeyedSerial } from './keyedSerial';
 import { DEFAULT_TIMING, GitOperationWatch, type GitOperation } from './gitOperations';
 import { ReorderBuffer, clampOrderKey, type OrderHold } from './reorder';
 import { pickRenamePartner } from './renames';
-import type { ChangeKind, NewChangeEvent, Timeline } from './timeline';
+import type { ChangeKind, LaneInfo, NewChangeEvent, Timeline } from './timeline';
 import { colorSlot, laneLabel, MAX_LANES, ROTATE_IDLE_MS, rotationVictim } from './lanes';
 import type { Settings } from './config';
+import { BRANCH_PREFIX, ignoringPattern } from './worktreeIgnore';
 
 /** Where display prefixes of workspace folders are remembered among labels; folder keys are URIs, so never this. */
 const FOLDER_PREFIXES = 'folders';
@@ -169,8 +171,12 @@ export class Recorder implements vscode.Disposable {
   private readonly knownWorktrees = new Map<string, Set<string>>();
   /** Per worktree `pathKey`, how many listings found it still being created by `git worktree add`. */
   private readonly initWaits = new Map<string, number>();
+  /** `pathKey`s of checkouts auto-record added this session and the user has not picked by hand since. */
+  private readonly autoAdded = new Set<string>();
+  /** Branch each lane's checkout last had while recording this session, for `autoIgnored`. */
+  private readonly laneBranches = new Map<string, string | undefined>();
   /** While auto-record is on, a watcher per recorded repository's common git directory, by its key. */
-  private readonly commonWatchers = new Map<string, vscode.Disposable[]>();
+  private readonly commonWatchers = new Map<string, { dir: string; glob: string; subs: vscode.Disposable[] }>();
   /** Git operation tracking per recorded checkout (scope key) while `ignoreGitOperations` is on. */
   private readonly gitWatches = new Map<string, GitOperationWatch>();
   /** Pending summary lines of git operations whose writes were skipped. */
@@ -308,6 +314,10 @@ export class Recorder implements vscode.Disposable {
    * changes already in the timeline are kept.
    */
   async setCheckouts(folder: vscode.WorkspaceFolder, paths: readonly string[]): Promise<void> {
+    // A checkout ticked or cleared by hand is no longer auto-record's to stop; ones left as they were keep how they came.
+    const before = new Set((await this.recordedPaths(folder)).map(pathKey));
+    const after = new Set(paths.map(pathKey));
+    for (const k of [...before, ...after]) if (before.has(k) !== after.has(k)) this.autoAdded.delete(k);
     const unique = [...new Map(paths.map((p) => [pathKey(p), p])).values()];
     if (unique.length === 0) throw new Error('At least one checkout must record.');
     const key = folder.uri.toString();
@@ -606,7 +616,8 @@ export class Recorder implements vscode.Disposable {
     this.listings.clear();
     this.knownWorktrees.clear();
     this.initWaits.clear();
-    for (const subs of this.commonWatchers.values()) for (const d of subs) d.dispose();
+    this.autoAdded.clear();
+    for (const w of this.commonWatchers.values()) for (const d of w.subs) d.dispose();
     this.commonWatchers.clear();
     void this.syncGitWatches();
     for (const burst of this.timers.values()) {
@@ -713,6 +724,8 @@ export class Recorder implements vscode.Disposable {
       let all: Scope[] = [];
       for (const folder of folders) all.push(...(await this.resolveScopes(folder)));
       if (stale()) return;
+      // Before auto-record may stop a lane for its new branch, so auto-follow sees that branch too.
+      for (const s of all) if (!s.own) this.laneBranches.set(s.key, s.branch);
       if (await this.autoRecord(all)) {
         all = [];
         for (const folder of folders) all.push(...(await this.resolveScopes(folder)));
@@ -754,6 +767,7 @@ export class Recorder implements vscode.Disposable {
       const gone = [...this.scopes.keys()].filter((key) => !next.has(key));
       this.scopes.clear();
       for (const [key, scope] of next) this.scopes.set(key, scope);
+      for (const [key, scope] of next) if (!scope.own) this.laneBranches.set(key, scope.branch);
       for (const lane of gone) this.timeline.setLaneRecording(lane, false);
       for (const scope of next.values()) this.defineLane(scope);
       this.followFirstLane();
@@ -827,6 +841,7 @@ export class Recorder implements vscode.Disposable {
       own: true,
       label: '',
       name: '',
+      branch: undefined,
       nested: new IgnoredPaths(),
       nestedDirs: [],
       repo: false,
@@ -914,6 +929,7 @@ export class Recorder implements vscode.Disposable {
         prunable: !!chosen.prunable,
         label: await this.labelFor(folder, chosen, r.worktrees.filter((w) => !w.prunable || w === chosen)),
         name: checkoutName(chosen),
+        branch: chosen.branch,
         watcher: [],
       });
       kept.push(wanted);
@@ -952,7 +968,7 @@ export class Recorder implements vscode.Disposable {
    * are not new. True when a folder's chosen checkouts changed.
    */
   private async autoRecord(scopes: Scope[]): Promise<boolean> {
-    const mode = this.settings().autoRecordWorktrees;
+    const { autoRecordWorktrees: mode, autoIgnoreWorktrees: patterns } = this.settings();
     const fresh: Array<{ folder: vscode.WorkspaceFolder; worktree: Worktree }> = [];
     let waiting = false;
     // A lock left by a `git worktree add` that died never goes; after a while the worktree is taken as it is.
@@ -972,12 +988,16 @@ export class Recorder implements vscode.Disposable {
         if (stillInitializing(w)) {
           waiting = true;
           this.initWaits.set(pathKey(w.path), (this.initWaits.get(pathKey(w.path)) ?? 0) + 1);
-        } else fresh.push({ folder, worktree: w });
+          continue;
+        }
+        // Known from now on, so it is decided once: it never takes a lane's place or counts toward the cap.
+        const pattern = ignoringPattern(patterns, w.path, w.branch);
+        if (pattern !== undefined) this.log.appendLine(`The new worktree ${checkoutName(w)} (${w.path}) is not recorded: it matches autoIgnoreWorktrees pattern ${pattern}.`);
+        else fresh.push({ folder, worktree: w });
       }
     }
     // Git removes the lock once the files are out; the watcher sees that, and this looks again in case it does not.
     if (waiting) this.scheduleWorktreeRefresh(INIT_RETRY_MS);
-    if (fresh.length === 0) return false;
     // What records once each decision is applied.
     let lanes = scopes
       .slice(0, MAX_LANES)
@@ -987,6 +1007,19 @@ export class Recorder implements vscode.Disposable {
     const added = new Map<string, string[]>();
     const stopped = new Map<string, string[]>();
     const note = (map: Map<string, string[]>, folderKey: string, p: string) => map.set(folderKey, [...(map.get(folderKey) ?? []), p]);
+    // A lane auto-record added stops once it matches a pattern: a branch switch, or a pattern added since. Picked by hand, it stays.
+    for (const s of scopes.slice(0, MAX_LANES)) {
+      if (s.own || !this.autoAdded.has(pathKey(s.checkout.fsPath))) continue;
+      const pattern = ignoringPattern(patterns, s.checkout.fsPath, s.branch);
+      const lane = lanes.find((l) => l.key === s.key);
+      // A folder's last lane never goes: a folder always records something.
+      if (pattern === undefined || !lane || pathsOf(lane.folderKey).length < 2) continue;
+      lanes = lanes.filter((l) => l !== lane);
+      this.autoAdded.delete(pathKey(s.checkout.fsPath));
+      note(stopped, lane.folderKey, lane.checkout);
+      this.log.appendLine(`Stopped recording ${lane.name} (${lane.checkout}): it matches autoIgnoreWorktrees pattern ${pattern}.`);
+    }
+    if (fresh.length === 0 && stopped.size === 0) return false;
     for (const { folder, worktree } of fresh) {
       const name = `${checkoutName(worktree)} (${worktree.path})`;
       if (lanes.length >= MAX_LANES) {
@@ -1032,11 +1065,29 @@ export class Recorder implements vscode.Disposable {
       const base = this.chosenSet(folderKey) ?? (folder ? this.defaultPaths(folder, ownPath) : pathsOf(folderKey));
       const gone = new Set((stopped.get(folderKey) ?? []).map(pathKey));
       const kept = base.filter((p) => !gone.has(pathKey(p)));
-      const next = [...kept, ...(added.get(folderKey) ?? []).filter((p) => !kept.some((k) => pathKey(k) === pathKey(p)))];
+      // One ticked by hand while git listed worktrees is the user's, not auto-record's.
+      const newPaths = (added.get(folderKey) ?? []).filter((p) => !kept.some((k) => pathKey(k) === pathKey(p)));
+      for (const p of newPaths) this.autoAdded.add(pathKey(p));
+      const next = [...kept, ...newPaths];
       const unsaved = await this.saveChoiceSet(folderKey, next);
       if (unsaved) this.log.appendLine(`Could not save the checkouts recorded: ${unsaved.message}`);
     }
     return touched.size > 0;
+  }
+
+  /**
+   * True when auto-follow should leave this lane alone: it is another
+   * worktree's (never a folder's own checkout) and matches
+   * `autoIgnoreWorktrees`, by its path, or by the branch it last had while
+   * recording this session. A lane from a loaded session has only its path,
+   * which its id carries.
+   */
+  autoIgnored(lane: Pick<LaneInfo, 'id'>): boolean {
+    const key = checkoutKeyOfLane(lane.id);
+    if (key === undefined) return false;
+    // Not `root`: for a nested workspace folder that is below the checkout.
+    const checkout = this.scopes.get(lane.id)?.checkout.fsPath ?? key;
+    return ignoringPattern(this.settings().autoIgnoreWorktrees, checkout, this.laneBranches.get(lane.id)) !== undefined;
   }
 
   /** When a lane last recorded a change, or started recording if it has none. */
@@ -1050,21 +1101,26 @@ export class Recorder implements vscode.Disposable {
    * new worktree, including ones outside the workspace.
    */
   private watchCommonDirs(): void {
+    const { autoRecordWorktrees, autoIgnoreWorktrees } = this.settings();
+    // A branch pattern needs branch switches seen, which rewrite a worktree's HEAD; otherwise commits in a detached one would refresh for nothing.
+    const branches = autoIgnoreWorktrees.some((p) => p.trim().startsWith(BRANCH_PREFIX));
+    // A new worktree's directory, and the lock `git worktree add` holds until its files are checked out.
+    const glob = branches ? '{worktrees/*,worktrees/*/locked,worktrees/*/HEAD}' : '{worktrees/*,worktrees/*/locked}';
     const want = new Map<string, string>();
-    if (this.settings().autoRecordWorktrees !== 'off') for (const s of this.scopes.values()) if (s.commonKey && s.commonDir) want.set(s.commonKey, s.commonDir);
-    for (const [key, subs] of this.commonWatchers) {
-      if (want.has(key)) continue;
-      for (const d of subs) d.dispose();
+    if (autoRecordWorktrees !== 'off' || branches) for (const s of this.scopes.values()) if (s.commonKey && s.commonDir) want.set(s.commonKey, s.commonDir);
+    for (const [key, w] of this.commonWatchers) {
+      if (want.get(key) === w.dir && w.glob === glob) continue;
+      for (const d of w.subs) d.dispose();
       this.commonWatchers.delete(key);
     }
     for (const [key, dir] of want) {
       if (this.commonWatchers.has(key)) continue;
-      // A new worktree's directory, and the lock `git worktree add` holds until its files are checked out.
-      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), '{worktrees/*,worktrees/*/locked}'));
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), glob));
       const subs: vscode.Disposable[] = [watcher];
       watcher.onDidCreate(() => this.scheduleWorktreeRefresh(), null, subs);
+      watcher.onDidChange(() => this.scheduleWorktreeRefresh(), null, subs);
       watcher.onDidDelete(() => this.scheduleWorktreeRefresh(), null, subs);
-      this.commonWatchers.set(key, subs);
+      this.commonWatchers.set(key, { dir, glob, subs });
     }
   }
 
@@ -2483,6 +2539,8 @@ interface Scope {
   label: string;
   /** Branch or short commit of the recorded checkout, '' outside git. */
   name: string;
+  /** Short branch name of the recorded checkout; undefined when detached, outside git, or the folder's own. */
+  branch: string | undefined;
   /** Other worktrees inside `root`; may hold a provisional entry until git confirms it. */
   nested: IgnoredPaths;
   /** Other worktrees inside `root` as git listed them, root-relative `dir/` prefixes. */

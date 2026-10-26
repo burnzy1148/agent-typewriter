@@ -1,5 +1,5 @@
 import { autoFollowDecision } from './lanes';
-import type { Timeline } from './timeline';
+import type { LaneInfo, Timeline } from './timeline';
 
 /**
  * Moves playback to the lane with the oldest queued change once the followed
@@ -19,6 +19,8 @@ export class AutoFollow {
   constructor(
     private readonly timeline: Timeline,
     private readonly enabled: () => boolean,
+    /** Lanes auto-follow never moves to: their checkout matches `autoIgnoreWorktrees`. */
+    private readonly ignored: (lane: LaneInfo) => boolean = () => false,
   ) {
     this.seenFollowed = timeline.followed;
     this.sub = timeline.onDidChange(() => this.onChange());
@@ -33,7 +35,7 @@ export class AutoFollow {
       enabled: this.enabled(),
       playing: t.playing !== undefined,
       followed: t.followed,
-      lanes: t.laneList().map((l) => ({ id: l.id, recording: l.recording, lastActivity: 0, firstPendingSeq: t.firstPending(l.id) })),
+      lanes: t.laneList().map((l) => ({ id: l.id, recording: l.recording, lastActivity: 0, firstPendingSeq: t.firstPending(l.id), ignored: this.ignored(l) })),
       quietSince: this.quietSince,
       now: Date.now(),
     });

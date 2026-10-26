@@ -310,6 +310,11 @@
         "icon": "$(eye)"
       },
       {
+        "command": "agentTypewriter.ignoreWorktree",
+        "title": "Don't Auto-Record Worktrees Like This...",
+        "category": "Agent Typewriter"
+      },
+      {
         "command": "agentTypewriter.autoFollowOn",
         "title": "Turn Auto-Follow On",
         "category": "Agent Typewriter",
@@ -467,8 +472,13 @@
         },
         {
           "command": "agentTypewriter.followLane",
-          "when": "(view == agentTypewriter.checkouts || view == agentTypewriter.timeline) && viewItem == lane",
+          "when": "(view == agentTypewriter.checkouts || view == agentTypewriter.timeline) && viewItem =~ /^lane(\\.own)?$/",
           "group": "inline@1"
+        },
+        {
+          "command": "agentTypewriter.ignoreWorktree",
+          "when": "view == agentTypewriter.checkouts && viewItem =~ /^(checkout|lane|lane\\.followed)$/",
+          "group": "1_worktree@1"
         }
       ],
       "editor/title": [
@@ -519,6 +529,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "agentTypewriter.ignoreWorktree",
+          "when": "false"
+        },
         {
           "command": "agentTypewriter.pause",
           "when": "false"
@@ -842,6 +856,14 @@
           "default": "off",
           "markdownDescription": "Give each worktree added while recording to a recorded repository its own lane. `fill` adds one while fewer than 5 checkouts record. `rotate` also makes room when all 5 are taken, by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). `off` records a new worktree only when you add it."
         },
+        "agentTypewriter.autoIgnoreWorktrees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Glob patterns for worktrees that auto-record never gives a lane and auto-follow never moves to, such as review or other throwaway checkouts. A pattern matches the worktree's path, or its directory name when it has no slash (`review-*`, `**/T/tmp.*`). A pattern starting with `branch:` matches its branch instead (`branch:review/*`); a detached worktree has no branch. The folder's own checkout never matches, and you can still record a matching worktree by hand."
+        },
         "agentTypewriter.autoFollow": {
           "type": "boolean",
           "default": false,
@@ -859,7 +881,7 @@
     "tour": "node scripts/replay-tour.mjs",
     "demo": "node scripts/demo/record.mjs",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts it/lanes.ts it/gitOperations.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
+    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts it/lanes.ts it/gitOperations.ts it/ignoreWorktrees.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",

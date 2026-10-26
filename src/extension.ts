@@ -20,7 +20,7 @@ import { statusPresentation } from './statusText';
 import { decodeBytes } from './textDecode';
 import { fitLimits, MB_CHARS, Timeline, laneOf, sessionClears, sessionLanes, toSession, type ChangeEvent, type LaneInfo } from './timeline';
 import { ChangeItem, laneName, TimelineView } from './timelineView';
-import { CheckoutRow, CheckoutsView, followingHeader, type FolderCheckoutsModel } from './checkoutsView';
+import { CheckoutRow, CheckoutsView, followingHeader, ignoreWorktreesLike, LaneRow, type FolderCheckoutsModel } from './checkoutsView';
 import { LaneDecorations } from './laneDecorations';
 import { AutoFollow } from './autoFollow';
 import { onTextReadError } from './changeText';
@@ -88,7 +88,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     error: (message) => void vscode.window.showErrorMessage(`Agent Typewriter: ${message}`),
   });
   const laneDecorations = new LaneDecorations(timeline);
-  const autoFollow = new AutoFollow(timeline, () => readSettings().autoFollow);
+  const autoFollow = new AutoFollow(timeline, () => readSettings().autoFollow, (lane) => recorder.autoIgnored(lane));
   const checkoutsTree = vscode.window.createTreeView('agentTypewriter.checkouts', { treeDataProvider: checkoutsView, manageCheckboxStateManually: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   const checkoutStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
@@ -818,6 +818,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   });
 
   // From a view row (its lane, or the lane id) or the palette, which asks.
+  register('agentTypewriter.ignoreWorktree', async (row?: CheckoutRow | LaneRow) => {
+    if (!(row instanceof CheckoutRow) && !(row instanceof LaneRow)) return;
+    await ignoreWorktreesLike(row, {
+      ask: (suggested) =>
+        vscode.window.showInputBox({
+          title: "Don't auto-record worktrees like this",
+          prompt: 'A glob for the worktree path, or its directory name without a slash; branch: and a glob for its branch.',
+          value: suggested,
+        }),
+      // What applies now, so patterns from the repository file or user settings carry over into the workspace setting.
+      current: () => readSettings().autoIgnoreWorktrees,
+      save: (patterns) => updateSetting('autoIgnoreWorktrees', patterns),
+    });
+  });
   register('agentTypewriter.followLane', async (arg?: string | { lane: string | LaneInfo }) => {
     let lane = typeof arg === 'string' ? arg : typeof arg?.lane === 'string' ? arg.lane : arg?.lane?.id;
     const lanes = timeline.laneList();
@@ -923,6 +937,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       await recorder.refreshFilter();
     } else if (affects('autoRecordWorktrees')) {
       await recorder.refreshFilter('autoRecordWorktrees changed');
+    } else if (affects('autoIgnoreWorktrees')) {
+      await recorder.refreshFilter('autoIgnoreWorktrees changed');
     }
     if (['gitBaselines', 'baselineBudgetMB', 'maxFileSizeKB'].some(affects)) await recorder.refreshBaselines();
     if (affects('ignoreGitOperations')) await recorder.refreshGitOperations();
@@ -932,6 +948,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       await setAutoFollowKey();
       autoFollow.check();
     }
+    if (affects('autoIgnoreWorktrees')) autoFollow.check();
     refreshStatus();
   };
 

@@ -22,6 +22,8 @@ export interface LaneActivity {
   lastActivity: number;
   /** Seq of its oldest pending change, if any is pending. */
   firstPendingSeq?: number;
+  /** Its checkout matches `autoIgnoreWorktrees`: auto-follow never moves to it. */
+  ignored?: boolean;
 }
 
 /**
@@ -49,11 +51,11 @@ export function rotationVictim(lanes: readonly LaneActivity[], followed: string 
   return victim?.id;
 }
 
-/** The lane auto-follow moves to: the one, other than `followed`, whose oldest pending change was recorded first. */
+/** The lane auto-follow moves to: the one, other than `followed` and ignored lanes, whose oldest pending change was recorded first. */
 export function autoFollowTarget(lanes: readonly LaneActivity[], followed: string | undefined): string | undefined {
   let target: LaneActivity | undefined;
   for (const lane of lanes) {
-    if (lane.id === followed || lane.firstPendingSeq === undefined) continue;
+    if (lane.id === followed || lane.ignored || lane.firstPendingSeq === undefined) continue;
     if (!target || lane.firstPendingSeq < target.firstPendingSeq!) target = lane;
   }
   return target?.id;

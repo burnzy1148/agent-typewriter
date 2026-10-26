@@ -156,3 +156,10 @@ test('package.json and the schema show the base speed replay falls back to', () 
   assert.equal(pkg.contributes.configuration.properties['agentTypewriter.charsPerMinute'].default, DEFAULT_CHARS_PER_MINUTE);
   assert.equal(schema.properties.charsPerMinute.default, DEFAULT_CHARS_PER_MINUTE);
 });
+
+test('autoIgnoreWorktrees: patterns pass through; anything but strings is dropped', () => {
+  assert.deepEqual(parsed('{"autoIgnoreWorktrees": ["review-*", "branch:review/*"]}').values, { autoIgnoreWorktrees: ['review-*', 'branch:review/*'] });
+  const r = parsed('{"autoIgnoreWorktrees": "review-*"}');
+  assert.deepEqual(r.values, {});
+  assert.match(r.problems[0], /"autoIgnoreWorktrees" should be an array of strings/);
+});

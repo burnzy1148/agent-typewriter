@@ -355,6 +355,46 @@ async function workspaceLaunches() {
     });
   }
 
+  // Ignored worktrees (ignoreWorktrees.ts): review-style worktrees that
+  // autoIgnoreWorktrees names get no lane while a branch `pr` has a diff to
+  // apply into them.
+  const ignoreRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-ignore-'));
+  fs.mkdirSync(path.join(ignoreRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(ignoreRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(ignoreRepo, '.gitignore'), '.vscode/\n');
+  gitAt(ignoreRepo, 'init', '-q', '-b', 'main');
+  gitAt(ignoreRepo, 'add', '-A');
+  gitAt(ignoreRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(ignoreRepo, 'checkout', '-q', '-b', 'pr');
+  fs.writeFileSync(path.join(ignoreRepo, 'src/a.ts'), 'export const a = "pr";\n');
+  fs.writeFileSync(path.join(ignoreRepo, 'src/new.ts'), 'export const n = 1;\n');
+  gitAt(ignoreRepo, 'add', '-A');
+  gitAt(ignoreRepo, 'commit', '-q', '-m', 'pr');
+  gitAt(ignoreRepo, 'checkout', '-q', 'main');
+  fs.mkdirSync(path.join(ignoreRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(ignoreRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.autoRecordWorktrees': 'fill',
+      'agentTypewriter.autoFollow': true,
+      'agentTypewriter.autoIgnoreWorktrees': ['**/.claude/worktrees/review-*', 'tmp.*'],
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'ignoreWorktrees.js'),
+    launchArgs: [ignoreRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
   // Git operations (gitOperations.ts): main is behind `feature`, which a
   // fast-forward merge brings in, and `clash` changes the same line of
   // src/a.ts as feature does.

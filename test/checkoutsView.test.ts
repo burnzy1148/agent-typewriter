@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CheckoutRow, CheckoutsView, FOLLOWED_SCHEME, followedRowUri, followingHeader, FolderNode, LaneRow, OthersNode, pathInside, type FolderCheckoutsModel } from '../src/checkoutsView';
+import { CheckoutRow, CheckoutsView, FOLLOWED_SCHEME, followedRowUri, followingHeader, FolderNode, ignoreWorktreesLike, LaneRow, OthersNode, pathInside, type FolderCheckoutsModel } from '../src/checkoutsView';
 import { LaneDecorations } from '../src/laneDecorations';
 import { Timeline } from '../src/timeline';
 import { laneKey } from '../src/worktrees';
@@ -58,7 +58,7 @@ test('a row per checkout, ticked when recorded, with its lane once it has one', 
   assert.equal(rows[0].resourceUri?.scheme, FOLLOWED_SCHEME);
   assert.equal((rows[0].iconPath as vscode.ThemeIcon).id, 'eye');
   assert.equal(rows[1].description, '.claude/worktrees/feat');
-  assert.equal(rows[0].contextValue, 'lane.followed');
+  assert.equal(rows[0].contextValue, 'lane.followed.own', "the folder's own checkout is marked, so it offers no ignore action");
   assert.equal(rows[1].contextValue, 'checkout');
   view.dispose();
 });
@@ -202,4 +202,35 @@ test('at-dd6 a folder opened through a symlink shows a nested worktree relative 
     fs.realpathSync.native = realpathSync;
     view.dispose();
   }
+});
+
+test('ignore action: suggests a pattern from the row, adds what is accepted once, and cancelling changes nothing', async () => {
+  const f = folder('repo');
+  const lane = laneKey(f.uri.toString(), false, '/w/repo/.claude/worktrees/review-mr-203');
+  const t = new Timeline(100);
+  t.defineLane({ id: lane, label: 'abc1234', root: '/w/repo/.claude/worktrees/review-mr-203', color: 2, recording: true });
+  const row = new CheckoutRow(f, '/w/repo/.claude/worktrees/review-mr-203', lane, 'abc1234', '.claude/worktrees/review-mr-203', true, t.laneInfo(lane), false, undefined, 0);
+  assert.equal(row.contextValue, 'lane');
+  let stored = ['**/T/tmp.*'];
+  const asked: string[] = [];
+  const io = (answer: string | undefined) => ({
+    ask: async (suggested: string) => (asked.push(suggested), answer),
+    current: () => stored,
+    save: async (p: string[]) => void (stored = p),
+  });
+  assert.equal(await ignoreWorktreesLike(row, io('review-mr-*')), 'review-mr-*');
+  assert.deepEqual(asked, ['review-mr-*']);
+  assert.deepEqual(stored, ['**/T/tmp.*', 'review-mr-*']);
+  await ignoreWorktreesLike(row, io('review-mr-*'));
+  assert.deepEqual(stored, ['**/T/tmp.*', 'review-mr-*'], 'no duplicate');
+  assert.equal(await ignoreWorktreesLike(row, io(undefined)), undefined);
+  assert.equal(await ignoreWorktreesLike(row, io('  ')), undefined);
+  assert.deepEqual(stored, ['**/T/tmp.*', 'review-mr-*']);
+  // A name without a numbered part is suggested as it is; a lane row uses its root.
+  const side = new LaneRow({ id: laneKey(f.uri.toString(), false, '/w/repo-feature'), label: 'feature', root: '/w/repo-feature', color: 1, recording: false }, false, undefined, 0);
+  assert.equal(side.contextValue, 'lane');
+  await ignoreWorktreesLike(side, io(undefined));
+  assert.equal(asked.at(-1), 'repo-feature');
+  const own = new LaneRow({ id: f.uri.toString(), label: 'main', root: '/w/repo', color: 1, recording: false }, false, undefined, 0);
+  assert.equal(own.contextValue, 'lane.own');
 });

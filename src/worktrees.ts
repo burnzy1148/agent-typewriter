@@ -250,6 +250,12 @@ export function laneKeyOf(folderKey: string, checkoutKey: string): string {
   return `${folderKey}\0${checkoutKey}`;
 }
 
+/** The `pathKey` of the checkout another worktree's lane id names; undefined for a folder's own lane. */
+export function checkoutKeyOfLane(lane: string): string | undefined {
+  const at = lane.indexOf('\0');
+  return at === -1 ? undefined : lane.slice(at + 1);
+}
+
 /** A path in a form two spellings of the same directory share: symlinks resolved, case folded on Windows. */
 export function pathKey(p: string): string {
   return realPathKey(realPath(p));
