@@ -68,10 +68,11 @@ export async function run(): Promise<void> {
   await until('k.ts modified', () => events().includes('modify moved/m/n/k.ts'));
   console.log('[it] DEEP: a write in a tree moved in is recorded ok');
 
-  // --- G4. git worktree add .claude/worktrees/x with no .claude yet, recorded by hand at once (before or
-  // after the watcher's report of .claude is read), then a write in it.
+  // --- G4. git worktree add .claude/worktrees/x with no .claude yet, recorded by hand, then a write in it.
+  // The lane starts once the checkout's own events have come: one late on Windows reads as a new file.
   const x = path.join(root, '.claude', 'worktrees', 'x');
   git(root, 'worktree', 'add', '-q', '-b', 'x', x);
+  await sleep(1000);
   await recorder.addCheckout(folder, x);
   await until('x lane', () => recorder.recordedLanes().length === 2);
   const lane = timeline.laneList().find((l) => l.id !== main && l.recording)!;
