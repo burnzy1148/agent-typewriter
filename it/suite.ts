@@ -27,18 +27,86 @@ async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
 
 // The sections run in four parts. IT_PART names one to run on its own, in a
 // fresh workspace: runTest.ts gives each part a launch of its own, and CI a
-// job of its own. A part relies only on the workspace runTest.ts makes, not on
-// what the parts before it leave, and only the reload part leaves state for
-// restore.ts. Unset, every part runs in one launch.
+// job of its own, starting from what the parts before it leave (startFrom).
+// Only the reload part leaves state for restore.ts. Unset, every part runs in
+// one launch.
 const PARTS = { recording, playback, reload, edits } as const;
 
 export async function run(): Promise<void> {
-  const part = process.env.IT_PART as keyof typeof PARTS | undefined;
+  const part = process.env.IT_PART as Part | undefined;
   if (part !== undefined && !Object.hasOwn(PARTS, part)) throw new Error(`unknown IT_PART ${part}`);
   const c = await setUp();
-  if (part) await PARTS[part](c);
-  else for (const run of Object.values(PARTS)) await run(c);
+  if (part) {
+    await startFrom(c, part, true);
+    await PARTS[part](c);
+  } else {
+    for (const [name, run] of Object.entries(PARTS) as [Part, (c: Context) => Promise<void>][]) {
+      await startFrom(c, name, false);
+      await run(c);
+    }
+  }
   if (!part || part === 'reload') await leaveForReload(c);
+}
+
+type Part = keyof typeof PARTS;
+
+/**
+ * What the parts before `part` leave that its checks were written against:
+ * settings (a CRLF files.eol, fast typing, a wide reorder window, the profile
+ * section 16 saves, which watches every file, and the repository file), the
+ * Playback panel section 12 opens, and for edits, ACT's history settings.
+ * Running alone, a part starts by setting these up. In one launch they are
+ * already so; checking that they are means a change to what an earlier part
+ * leaves fails here instead of quietly changing what the later parts test.
+ */
+async function startFrom(c: Context, part: Part, alone: boolean): Promise<void> {
+  if (part === 'recording') return;
+  const { api, timeline, idle, scrubber, reorderWindow, cfg, WS, repoFile } = c;
+  const exclude = cfg().inspect<string[]>('exclude')?.defaultValue;
+  const workspace: [string, string, unknown][] = [
+    ['files', 'eol', '\r\n'],
+    ['agentTypewriter', 'charsPerMinute', 240000],
+    ['agentTypewriter', 'reorderWindowMs', reorderWindow],
+    ['agentTypewriter', 'baselineBudgetMB', 256],
+    ['agentTypewriter', 'gitBaselines', true],
+    ['agentTypewriter', 'respectGitignore', false],
+    ['agentTypewriter', 'extensions', undefined],
+    [
+      'agentTypewriter',
+      'profiles',
+      {
+        keep: { include: ['x/**'], exlude: ['typo'] },
+        draft: 'tbd',
+        mine: { include: ['**/*'], exclude, extensions: [], respectGitignore: false },
+      },
+    ],
+    ['agentTypewriter', 'activeProfile', 'mine'],
+  ];
+  const user: [string, unknown][] = part === 'edits' ? [['historyLimit', 10], ['persistHistory', false]] : [];
+  const docs = { docs: { include: ['docs/**'], extensions: ['md'] } };
+  const file = part === 'edits' ? { profiles: docs, historyLimit: 1000, persistHistory: true } : { profiles: docs };
+  if (alone) {
+    fs.writeFileSync(repoFile, JSON.stringify(file));
+    for (const [section, key, value] of workspace) await vscode.workspace.getConfiguration(section).update(key, value, WS);
+    for (const [key, value] of user) await cfg().update(key, value, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('agentTypewriter.scrubber.focus');
+    await until('playback panel to resolve', () => scrubber.isResolved, 10000);
+    await until('the saved profile to apply', () => api.recorder.describeFilter().startsWith('mine: '), 10000);
+    // With every file watched, the writes above are recorded too, up to a
+    // reorder window later; wait until nothing new arrives for a full window.
+    for (let n = -1; n !== timeline.all().length; ) {
+      n = timeline.all().length;
+      await sleep(reorderWindow + 1500);
+    }
+    await until('setup changes to play', idle);
+    return;
+  }
+  for (const [section, key, value] of workspace) {
+    assert.deepEqual(vscode.workspace.getConfiguration(section).inspect(key)?.workspaceValue, value, `${part} starts from a different ${section}.${key}`);
+  }
+  for (const [key, value] of user) assert.deepEqual(cfg().inspect(key)?.globalValue, value, `${part} starts from a different user ${key}`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(repoFile, 'utf8')), file, `${part} starts from a different repository file`);
+  assert.ok(scrubber.isResolved, `${part} starts without the Playback panel`);
 }
 
 /** Activates the extension, starts recording, and gathers what every part uses. */
@@ -2583,6 +2651,9 @@ async function leaveForReload(c: Context): Promise<void> {
   // played once with a second change queued behind it.
   await until('idle before reload setup', idle);
   // restore.ts checks the clear survives: only files changed after it are highlighted.
+  write('src/beforeClear.ts', 'export const beforeClear = 1;\n');
+  await until('beforeClear.ts to play', () => idle() && mirrorText('src/beforeClear.ts') === disk('src/beforeClear.ts'));
+  assert.ok(highlightedFiles(timeline).includes('src/beforeClear.ts'), 'a file changed before the clear is not highlighted');
   await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
   write('src/tabPlayed.ts', 'export const tabPlayed = 1;\n');
   await sleep(300);
@@ -2607,7 +2678,7 @@ async function leaveForReload(c: Context): Promise<void> {
   assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'the queued change was typed while paused');
   const highlighted = highlightedFiles(timeline);
   for (const rel of ['src/tabPlayed.ts', 'src/tabQueued.ts']) assert.ok(highlighted.includes(rel), `${rel} is not highlighted after the clear`);
-  assert.ok(!highlighted.includes('src/a.ts'), 'a file changed before the clear is still highlighted');
+  assert.ok(!highlighted.includes('src/beforeClear.ts'), 'a file changed before the clear is still highlighted');
   assert.ok(api.store, 'no timeline store');
   await api.store.flush();
   fs.writeFileSync(
