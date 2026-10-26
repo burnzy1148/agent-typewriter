@@ -817,7 +817,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
   });
 
-  // From a view row (its lane, or the lane id) or the palette, which asks.
+  // From a Checkouts row: a checkout, or a lane no listed checkout records.
   register('agentTypewriter.ignoreWorktree', async (row?: CheckoutRow | LaneRow) => {
     if (!(row instanceof CheckoutRow) && !(row instanceof LaneRow)) return;
     await ignoreWorktreesLike(row, {
@@ -832,6 +832,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       save: (patterns) => updateSetting('autoIgnoreWorktrees', patterns),
     });
   });
+  // From a view row (its lane, or the lane id) or the palette, which asks.
   register('agentTypewriter.followLane', async (arg?: string | { lane: string | LaneInfo }) => {
     let lane = typeof arg === 'string' ? arg : typeof arg?.lane === 'string' ? arg.lane : arg?.lane?.id;
     const lanes = timeline.laneList();

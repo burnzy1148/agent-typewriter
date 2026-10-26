@@ -46,16 +46,16 @@ In `autoRecord()`, a worktree that is new and settled but matches is logged and 
 
 ### Auto-added lanes are remembered, so only those stop on a match
 
-`Recorder` keeps `autoAdded: Set<pathKey>` for the session, filled when `autoRecord()` adds a lane.
+`Recorder` keeps `autoAdded: Set<laneKey>` for the session, filled when `autoRecord()` adds a lane. It is keyed by lane, not checkout, because one worktree gets a lane in each folder whose repository lists it, and each is stopped or picked on its own.
 - On each pass, any recorded checkout in `autoAdded` that now matches is removed from its folder's choice set, the same way rotation stops a lane, and the reason is logged.
 - Hand-picked checkouts are never in `autoAdded`, so a pattern never stops a lane the user chose. That matches "recording by hand is unaffected".
-- `setCheckouts` (behind the boxes and Choose Checkout) removes from `autoAdded` only the checkouts it adds or removes. Choose Checkout lists every recorded checkout already ticked, so leaving an auto-added one ticked keeps it auto-record's. Clearing and ticking it again makes it the user's.
+- `setCheckouts` (behind the boxes and Choose Checkout) removes from `autoAdded` only the folder's checkouts it adds or removes, after its checks pass, so a refused change leaves it as it was. `setCheckout`, which picks one checkout for the folder, makes all of the folder's lanes the user's. Choose Checkout lists every recorded checkout already ticked, so leaving an auto-added one ticked keeps it auto-record's. Clearing and ticking it again makes it the user's.
 - `autoRecord` marks a checkout auto-added only when the folder's choice did not already hold it when the pass saved, so a box ticked while git was listing stays the user's.
 - Considered: persisting `autoAdded` across reloads. Rejected because after a reload every recorded checkout is the user's standing choice.
 
 ### Watching HEAD for branch switches
 
-While some pattern starts with `branch:`, `watchCommonDirs` adds `worktrees/*/HEAD` to its glob and subscribes to change events as well as creates and deletes, since git rewrites HEAD in place. A branch switch then schedules a worktree refresh like any other worktree event.
+While some pattern starts with `branch:`, `watchCommonDirs` adds `worktrees/*/HEAD` to its glob and also handles change events for HEAD files, since git rewrites HEAD in place. A change event on a `worktrees/<name>` directory only means a write inside it, so it is ignored. A branch switch then schedules a worktree refresh like any other worktree event.
 - Only with a branch pattern: commits in a detached worktree, rebase steps and bisect also rewrite HEAD, and each would cost a full refresh for nothing.
 - With a branch pattern the common directory is watched even when auto-record is off, so a hand-recorded lane's branch stays current for auto-follow.
 - The watcher remembers its glob and is replaced when the patterns change whether HEAD is needed.

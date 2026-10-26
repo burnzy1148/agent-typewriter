@@ -171,7 +171,7 @@ export class Recorder implements vscode.Disposable {
   private readonly knownWorktrees = new Map<string, Set<string>>();
   /** Per worktree `pathKey`, how many listings found it still being created by `git worktree add`. */
   private readonly initWaits = new Map<string, number>();
-  /** `pathKey`s of checkouts auto-record added this session and the user has not picked by hand since. */
+  /** Lane keys of checkouts auto-record added this session and the user has not picked by hand since; per folder, as lanes are. */
   private readonly autoAdded = new Set<string>();
   /** Branch each lane's checkout last had while recording this session, for `autoIgnored`. */
   private readonly laneBranches = new Map<string, string | undefined>();
@@ -302,6 +302,8 @@ export class Recorder implements vscode.Disposable {
    */
   async setCheckout(folder: vscode.WorkspaceFolder, worktreePath: string | undefined): Promise<void> {
     const key = folder.uri.toString();
+    // A pick by hand: nothing the folder records is auto-record's any more.
+    for (const lane of [...this.autoAdded]) if (lane.startsWith(`${key}\0`)) this.autoAdded.delete(lane);
     this.sets.delete(key);
     const unsaved = this.choices.setSet ? await this.saveChoiceSet(key, undefined) : undefined;
     await this.applyChoice(folder, unsaved ?? (await this.saveChoice(key, worktreePath)));
@@ -314,15 +316,15 @@ export class Recorder implements vscode.Disposable {
    * changes already in the timeline are kept.
    */
   async setCheckouts(folder: vscode.WorkspaceFolder, paths: readonly string[]): Promise<void> {
-    // A checkout ticked or cleared by hand is no longer auto-record's to stop; ones left as they were keep how they came.
-    const before = new Set((await this.recordedPaths(folder)).map(pathKey));
-    const after = new Set(paths.map(pathKey));
-    for (const k of [...before, ...after]) if (before.has(k) !== after.has(k)) this.autoAdded.delete(k);
     const unique = [...new Map(paths.map((p) => [pathKey(p), p])).values()];
     if (unique.length === 0) throw new Error('At least one checkout must record.');
     const key = folder.uri.toString();
     const total = unique.length + this.recordedCountExcept(key);
     if (total > MAX_LANES) throw new Error(`At most ${MAX_LANES} checkouts record at once.`);
+    // A checkout ticked or cleared by hand is no longer auto-record's to stop; ones left as they were keep how they came.
+    const before = new Set((await this.recordedPaths(folder)).map((p) => laneKey(key, false, p)));
+    const after = new Set(unique.map((p) => laneKey(key, false, p)));
+    for (const lane of [...before, ...after]) if (before.has(lane) !== after.has(lane)) this.autoAdded.delete(lane);
     await this.applyChoice(folder, await this.saveChoiceSet(key, unique));
   }
 
@@ -1009,13 +1011,13 @@ export class Recorder implements vscode.Disposable {
     const note = (map: Map<string, string[]>, folderKey: string, p: string) => map.set(folderKey, [...(map.get(folderKey) ?? []), p]);
     // A lane auto-record added stops once it matches a pattern: a branch switch, or a pattern added since. Picked by hand, it stays.
     for (const s of scopes.slice(0, MAX_LANES)) {
-      if (s.own || !this.autoAdded.has(pathKey(s.checkout.fsPath))) continue;
+      if (s.own || !this.autoAdded.has(s.key)) continue;
       const pattern = ignoringPattern(patterns, s.checkout.fsPath, s.branch);
       const lane = lanes.find((l) => l.key === s.key);
       // A folder's last lane never goes: a folder always records something.
       if (pattern === undefined || !lane || pathsOf(lane.folderKey).length < 2) continue;
       lanes = lanes.filter((l) => l !== lane);
-      this.autoAdded.delete(pathKey(s.checkout.fsPath));
+      this.autoAdded.delete(s.key);
       note(stopped, lane.folderKey, lane.checkout);
       this.log.appendLine(`Stopped recording ${lane.name} (${lane.checkout}): it matches autoIgnoreWorktrees pattern ${pattern}.`);
     }
@@ -1067,7 +1069,7 @@ export class Recorder implements vscode.Disposable {
       const kept = base.filter((p) => !gone.has(pathKey(p)));
       // One ticked by hand while git listed worktrees is the user's, not auto-record's.
       const newPaths = (added.get(folderKey) ?? []).filter((p) => !kept.some((k) => pathKey(k) === pathKey(p)));
-      for (const p of newPaths) this.autoAdded.add(pathKey(p));
+      for (const p of newPaths) this.autoAdded.add(laneKey(folderKey, false, p));
       const next = [...kept, ...newPaths];
       const unsaved = await this.saveChoiceSet(folderKey, next);
       if (unsaved) this.log.appendLine(`Could not save the checkouts recorded: ${unsaved.message}`);
@@ -1118,8 +1120,9 @@ export class Recorder implements vscode.Disposable {
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), glob));
       const subs: vscode.Disposable[] = [watcher];
       watcher.onDidCreate(() => this.scheduleWorktreeRefresh(), null, subs);
-      watcher.onDidChange(() => this.scheduleWorktreeRefresh(), null, subs);
       watcher.onDidDelete(() => this.scheduleWorktreeRefresh(), null, subs);
+      // Git rewrites HEAD in place. A changed worktree directory is just a write inside it, which says nothing about worktrees.
+      if (branches) watcher.onDidChange((uri) => uri.path.endsWith('/HEAD') && this.scheduleWorktreeRefresh(), null, subs);
       this.commonWatchers.set(key, { dir, glob, subs });
     }
   }

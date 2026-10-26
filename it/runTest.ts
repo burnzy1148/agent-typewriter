@@ -386,7 +386,7 @@ async function workspaceLaunches() {
       'agentTypewriter.fileSwitchDelayMs': 0,
       'agentTypewriter.autoRecordWorktrees': 'fill',
       'agentTypewriter.autoFollow': true,
-      'agentTypewriter.autoIgnoreWorktrees': ['**/.claude/worktrees/review-*', 'tmp.*'],
+      'agentTypewriter.autoIgnoreWorktrees': ['**/.claude/worktrees/review-*', 'tmp.*', 'branch:review/*'],
     }),
   );
   await runTests({

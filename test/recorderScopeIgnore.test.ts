@@ -83,9 +83,22 @@ test('the common-dir watcher sees HEAD, which a branch switch rewrites, only whi
   assert.ok(watcher(), 'a watcher on the common git directory');
   for (const rel of ['worktrees/fix', 'worktrees/fix/locked']) assert.ok(minimatch(rel, watcher()!.pattern), `${watcher()!.pattern} sees ${rel}`);
   assert.ok(!minimatch('worktrees/fix/HEAD', watcher()!.pattern), 'no branch pattern: commits in a detached worktree refresh nothing');
+  const gitDir = path.join(fs.realpathSync.native(repo), '.git');
+  const refreshes = () => t.logs.filter((l) => l.startsWith('Worktrees changed')).length;
+  // A write inside a worktree's git directory reports the directory as changed: no refresh for that.
+  let before = refreshes();
+  t.fire('change', path.join(gitDir, 'worktrees', 'fix'));
+  await sleep(600);
+  assert.equal(refreshes(), before);
   s.autoIgnoreWorktrees = ['branch:review/*'];
   await t.recorder.refreshFilter('autoIgnoreWorktrees changed');
   assert.ok(minimatch('worktrees/fix/HEAD', watcher()!.pattern), watcher()!.pattern);
+  before = refreshes();
+  t.fire('change', path.join(gitDir, 'worktrees', 'fix'));
+  await sleep(600);
+  assert.equal(refreshes(), before, 'still none for the directory');
+  t.fire('change', path.join(gitDir, 'worktrees', 'fix', 'HEAD'));
+  await until('HEAD refreshes', () => refreshes() > before);
   // A branch pattern also keeps hand-recorded lanes' branches current for auto-follow with auto-record off.
   s.autoRecordWorktrees = 'off';
   await t.recorder.refreshFilter('autoRecordWorktrees changed');
@@ -168,4 +181,49 @@ test('autoIgnored: matches other worktrees by path or last branch, never a folde
   assert.equal(t.recorder.autoIgnored(old), false);
   s.autoIgnoreWorktrees = ['old-*', 'branch:*'];
   assert.equal(t.recorder.autoIgnored(old), true);
+});
+
+test('a pattern stops an auto-added worktree in every folder that recorded it', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const second = `${repo}-second`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'second', second);
+  mock.open(repo, second);
+  const s = settings({ autoRecordWorktrees: 'fill' });
+  const logs: string[] = [];
+  const recorder = new Recorder(new Timeline(1000), () => s, { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel);
+  track(recorder);
+  await recorder.start();
+  git(repo, 'worktree', 'add', '-q', '-b', 'fresh', `${repo}-fresh`);
+  mock.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', `${path.basename(repo)}-fresh`));
+  await until('fresh in both folders', () => recorder.recordedLanes().filter((l) => l.name === 'fresh').length === 2);
+  s.autoIgnoreWorktrees = ['*-fresh'];
+  await recorder.refreshFilter('autoIgnoreWorktrees changed');
+  assert.deepEqual(recorder.recordedLanes().map((l) => l.name).sort(), ['main', 'second'], logs.join('\n'));
+  assert.equal(logs.filter((l) => l.startsWith('Stopped recording fresh')).length, 2);
+});
+
+test('picks by hand: a refused clear changes nothing, and choosing one checkout makes it the user\'s', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const s = settings({ autoRecordWorktrees: 'fill' });
+  const t = recorderOn(s, {}, repo);
+  await t.recorder.start();
+  const fresh = addWorktree(t, repo, 'fresh');
+  await until('auto-recorded', () => t.checkout()?.lanes === 2);
+  // Only fresh left, then a refused clear of it: it stays auto-record's, so a pattern stops it once there is room.
+  await t.recorder.setCheckouts(t.folder, [fresh]);
+  await assert.rejects(t.recorder.removeCheckout(t.folder, fresh), /At least one checkout/);
+  await t.recorder.addCheckout(t.folder, repo);
+  s.autoIgnoreWorktrees = ['*-fresh'];
+  await t.recorder.refreshFilter('autoIgnoreWorktrees changed');
+  await until('fresh stopped', () => t.checkout()?.lanes === 1);
+  // Chosen alone with Choose Checkout, a worktree is the user's: a pattern never stops it.
+  const other = addWorktree(t, repo, 'other');
+  s.autoIgnoreWorktrees = [];
+  await t.recorder.refreshFilter('autoIgnoreWorktrees changed');
+  await until('other auto-recorded', () => t.recorder.recordedLanes().some((l) => l.name === 'other'));
+  await t.recorder.setCheckout(t.folder, other);
+  await t.recorder.addCheckout(t.folder, repo);
+  s.autoIgnoreWorktrees = ['*-other'];
+  await t.recorder.refreshFilter('autoIgnoreWorktrees changed');
+  assert.ok(t.recorder.recordedLanes().some((l) => l.name === 'other'), t.logs.join('\n'));
 });

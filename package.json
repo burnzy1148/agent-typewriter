@@ -862,7 +862,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Glob patterns for worktrees that auto-record never gives a lane and auto-follow never moves to, such as review or other throwaway checkouts. A pattern matches the worktree's path, or its directory name when it has no slash (`review-*`, `**/T/tmp.*`). A pattern starting with `branch:` matches its branch instead (`branch:review/*`); a detached worktree has no branch. The folder's own checkout never matches, and you can still record a matching worktree by hand."
+          "markdownDescription": "Glob patterns for worktrees that auto-record never gives a lane and auto-follow never moves to, such as review or other throwaway checkouts. A pattern without a slash matches the worktree's directory name (`review-*`); one with a slash matches its full path as git reports it, with symlinks resolved, so start it with `**/` (`**/T/tmp.*`). A pattern starting with `branch:` matches its branch instead (`branch:review/*`); a detached worktree has no branch. A lane auto-record added since recording started stops once it matches, unless it is its folder's last. The folder's own checkout never matches, and you can still record a matching worktree by hand."
         },
         "agentTypewriter.autoFollow": {
           "type": "boolean",
