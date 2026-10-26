@@ -130,7 +130,7 @@ test('a worktree refused at the cap while its baselines are still read keeps non
   const workspaceFs = (vscode.workspace as unknown as { fs: { readFile(u: vscode.Uri): Promise<Uint8Array> } }).fs;
   const readFile = workspaceFs.readFile;
   workspaceFs.readFile = async (u) => {
-    if (u.fsPath.includes('review-1') && u.fsPath.includes('gen')) await sleep(80);
+    if (u.fsPath.includes('review-1') && u.fsPath.includes('gen')) await sleep(150);
     return readFile.call(workspaceFs, u);
   };
   try {
@@ -140,11 +140,11 @@ test('a worktree refused at the cap while its baselines are still read keeps non
     const review = path.join(repo, '.claude', 'worktrees', 'review-1');
     const refreshes = () => t.logs.filter((l) => l.startsWith('Worktrees changed')).length;
     const before = refreshes();
+    // Subscribed first: the scope change that applies the waiting worktree can come right after the line naming it.
     let applied = false;
+    t.recorder.onDidChangeScope(() => (applied ||= t.logs.some((l) => l.startsWith('Watching the new worktree'))));
     git(repo, 'worktree', 'add', '-q', '--detach', review, 'main');
     fireCommon(t, repo, 'create', review);
-    await until('waits', () => t.logs.some((l) => l.startsWith('Watching the new worktree')));
-    t.recorder.onDidChangeScope(() => (applied = true));
     // Written as soon as it is watched, while its baselines are still being read.
     await until('watched', () => applied);
     t.change(path.join(review, 'src', 'new.ts'), 'export const n = 1;\n', 'create');
