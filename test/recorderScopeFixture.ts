@@ -9,6 +9,7 @@ import { Recorder, type CheckoutChoices } from '../src/recorder';
 import { Timeline } from '../src/timeline';
 import { listWorktrees, type WorktreeListResult } from '../src/worktrees';
 import type { Settings } from '../src/config';
+import type { WatchDir } from '../src/watchGaps';
 import { mock } from './vscode-mock';
 import { git, tempRepo, write } from './gitFixture';
 
@@ -78,6 +79,7 @@ afterEach(() => {
 export interface Options {
   choices?: CheckoutChoices;
   lister?: (folder: string) => Promise<WorktreeListResult>;
+  watchDir?: WatchDir;
 }
 
 export function recorderOn(s: Settings, opts: Options, dir: string) {
@@ -85,7 +87,7 @@ export function recorderOn(s: Settings, opts: Options, dir: string) {
   const timeline = new Timeline(1000);
   const logs: string[] = [];
   const log = { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel;
-  const recorder = new Recorder(timeline, () => s, log, opts.choices, opts.lister);
+  const recorder = new Recorder(timeline, () => s, log, opts.choices, opts.lister, opts.watchDir);
   track(recorder);
   const folder = mock.folders[0] as unknown as vscode.WorkspaceFolder;
   const uri = (file: string) => vscode.Uri.file(file);

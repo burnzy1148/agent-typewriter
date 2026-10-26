@@ -371,8 +371,8 @@ async function workspaceLaunches() {
   gitAt(ignoreRepo, 'add', '-A');
   gitAt(ignoreRepo, 'commit', '-q', '-m', 'pr');
   gitAt(ignoreRepo, 'checkout', '-q', 'main');
-  // The worktree parents exist before VS Code starts, as in a repository agents already use. On Linux
-  // the watcher can miss writes in a directory tree created several levels deep at once while it runs.
+  // The worktree parents exist before VS Code starts, as in a repository agents already use.
+  // deepFolders.ts covers parents made while recording.
   fs.mkdirSync(path.join(ignoreRepo, '.claude', 'worktrees'), { recursive: true });
   fs.mkdirSync(path.join(ignoreRepo, '.worktrees'));
   fs.mkdirSync(path.join(ignoreRepo, '.vscode'));
@@ -397,6 +397,37 @@ async function workspaceLaunches() {
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'ignoreWorktrees.js'),
     launchArgs: [ignoreRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
+  // Deep folders (deepFolders.ts): a repository with no .claude folder, for
+  // folder trees made several levels deep at once while recording.
+  const deepRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-deep-'));
+  fs.mkdirSync(path.join(deepRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(deepRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(deepRepo, '.gitignore'), '.vscode/\n');
+  gitAt(deepRepo, 'init', '-q', '-b', 'main');
+  gitAt(deepRepo, 'add', '-A');
+  gitAt(deepRepo, 'commit', '-q', '-m', 'initial');
+  fs.mkdirSync(path.join(deepRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(deepRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.persistHistory': false,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'deepFolders.js'),
+    launchArgs: [deepRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
   });
 
   // Git operations (gitOperations.ts): main is behind `feature`, which a

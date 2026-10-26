@@ -26,6 +26,7 @@ import { AutoFollow } from './autoFollow';
 import { onTextReadError } from './changeText';
 import { FollowedMemory } from './followedMemory';
 import { MAX_LANES } from './lanes';
+import { nodeWatchDir } from './watchGaps';
 
 /** Returned from activate so integration tests (or other extensions) can observe playback. */
 export interface AgentTypewriterApi {
@@ -61,7 +62,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const choices: CheckoutChoices = context.storageUri
     ? new CheckoutChoiceFile(path.join(context.storageUri.fsPath, 'checkouts.json'))
     : new Map<string, string>();
-  const recorder = new Recorder(timeline, readSettings, log, choices);
+  // On Linux, VS Code's watcher cannot see into folders made several levels deep at once; the recorder watches those itself.
+  const recorder = new Recorder(timeline, readSettings, log, choices, undefined, process.platform === 'linux' ? nodeWatchDir : undefined);
   const player = new Player(timeline, mirror, readSettings, log);
   const highlights = new HighlightView(timeline, player, readHighlightSettings, context.extensionUri);
   const view = new TimelineView(timeline);
