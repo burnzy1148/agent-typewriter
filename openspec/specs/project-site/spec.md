@@ -50,7 +50,7 @@ The README SHALL keep the banner, the one-line description, the demo animation, 
 - **THEN** they can install and start watching from the README alone, and follow a link to the full docs
 
 ### Requirement: Production shows the released version
-Production SHALL be deployed from `main` only, after a release merges. Changes merged into `develop` SHALL NOT appear on the production site until the next release.
+Production SHALL be deployed from `main` only, after a release merges. Changes merged into `develop` SHALL NOT appear on the production site until the next release. Tagging or publishing a pre-release SHALL NOT deploy production.
 
 #### Scenario: Docs for an unreleased feature
 - **WHEN** a PR merged into `develop` documents a feature that has not been released
@@ -59,6 +59,10 @@ Production SHALL be deployed from `main` only, after a release merges. Changes m
 #### Scenario: Release with site changes
 - **WHEN** a release PR that includes changes under `site/` merges into `main`
 - **THEN** the production site is rebuilt and deployed from that commit
+
+#### Scenario: Pre-release with site changes
+- **WHEN** a PR that changes `site/` and `src/` merges into `develop`, is tagged, and is then published as a pre-release
+- **THEN** the production site is not deployed
 
 ### Requirement: Pull request previews
 A pull request from a branch in this repository that changes the site SHALL get a preview deployment, and its URL SHALL be posted on the pull request. A pull request from a fork, or one opened by Dependabot, SHALL get the build check only, because its runs cannot read the deploy secret. Preview deployments SHALL expire on their own.

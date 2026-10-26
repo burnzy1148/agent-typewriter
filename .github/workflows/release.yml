@@ -15,6 +15,11 @@ name: Release
 # package, publish to the Marketplace, GitHub release). The tag is already in
 # develop's history, so main needs no sync back into develop.
 #
+# Stable versions keep even minors, because pre-releases (prerelease.yml) use
+# the odd minor above the current stable one: a minor bump from 0.3.0 or 0.4.x
+# goes to 0.6.0, so it sorts above every 0.5.x pre-release. Patch and major
+# bumps work as npm's do. scripts/version.mjs holds the rule.
+#
 # PRs, branches and tags created with GITHUB_TOKEN don't trigger other
 # workflows, so this workflow starts ci.yml itself with workflow_dispatch.
 
@@ -59,8 +64,8 @@ jobs:
             echo "CHANGELOG.md has no '## Unreleased' section to release" >&2
             exit 1
           fi
-          version=$(npm version "$BUMP" --no-git-tag-version --ignore-scripts)
-          version=${version#v}
+          version=$(node scripts/version-cli.mjs next-stable "$BUMP")
+          npm version "$version" --no-git-tag-version --ignore-scripts
           if git ls-remote --exit-code --tags origin "refs/tags/v${version}" >/dev/null; then
             echo "Tag v${version} already exists" >&2
             exit 1
