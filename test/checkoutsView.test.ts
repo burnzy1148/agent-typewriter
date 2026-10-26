@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CheckoutRow, CheckoutsView, FOLLOWED_SCHEME, followedRowUri, followingHeader, FolderNode, LaneRow, OthersNode, type FolderCheckoutsModel } from '../src/checkoutsView';
+import { CheckoutRow, CheckoutsView, FOLLOWED_SCHEME, followedRowUri, followingHeader, FolderNode, LaneRow, OthersNode, pathInside, type FolderCheckoutsModel } from '../src/checkoutsView';
 import { LaneDecorations } from '../src/laneDecorations';
 import { Timeline } from '../src/timeline';
 import { laneKey } from '../src/worktrees';
+import { tempDir } from './gitFixture';
 
 const folder = (name: string) => ({ uri: vscode.Uri.file(`/w/${name}`), name, index: 0 }) as unknown as vscode.WorkspaceFolder;
 
@@ -139,4 +142,64 @@ test('with one lane the header names it; with none there is no header', () => {
   assert.equal(followingHeader(t), undefined);
   t.defineLane({ id: 'only', label: 'main', root: '/w', color: 1, recording: true });
   assert.equal(followingHeader(t), 'Following: main');
+});
+
+test('pathInside: strictly inside only, with forward slashes', () => {
+  const P = (...parts: string[]) => path.resolve('/', ...parts);
+  assert.equal(pathInside(P('repo'), P('repo', '.claude', 'worktrees', 'feat')), '.claude/worktrees/feat');
+  assert.equal(pathInside(P('repo'), P('repo')), undefined);
+  assert.equal(pathInside(P('repo'), P('repo-side')), undefined);
+  assert.equal(pathInside(P('repo', 'a'), P('repo')), undefined);
+  assert.equal(pathInside(P('repo'), P('repo', '..dots')), '..dots', 'a name starting with two dots is still inside');
+});
+
+// --- at-dd6: a workspace folder opened through a symlink, worktrees listed by their real paths.
+
+test('at-dd6 a folder opened through a symlink shows a nested worktree relative to it', async (ctx) => {
+  const real = tempDir('at-cv-real-');
+  fs.mkdirSync(path.join(real, '.claude', 'worktrees', 'coupons'), { recursive: true });
+  const link = path.join(tempDir('at-cv-link-'), 'repo');
+  try {
+    fs.symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    return ctx.skip('cannot create a symlink here');
+  }
+  const f = { uri: vscode.Uri.file(link), name: 'repo', index: 0 } as unknown as vscode.WorkspaceFolder;
+  // Git reports every worktree by its real path.
+  const m: FolderCheckoutsModel = {
+    folder: f,
+    checkouts: [
+      { path: real, name: 'main', own: true },
+      { path: path.join(real, '.claude', 'worktrees', 'coupons'), name: 'coupons', own: false },
+      { path: `${real}-side`, name: 'side', own: false },
+    ],
+    // Recorded as spelled through the link: still the same checkout.
+    recorded: [real, path.join(link, '.claude', 'worktrees', 'coupons')],
+  };
+  const couponsLane = laneKey(f.uri.toString(), false, path.join(real, '.claude', 'worktrees', 'coupons'));
+  const { view } = viewOf(new Timeline(100), [m]);
+  await view.reload();
+  // Redraws use what the reload read: nothing is resolved on disk again.
+  const realpathSync = fs.realpathSync.native;
+  let resolved = 0;
+  fs.realpathSync.native = ((...args: Parameters<typeof realpathSync>) => {
+    resolved++;
+    return realpathSync(...args);
+  }) as typeof realpathSync;
+  try {
+    const rows = view.getChildren() as CheckoutRow[];
+    assert.equal(resolved, 0, 'a redraw resolved a path');
+    assert.deepEqual(
+      rows.map((r) => [r.description, r.checkboxState]),
+      [
+        ['this folder', vscode.TreeItemCheckboxState.Checked],
+        ['.claude/worktrees/coupons', vscode.TreeItemCheckboxState.Checked],
+        [`${real}-side`, vscode.TreeItemCheckboxState.Unchecked],
+      ],
+    );
+    assert.equal(rows[1].lane, couponsLane);
+  } finally {
+    fs.realpathSync.native = realpathSync;
+    view.dispose();
+  }
 });
