@@ -28,7 +28,7 @@
 
 ## 6. Integration
 
-- [ ] 6.1 Add an integration launch built from the review-worktree reproduction: `fill`, auto-follow on, and `autoIgnoreWorktrees` set to `["review-*", "**/T/tmp.*"]`. A `git worktree add --detach` followed by `git apply`, and a temp-dir worktree with copied files, add no lane and record nothing, and auto-follow stays on the main lane. A non-matching worktree still gets a lane. Verify with `IT_GROUP=workspaces npm run it` locally and green CI on Ubuntu and Windows.
+- [x] 6.1 Add an integration launch built from the review-worktree reproduction: `fill`, auto-follow on, and `autoIgnoreWorktrees` set to `["review-*", "**/T/tmp.*"]`. A `git worktree add --detach` followed by `git apply`, and a temp-dir worktree with copied files, add no lane and record nothing, and auto-follow stays on the main lane. A non-matching worktree still gets a lane. Verify with `IT_GROUP=workspaces npm run it` locally and green CI on Ubuntu and Windows.
 
 ## Workflow follow-up
 
