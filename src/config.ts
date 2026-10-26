@@ -38,6 +38,8 @@ export interface Settings extends FilterSettings {
   /** Walk the caret to nearby edits with arrow keys instead of clicking there. */
   arrowNavigation: boolean;
   arrowKeysPerSecond: number;
+  /** Type blocks outside in (closing line before the body) instead of top to bottom. */
+  naturalOrder: boolean;
   debounceMs: number;
   /** Resolved reorder window in ms ("auto" already mapped to the platform default). */
   reorderWindowMs: number;
@@ -116,6 +118,7 @@ export function readSettings(): Settings {
     scrollLinesPerSecond: num('scrollLinesPerSecond', 60, 1),
     arrowNavigation: c.get('arrowNavigation', true),
     arrowKeysPerSecond: num('arrowKeysPerSecond', 15, 1),
+    naturalOrder: c.get('naturalOrder', true),
     debounceMs: num('debounceMs', 200, 0),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
     maxFileSizeKB: num('maxFileSizeKB', 512, 1),

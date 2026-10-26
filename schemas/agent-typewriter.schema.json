@@ -179,6 +179,11 @@
       "minimum": 1,
       "description": "Arrow key presses per second when walking the caret to the next edit. Multiplied by the playback speed."
     },
+    "naturalOrder": {
+      "type": "boolean",
+      "default": true,
+      "description": "Type each change the way a person writes it: a block's closing line right after its opening line, then the body between, and a signature before its body. Off types every change top to bottom."
+    },
     "debounceMs": {
       "type": "number",
       "default": 200,
