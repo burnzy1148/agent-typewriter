@@ -93,7 +93,18 @@ interface HistoryState {
   followed?: string;
   lanes?: Session['lanes'];
   highlightsFrom?: Session['highlightsFrom'];
+  /**
+   * Per segment a load could not read, the `first` in effect then: its
+   * changes are judged by that, not by the later `first`, which was worked out
+   * without them, once a load can read it.
+   */
+  unread?: Record<string, number>;
+  /** Per sealed segment, the bytes that hold its changes; anything after them is not part of the log. */
+  sealed?: Record<string, number>;
 }
+
+/** Orders after a segment that could not be read, when nothing says how far its orders go. */
+const UNKNOWN_ORDERS_FLOOR = 2 ** 50;
 
 /**
  * Keeps the timeline in a workspace storage folder so a reload does not lose
@@ -127,6 +138,12 @@ export class TimelineStore {
   private migrating = false;
   /** Moves an unreadable saved timeline aside; set while that has not worked yet, and saving waits for it. */
   private aside: { move: () => boolean; name: string } | undefined;
+  /** Segment files the last load could not read, by name, with the `first` their changes are judged by. */
+  private unread = new Map<string, number>();
+  /** Retries a delete that had to wait for the saved text to be readable. */
+  private deleteRetry: NodeJS.Timeout | undefined;
+  /** The last save error logged, so a save failing the same way again is not logged again. */
+  private lastSaveError: string | undefined;
   /** Changes appended to the log so far, for tests. */
   appendedCount = 0;
 
@@ -192,13 +209,17 @@ export class TimelineStore {
     }
     if (st.kind === 'damaged') this.log(`The saved timeline's state could not be read (${st.why}); its changes are restored as pending.`);
     const state = st.kind === 'ok' ? st.state : undefined;
-    const records = this.scanLogs();
+    const records = this.scanLogs(state);
     if (records === undefined) return undefined;
     const first = state?.first ?? -Infinity;
-    const live = records.filter((r) => r.o >= first).sort((a, b) => a.o - b.o);
-    this.next = records.reduce((n, r) => Math.max(n, r.o + 1), state?.next ?? 1);
+    // A segment an earlier load could not read was left out of `first` too.
+    const isLive = (r: LoadedRecord) => r.o >= (state?.unread?.[path.basename(r.segment.file)] ?? first);
+    const live = records.filter(isLive).sort((a, b) => a.o - b.o);
+    this.next = records.reduce((n, r) => Math.max(n, r.o + 1), Math.max(this.next, state?.next ?? 1));
+    // Orders of a segment that could not be read are not known; keep clear of them.
+    if (this.unread.size > 0 && state === undefined) this.next = Math.max(this.next, UNKNOWN_ORDERS_FLOOR);
     for (const r of records) {
-      if (r.o < first) continue;
+      if (!isLive(r)) continue;
       this.orders.set(r.holder, r.o);
       r.segment.holders[r.index] = r.holder;
     }
@@ -263,6 +284,12 @@ export class TimelineStore {
         ...(cursors && { cursors }),
         ...(followed !== undefined && { followed }),
         ...(highlightsFrom && { highlightsFrom }),
+        ...(isObject(raw.unread) && {
+          unread: Object.fromEntries(Object.entries(raw.unread).filter(([, v]) => isInt(v))) as Record<string, number>,
+        }),
+        ...(isObject(raw.sealed) && {
+          sealed: Object.fromEntries(Object.entries(raw.sealed).filter(([, v]) => isInt(v) && (v as number) >= 0)) as Record<string, number>,
+        }),
       },
     };
   }
@@ -272,7 +299,7 @@ export class TimelineStore {
    * A damaged change ends its segment there. Undefined when a segment was
    * written by a newer version.
    */
-  private scanLogs(): LoadedRecord[] | undefined {
+  private scanLogs(state?: HistoryState): LoadedRecord[] | undefined {
     let names: string[];
     try {
       names = fs.readdirSync(this.path);
@@ -296,8 +323,9 @@ export class TimelineStore {
       try {
         scan = scanSegment(file);
       } catch (err) {
-        // Left for a later load; its number stays taken, so nothing is appended to it.
+        // Left for a later load, which restores its changes; its number stays taken, so nothing is appended to it.
         this.log(`Could not read ${name} of the saved timeline (${errorText(err)}); its changes are left out this time.`);
+        this.unread.set(name, state?.unread?.[name] ?? state?.first ?? 0);
         continue;
       }
       if (scan.newer !== undefined) {
@@ -324,20 +352,27 @@ export class TimelineStore {
       let last = -Infinity;
       for (const { file, n, scan } of list) {
         // Damage cuts its own segment short; later segments hold changes saved after it, complete ones.
-        let records = scan.records;
-        let end = scan.end;
-        let damage = scan.damage;
-        lost += scan.dropped;
-        const disordered = records.findIndex((r, i) => r.o <= (i > 0 ? records[i - 1].o : last));
-        if (disordered !== -1) {
-          damage = 'its changes are out of order';
-          end = records[disordered].start;
-          lost += records.length - disordered;
-          records = records.slice(0, disordered);
+        let { records, end, damage, dropped } = scan;
+        const limit = state?.sealed?.[path.basename(file)];
+        if (limit !== undefined && limit < scan.size) {
+          // Sealed: past `limit` is what a failed append left, changes saved again elsewhere.
+          records = records.filter((r) => r.at + r.b + r.a <= limit);
+          if (end >= limit) {
+            damage = undefined;
+            dropped = 0;
+          }
+          end = Math.min(end, limit);
+        }
+        lost += dropped;
+        // Changes not after the ones before them (left by a delete that did not finish) are skipped, not cut off.
+        const ordered = records.filter((r) => (r.o > last ? ((last = r.o), true) : false));
+        if (ordered.length < records.length) {
+          why ??= 'some changes are out of order';
+          lost += records.length - ordered.length;
         }
         let sealed = false;
-        if (damage !== undefined) {
-          why ??= damage;
+        if (damage !== undefined || end < scan.size) {
+          if (damage !== undefined) why ??= damage;
           try {
             fs.truncateSync(file, end);
           } catch (err) {
@@ -345,10 +380,9 @@ export class TimelineStore {
             this.log(`Could not cut the damaged end off ${path.basename(file)}: ${errorText(err)}`);
           }
         }
-        const segment: Segment = { file, n, bytes: end, holders: records.map(() => undefined), ...(sealed && { sealed }) };
+        const segment: Segment = { file, n, bytes: end, holders: ordered.map(() => undefined), ...(sealed && { sealed }) };
         log.segments.push(segment);
-        records.forEach((r, index) => {
-          last = r.o;
+        ordered.forEach((r, index) => {
           const holder = new TextHolder(r.c, () => readText(file, r.at, r.b, r.a, r.crc), this);
           out.push({ o: r.o, lane: id, fields: r.fields, holder, segment, index });
         });
@@ -435,6 +469,7 @@ export class TimelineStore {
 
   /** Saves on every timeline change from now on, and once soon. */
   start(): void {
+    this.cancelDeleteRetry();
     if (this.subscription) return;
     this.subscription = this.timeline.onDidChange(() => this.markDirty());
     this.markDirty();
@@ -466,26 +501,58 @@ export class TimelineStore {
    * Changes whose text was only in the log get it back in memory first.
    */
   deleteSaved(): void {
-    for (const e of this.timeline.all()) {
-      const holder = textHolder(e);
-      if (holder.owner === this) holder.pin();
+    this.cancelDeleteRetry();
+    try {
+      for (const e of this.timeline.all()) {
+        const holder = textHolder(e);
+        if (holder.owner === this) holder.pin();
+      }
+    } catch (err) {
+      // Deleting now would lose the text; try again until it can be read.
+      this.log(`Could not read the saved timeline back before deleting it (${errorText(err)}); it is deleted once it can be read.`);
+      this.deleteRetry = setTimeout(() => {
+        this.deleteRetry = undefined;
+        this.deleteSaved();
+      }, this.intervalMs);
+      return;
     }
+    // Whatever was written, nothing written from now on may be mistaken for it.
+    const st = this.readState();
+    if (st.kind === 'ok') this.next = Math.max(this.next, st.state.next);
     this.forget();
     this.aside = undefined;
     this.migrating = false;
     for (const f of [DIR, ASIDE, LEGACY, LEGACY + '.tmp', LEGACY + '.sync.tmp', LEGACY_UNREADABLE]) removeQuietly(path.join(this.folder, f));
-    // A segment another process holds open stays behind: delete it on a later save. Its
-    // changes' orders are below any written from now on, so a load leaves them out.
+    // A segment another process holds open stays behind: delete it on a later save. Orders
+    // and segment numbers from now on go past it, so a load leaves its changes out.
+    let left: string[] = [];
     try {
-      for (const name of fs.readdirSync(this.path)) if (SEGMENT_NAME.test(name)) this.doomed.push(path.join(this.path, name));
+      left = fs.readdirSync(this.path).filter((name) => SEGMENT_NAME.test(name));
     } catch {
       // Nothing left.
     }
+    for (const name of left) {
+      const file = path.join(this.path, name);
+      const m = SEGMENT_NAME.exec(name)!;
+      this.segmentNumbers.set(m[1], Math.max(this.segmentNumbers.get(m[1]) ?? 1, Number(m[2]) + 1));
+      try {
+        this.next = scanSegment(file).records.reduce((n, r) => Math.max(n, r.o + 1), this.next);
+      } catch {
+        if (st.kind !== 'ok') this.next = Math.max(this.next, UNKNOWN_ORDERS_FLOOR);
+      }
+      this.doomed.push(file);
+    }
+  }
+
+  private cancelDeleteRetry(): void {
+    if (this.deleteRetry) clearTimeout(this.deleteRetry);
+    this.deleteRetry = undefined;
   }
 
   dispose(): void {
     if (this.isRunning) this.flushSync();
     this.stop();
+    this.cancelDeleteRetry();
   }
 
   private markDirty(): void {
@@ -498,15 +565,24 @@ export class TimelineStore {
   }
 
   private save(): void {
-    // Still dirty, so the next save (at the latest the final one) tries the move again.
-    if (!this.canSave()) return;
+    // Still dirty, so the next save tries the move again.
+    if (!this.canSave()) return this.retrySoon();
     this.dirty = false;
     try {
       this.write();
+      this.lastSaveError = undefined;
     } catch (err) {
       this.dirty = true;
-      this.log(`Could not save the timeline: ${errorText(err)}`);
+      const why = errorText(err);
+      if (why !== this.lastSaveError) this.log(`Could not save the timeline: ${why}`);
+      this.lastSaveError = why;
+      this.retrySoon();
     }
+  }
+
+  /** Tries a save that could not happen again after the interval, without waiting for another change. */
+  private retrySoon(): void {
+    if (this.isRunning) this.markDirty();
   }
 
   private write(): void {
@@ -572,6 +648,7 @@ export class TimelineStore {
    * the others on load.
    */
   private rewriteAll(): void {
+    // A text that cannot be read just now aborts the save, before anything is let go.
     for (const h of this.orders.keys()) h.pin();
     for (const log of this.lanes.values()) for (const s of log.segments) this.doomed.push(s.file);
     this.lanes.clear();
@@ -688,6 +765,7 @@ export class TimelineStore {
       return e ? this.orders.get(textHolder(e)) ?? this.next : this.next;
     };
     const { session } = toSession(this.timeline);
+    const sealed = [...this.lanes.values()].flatMap((l) => l.segments.filter((s) => s.sealed));
     return {
       format: HISTORY_FORMAT,
       version: HISTORY_VERSION,
@@ -699,6 +777,8 @@ export class TimelineStore {
       ...(session.followed !== undefined && { followed: session.followed }),
       ...(session.lanes && { lanes: session.lanes }),
       ...(session.highlightsFrom && { highlightsFrom: session.highlightsFrom.map((c) => ({ ...c, seq: orderAt(c.seq) })) }),
+      ...(this.unread.size > 0 && { unread: Object.fromEntries(this.unread) }),
+      ...(sealed.length > 0 && { sealed: Object.fromEntries(sealed.map((s) => [path.basename(s.file), s.bytes])) }),
     };
   }
 
@@ -711,6 +791,7 @@ export class TimelineStore {
     this.lanes.clear();
     this.orders.clear();
     this.doomed = [];
+    this.unread.clear();
     this.lastState = '';
   }
 }
@@ -747,6 +828,8 @@ interface SegmentScan {
   records: ScannedRecord[];
   /** Offset after the last complete record. */
   end: number;
+  /** Bytes in the file. */
+  size: number;
   /** Why the segment ends early, if it does. */
   damage?: string;
   /** How many changes the damage is known to leave out: the damaged one and any complete ones after it. */
@@ -764,8 +847,8 @@ function scanSegment(file: string): SegmentScan {
   } catch {
     // Treated as missing below.
   }
-  if (!isObject(head) || head.format !== LOG_FORMAT || typeof head.lane !== 'string' || !isInt(head.version)) return { records: [], end: 0, dropped: 0 };
-  if ((head.version as number) > LOG_VERSION) return { records: [], end: 0, dropped: 0, newer: head.version as number };
+  if (!isObject(head) || head.format !== LOG_FORMAT || typeof head.lane !== 'string' || !isInt(head.version)) return { records: [], end: 0, size: buf.length, dropped: 0 };
+  if ((head.version as number) > LOG_VERSION) return { records: [], end: 0, size: buf.length, dropped: 0, newer: head.version as number };
   const records: ScannedRecord[] = [];
   let pos = nl + 1;
   let damage: string | undefined;
@@ -798,7 +881,7 @@ function scanSegment(file: string): SegmentScan {
     records.push({ ...rec, start: pos, at });
     pos = end;
   }
-  return { lane: head.lane as string, records, end: pos, dropped: damage === undefined ? 0 : 1 + countAfter(buf, pos), ...(damage !== undefined && { damage }) };
+  return { lane: head.lane as string, records, end: pos, size: buf.length, dropped: damage === undefined ? 0 : 1 + countAfter(buf, pos), ...(damage !== undefined && { damage }) };
 }
 
 /**

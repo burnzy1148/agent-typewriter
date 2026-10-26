@@ -179,14 +179,13 @@ export class Player implements vscode.Disposable {
       this.timeline.seekToEnd();
       const { states, renamedAway } = this.timeline.snapTargets();
       for (const relPath of renamedAway) if (!this.disposed) await this.retireMirror(relPath);
-      const latest = [...states.values()];
+      // Their text, read before anything is awaited: as for playback, a change can leave the buffer meanwhile.
+      const latest: ChangeEvent[] = [...states.values()].map((e) => ({ ...e }));
       let newest: ChangeEvent | undefined;
       for (const e of latest) {
         if (this.disposed) return;
-        // Text read once per change, as for playback.
-        const change: ChangeEvent = { ...e };
-        if (!newest || change.seq > newest.seq) newest = change;
-        await this.settle(change);
+        if (!newest || e.seq > newest.seq) newest = e;
+        await this.settle(e);
       }
       if (newest && !this.disposed) {
         this.setPlaybackPath(newest.relPath);

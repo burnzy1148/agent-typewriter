@@ -5,7 +5,7 @@ import nodeFs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
-import { readCache, textHolder } from '../src/changeText';
+import { readCache, TextPasses, textHolder } from '../src/changeText';
 import { crc32, sessionFromBytes, sessionToBytes, TimelineStore } from '../src/persistence';
 import { sessionClears, sessionLanes, SessionFormatError, Timeline, toSession, type NewChangeEvent, type Session } from '../src/timeline';
 
@@ -697,4 +697,188 @@ test('temp files an earlier version left behind are removed on load', () => {
   for (const f of ['timeline.json.gz.tmp', 'timeline.json.gz.sync.tmp']) fs.writeFileSync(path.join(dir, f), 'code text');
   assert.equal(loadFrom(dir), undefined);
   assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('a segment unreadable at one load comes back at a later one, even after saves in between', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10, 120);
+  start(store);
+  for (let i = 0; i < 6; i++) {
+    tl.push(ev(`f${i}.ts`, '', 'x'.repeat(40) + i));
+    await store.flush();
+  }
+  store.stop();
+  const oldest = path.join(historyOf(dir), logsOf(dir)[0]);
+  const real = nodeFs.readFileSync;
+  t.mock.method(nodeFs, 'readFileSync', (p: fs.PathOrFileDescriptor, o?: unknown) => {
+    if (p === oldest) throw busy(String(p));
+    return real(p, o as undefined);
+  });
+  const r = reload(dir);
+  assert.equal(r.timeline.all().length, 5);
+  start(r.store);
+  r.timeline.push(ev('g.ts', '', 'later'));
+  await r.store.flush();
+  r.store.stop();
+  t.mock.restoreAll();
+  assert.deepEqual(reload(dir).timeline.all().map((e) => e.relPath), ['f0.ts', 'f1.ts', 'f2.ts', 'f3.ts', 'f4.ts', 'f5.ts', 'g.ts']);
+});
+
+test('deleting before any load, with a segment left behind, keeps later changes clear of it', async (t) => {
+  const dir = tempDir();
+  const old = new Timeline(100);
+  const first = new TimelineStore(dir, old, () => {}, 10);
+  start(first);
+  for (let i = 0; i < 5; i++) old.push(ev(`old${i}.ts`, '', 'old' + i));
+  await first.flush();
+  first.stop();
+  const [seg] = logsOf(dir);
+  const segFile = path.join(historyOf(dir), seg);
+  const realRm = nodeFs.rmSync;
+  // As on Windows when another process holds the segment: everything else goes, it stays.
+  t.mock.method(nodeFs, 'rmSync', (p: fs.PathLike, o?: fs.RmOptions) => {
+    if (String(p) === segFile) throw busy(String(p));
+    if (String(p) === historyOf(dir)) {
+      for (const f of fs.readdirSync(historyOf(dir))) if (f !== seg) realRm(path.join(historyOf(dir), f), { force: true });
+      throw busy(String(p));
+    }
+    realRm(p, o);
+  });
+  // Activation with persistHistory off deletes without loading; later it is turned on.
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  store.deleteSaved();
+  start(store);
+  tl.push(ev('new1.ts', '', 'new1'));
+  tl.push(ev('new2.ts', '', 'new2'));
+  await store.flush();
+  store.stop();
+  t.mock.restoreAll();
+  const logs: string[] = [];
+  assert.deepEqual(reload(dir, logs).timeline.all().map((e) => e.relPath), ['new1.ts', 'new2.ts']);
+  assert.deepEqual(logs, []);
+});
+
+test('changes out of order in a log are skipped, not cut off with what follows them', async () => {
+  const dir = tempDir();
+  const t = new Timeline(100);
+  const store = new TimelineStore(dir, t, () => {}, 10);
+  start(store);
+  for (const f of ['a', 'b', 'c']) t.push(ev(f, '', f));
+  await store.flush();
+  store.stop();
+  const file = path.join(historyOf(dir), logsOf(dir)[0]);
+  const text = fs.readFileSync(file, 'latin1');
+  // b's order goes back below a's.
+  fs.writeFileSync(file, text.replace('{"o":2,', '{"o":0,'), 'latin1');
+  const logs: string[] = [];
+  assert.deepEqual(reload(dir, logs).timeline.all().map((e) => e.relPath), ['a', 'c']);
+  assert.match(logs.join('\n'), /out of order\); left out 1 change/);
+  assert.equal(fs.readFileSync(file, 'latin1').length, text.length);
+});
+
+test('turning persistence off while the log cannot be read keeps it until the text is back in memory', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const logs: string[] = [];
+  const store = new TimelineStore(dir, tl, (l) => logs.push(l), 10);
+  start(store);
+  tl.push(ev('a.ts', 'before text', 'after text'));
+  await store.flush();
+  readCache.clear();
+  const segFile = path.join(historyOf(dir), logsOf(dir)[0]);
+  const realOpen = nodeFs.openSync;
+  t.mock.method(nodeFs, 'openSync', (p: fs.PathLike, ...rest: unknown[]) => {
+    if (String(p) === segFile) throw busy(String(p));
+    return (realOpen as (...a: unknown[]) => number)(p, ...rest);
+  });
+  store.stop();
+  store.deleteSaved();
+  assert.ok(fs.existsSync(segFile));
+  assert.match(logs.join('\n'), /deleted once it can be read/);
+  t.mock.restoreAll();
+  await sleep(60);
+  assert.ok(!fs.existsSync(historyOf(dir)));
+  readCache.clear();
+  assert.equal(tl.all()[0].after, 'after text');
+  store.dispose();
+});
+
+test('highlight passes try a failed read again', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  start(store);
+  tl.push(ev('a.ts', 'before text', 'after text'));
+  await store.flush();
+  store.stop();
+  readCache.clear();
+  const segFile = path.join(historyOf(dir), logsOf(dir)[0]);
+  const realOpen = nodeFs.openSync;
+  let fail = true;
+  t.mock.method(nodeFs, 'openSync', (p: fs.PathLike, ...rest: unknown[]) => {
+    if (fail && String(p) === segFile) throw busy(String(p));
+    return (realOpen as (...a: unknown[]) => number)(p, ...rest);
+  });
+  const passes = new TextPasses();
+  const e = tl.all()[0];
+  assert.equal(passes.run((read) => read(e, 'after')), '');
+  fail = false;
+  assert.equal(passes.run((read) => read(e, 'after')), 'after text');
+});
+
+test('changes a failed append left in a sealed segment are not restored twice', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const store = new TimelineStore(dir, tl, () => {}, 10);
+  start(store);
+  tl.push(ev('a.ts', '', 'one'));
+  await store.flush();
+  const segFile = path.join(historyOf(dir), logsOf(dir)[0]);
+  const realAppend = nodeFs.appendFileSync;
+  let failOnce = true;
+  // The write lands, then reports an error (as a full disk can), and the cleanup fails too.
+  t.mock.method(nodeFs, 'appendFileSync', (p: fs.PathOrFileDescriptor, d: string | Uint8Array, o?: fs.WriteFileOptions) => {
+    realAppend(p, d, o);
+    if (failOnce && p === segFile) {
+      failOnce = false;
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    }
+  });
+  t.mock.method(nodeFs, 'truncateSync', () => {
+    throw busy(segFile);
+  });
+  tl.push(ev('b.ts', '', 'two'));
+  await store.flush();
+  await store.flush();
+  store.stop();
+  t.mock.restoreAll();
+  assert.deepEqual(reload(dir).timeline.all().map((e) => e.relPath), ['a.ts', 'b.ts']);
+});
+
+test('a save that fails is tried again without waiting for another change', async (t) => {
+  const dir = tempDir();
+  const tl = new Timeline(100);
+  const logs: string[] = [];
+  const store = new TimelineStore(dir, tl, (l) => logs.push(l), 10);
+  const realWrite = nodeFs.writeFileSync;
+  let fails = 3;
+  t.mock.method(nodeFs, 'writeFileSync', (p: fs.PathOrFileDescriptor, d: string | NodeJS.ArrayBufferView, o?: fs.WriteFileOptions) => {
+    if (fails > 0 && String(p).endsWith('state.json.tmp')) {
+      fails--;
+      throw busy(String(p));
+    }
+    realWrite(p, d, o);
+  });
+  start(store);
+  tl.push(ev('a.ts', '', 'one'));
+  await store.flush();
+  await sleep(100);
+  store.stop();
+  t.mock.restoreAll();
+  assert.equal(fails, 0);
+  assert.deepEqual(loadFrom(dir)?.events.map((e) => e.relPath), ['a.ts']);
+  // The same error is logged once.
+  assert.equal(logs.filter((l) => /Could not save/.test(l)).length, 1);
 });

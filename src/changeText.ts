@@ -83,6 +83,8 @@ export class TextHolder {
   private reader: TextReader | undefined;
   /** Whoever keeps the saved copy, while there is one. */
   private keeper: unknown;
+  /** The last read of the saved copy failed, so `read` gave empty text. */
+  private failed = false;
   readonly chars: number;
 
   constructor(before: string, after: string);
@@ -107,18 +109,30 @@ export class TextHolder {
     return this.keeper;
   }
 
+  /** The text the last read gave is empty only because the saved copy could not be read. */
+  get readFailed(): boolean {
+    return this.failed;
+  }
+
+  /** The text; empty, and reported once per session, when the saved copy cannot be read. */
   read(): ChangeText {
-    if (this.text) return this.text;
-    const cached = readCache.get(this);
-    if (cached) return cached;
-    let text: ChangeText;
     try {
-      text = this.reader!();
+      return this.load();
     } catch (err) {
       if (!reported) reportReadError(`Could not read a saved change's text, so it reads as empty: ${err instanceof Error ? err.message : String(err)}`);
       reported = true;
+      this.failed = true;
       return EMPTY;
     }
+  }
+
+  /** The text, or a throw when the saved copy cannot be read. */
+  private load(): ChangeText {
+    if (this.text) return this.text;
+    const cached = readCache.get(this);
+    if (cached) return cached;
+    const text = this.reader!();
+    this.failed = false;
     readCache.put(this, text);
     return text;
   }
@@ -132,13 +146,29 @@ export class TextHolder {
     if (text) readCache.put(this, text);
   }
 
-  /** Keeps the text in memory from now on, before its saved copy goes away. */
+  /**
+   * Keeps the text in memory from now on, before its saved copy goes away.
+   * Throws when the saved copy cannot be read just now (another process holds
+   * it), so the caller keeps it; a copy that is damaged for good pins empty.
+   */
   pin(): void {
-    if (!this.text) this.text = this.read();
+    if (!this.text) {
+      try {
+        this.text = this.load();
+      } catch (err) {
+        if (isTransient(err)) throw err;
+        this.text = this.read();
+      }
+    }
     readCache.delete(this);
     this.reader = undefined;
     this.keeper = undefined;
   }
+}
+
+/** A file error that may well not happen again: another process holds the file, or too many are open. */
+export function isTransient(err: unknown): boolean {
+  return ['EBUSY', 'EPERM', 'EACCES', 'EAGAIN', 'EMFILE', 'ENFILE'].includes((err as NodeJS.ErrnoException)?.code ?? '');
 }
 
 const holders = new WeakMap<object, TextHolder>();
@@ -196,7 +226,12 @@ export class TextPasses {
       const holder = textHolder(e);
       let kept = now.get(holder);
       if (!kept) now.set(holder, (kept = {}));
-      return (kept[side] ??= this.last.get(holder)?.[side] ?? e[side]);
+      const known = kept[side] ?? this.last.get(holder)?.[side];
+      if (known !== undefined) return (kept[side] = known);
+      const text = e[side];
+      // Empty text from a failed read is not kept, so the next pass tries again.
+      if (!holder.readFailed) kept[side] = text;
+      return text;
     };
     try {
       return pass(read);
