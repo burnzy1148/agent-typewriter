@@ -297,8 +297,13 @@ export class Player implements vscode.Disposable {
     // is jumped to; later ones are scrolled to.
     let smooth = !switching && e.fromRelPath === undefined;
     for (const h of hunks) {
-      if (this.finishNow) break;
       if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
+      if (this.finishNow) {
+        // Pressed before this edit's read pause began: it is brought into view
+        // at once, as from the pause, and the rest of the change put in below.
+        if (!(editor = await this.navigate(e.relPath, editor, h.offset, false, false, epoch))) return;
+        break;
+      }
       await this.typeHunk(e.relPath, editor, h, smooth, epoch);
       if (!this.live(epoch)) return;
       smooth = true;
