@@ -174,6 +174,8 @@ export class Recorder implements vscode.Disposable {
   private readonly knownWorktrees = new Map<string, Set<string>>();
   /** Per worktree `pathKey`, how many listings found it still being created by `git worktree add`. */
   private readonly initWaits = new Map<string, number>();
+  /** New worktrees the last auto-record pass found `git worktree add` still checking out, not yet decided. */
+  private creating: string[] = [];
   /** Lane keys of checkouts auto-record added this session and the user has not picked by hand since; per folder, as lanes are. */
   private readonly autoAdded = new Set<string>();
   /**
@@ -641,6 +643,7 @@ export class Recorder implements vscode.Disposable {
     this.listings.clear();
     this.knownWorktrees.clear();
     this.initWaits.clear();
+    this.creating = [];
     this.autoAdded.clear();
     // Their held first changes see the new session and are dropped.
     this.waiting.clear();
@@ -785,9 +788,10 @@ export class Recorder implements vscode.Disposable {
       }
       for (const key of this.provisional.keys()) if (!next.has(key)) this.provisional.delete(key);
       for (const key of this.goneRefreshed.keys()) if (!next.has(key)) this.goneRefreshed.delete(key);
-      // Worktrees nested in a recorded root are skipped there and named; a new one waiting for its first change is named once, as it starts waiting.
-      const waitingCheckouts = [...this.scopes.values(), ...next.values()].filter((s) => s.waiting).map((s) => s.checkout.fsPath);
-      const skipped = (s: Scope | undefined) => (s ? s.nestedDirs.filter((d) => !waitingCheckouts.some((w) => `${relativeInside(s.root.fsPath, w)}/` === d)) : []);
+      // Worktrees nested in a recorded root are skipped there and named. A new one auto-record will decide (still
+      // being checked out) or that waits for its first change is named once, as it starts waiting.
+      const unnamed = [...[...this.scopes.values(), ...next.values()].filter((s) => s.waiting).map((s) => s.checkout.fsPath), ...this.creating];
+      const skipped = (s: Scope | undefined) => (s ? s.nestedDirs.filter((d) => !unnamed.some((w) => `${relativeInside(s.root.fsPath, w)}/` === d)) : []);
       for (const [key, scope] of next) {
         const old = this.scopes.get(key);
         this.carryProvisional(key, scope);
@@ -1048,7 +1052,7 @@ export class Recorder implements vscode.Disposable {
   private async autoRecord(scopes: Scope[]): Promise<boolean> {
     const { autoRecordWorktrees: mode, autoIgnoreWorktrees: patterns } = this.settings();
     const fresh: Array<{ folder: vscode.WorkspaceFolder; worktree: Worktree }> = [];
-    let initWait = false;
+    const creating: string[] = [];
     // A lock left by a `git worktree add` that died never goes; after a while the worktree is taken as it is.
     const stillInitializing = (w: Worktree) => initializing(w) && (this.initWaits.get(pathKey(w.path)) ?? 0) < INIT_RETRIES;
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -1064,7 +1068,7 @@ export class Recorder implements vscode.Disposable {
       for (const w of listed) {
         if (w.prunable || known.has(pathKey(w.path)) || scopes.some((s) => pathKey(s.checkout.fsPath) === pathKey(w.path))) continue;
         if (stillInitializing(w)) {
-          initWait = true;
+          creating.push(w.path);
           this.initWaits.set(pathKey(w.path), (this.initWaits.get(pathKey(w.path)) ?? 0) + 1);
           continue;
         }
@@ -1077,7 +1081,8 @@ export class Recorder implements vscode.Disposable {
       }
     }
     // Git removes the lock once the files are out; the watcher sees that, and this looks again in case it does not.
-    if (initWait) this.scheduleWorktreeRefresh(INIT_RETRY_MS);
+    this.creating = creating;
+    if (creating.length > 0) this.scheduleWorktreeRefresh(INIT_RETRY_MS);
     let waitingChanged = false;
     // A waiting worktree stops waiting once auto-record is off, once it got no waiting scope (it is gone, or
     // the user ticked it), or once it matches a pattern. Only the last says so: it is the one worth a line.

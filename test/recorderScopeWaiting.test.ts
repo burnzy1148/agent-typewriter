@@ -46,6 +46,26 @@ test('a review worktree made and removed three times without a write gets no lan
   assert.ok(!t.logs.some((l) => l.startsWith('Skipping') && l.includes('review-1')), t.logs.join('\n'));
 });
 
+test('a nested worktree still being checked out by git worktree add is named once, when it starts waiting', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  let checkingOut = true;
+  // Lists the new worktree as git does while it is still checking files out.
+  const lister = async (folder: string) => {
+    const r = await listWorktrees(folder);
+    if (r.kind !== 'ok' || !checkingOut) return r;
+    return { kind: 'ok' as const, worktrees: r.worktrees.map((w) => (pathKey(w.path) === pathKey(review) ? { ...w, locked: 'initializing' } : w)) };
+  };
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), { lister }, repo);
+  await t.recorder.start();
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'HEAD');
+  fireCommon(t, repo, 'create', review);
+  await until('listed while checked out', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
+  checkingOut = false;
+  await untilWatched(t, path.join(review, 'src', 'a.ts'));
+  assert.equal(t.logs.filter((l) => l.includes('review-1')).length, 1, t.logs.join('\n'));
+});
+
 test('a review worktree made again at the same path from another commit starts from that commit\'s text', { skip: noGit }, async () => {
   const repo = committedRepo({ 'src/a.ts': 'a\n' });
   git(repo, 'checkout', '-q', '-b', 'pr');
