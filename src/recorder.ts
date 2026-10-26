@@ -183,7 +183,9 @@ export class Recorder implements vscode.Disposable {
    * change, by the lane key they would get, with their folder and checkout
    * path. Never saved: after a restart they are no longer new.
    */
-  private readonly waiting = new Map<string, { folderKey: string; checkout: string; gitFile?: string }>();
+  private readonly waiting = new Map<string, { folderKey: string; checkout: string; since: number; remade?: boolean; gitFile?: string }>();
+  /** Lane keys of waiting worktrees this refresh found removed and made again: their watchers and held deletes are the old checkout's. */
+  private readonly remade = new Set<string>();
   /** Lane keys of waiting worktrees whose first change asks auto-record for a lane. */
   private readonly firstChanges = new Set<string>();
   /** Per waiting worktree's lane key, the decision its first change waits on: true once it records as a lane. */
@@ -199,7 +201,7 @@ export class Recorder implements vscode.Disposable {
   /** Git operation tracking per recorded checkout (scope key) while `ignoreGitOperations` is on. */
   private readonly gitWatches = new Map<string, GitOperationWatch>();
   /** Pending summary lines of git operations whose writes were skipped. */
-  private readonly gitSummaries = new Map<GitOperation, { timer: ReturnType<typeof setTimeout>; lane: string }>();
+  private readonly gitSummaries = new Map<GitOperation, { timer: ReturnType<typeof setTimeout>; lane: string; quiet: boolean }>();
   /** Set once the output channel said git operations are recorded because git could not run. */
   private gitOpsOffNoted = false;
   /** Git problems already logged, per watch, so each is said once. */
@@ -647,6 +649,7 @@ export class Recorder implements vscode.Disposable {
     this.autoAdded.clear();
     // Their held first changes see the new session and are dropped.
     this.waiting.clear();
+    this.remade.clear();
     this.waitingLabels.clear();
     this.firstChanges.clear();
     this.laneAsks.clear();
@@ -780,12 +783,14 @@ export class Recorder implements vscode.Disposable {
       const next = new Map([...lanes.slice(0, MAX_LANES), ...all.filter((s) => s.waiting)].map((s) => [s.key, s]));
       for (const [key, old] of this.scopes) {
         const fresh = next.get(key);
-        if (fresh && fresh.root.toString() === old.root.toString()) fresh.watcher = old.watcher;
+        // A worktree made again at the same path starts over: the old checkout's watcher and held deletes go.
+        if (fresh && fresh.root.toString() === old.root.toString() && !this.remade.has(key)) fresh.watcher = old.watcher;
         else {
           for (const d of old.watcher) d.dispose();
           this.dropHeldDeletes(key);
         }
       }
+      this.remade.clear();
       for (const key of this.provisional.keys()) if (!next.has(key)) this.provisional.delete(key);
       for (const key of this.goneRefreshed.keys()) if (!next.has(key)) this.goneRefreshed.delete(key);
       // Worktrees nested in a recorded root are skipped there and named. A new one auto-record will decide (still
@@ -812,13 +817,13 @@ export class Recorder implements vscode.Disposable {
       const gone = this.laneScopes()
         .map((s) => s.key)
         .filter((key) => next.get(key)?.waiting !== false);
-      // Once git no longer lists a worktree, its paths fall to the folder around it, where its files'
-      // baselines would pass: forget them, so one made at the same path again starts from its own text.
       const roots = new Set([...next.values()].map((s) => s.root.toString()));
       const unrecorded = [...this.scopes.values()].filter((s) => !s.own && !roots.has(s.root.toString()));
-      if (unrecorded.length > 0) this.forgetUnder(unrecorded.map((s) => s.root));
       this.scopes.clear();
       for (const [key, scope] of next) this.scopes.set(key, scope);
+      // Once git no longer lists a worktree, its paths fall to the folder around it, where its files'
+      // baselines would pass: forget them, so one made at the same path again starts from its own text.
+      if (unrecorded.length > 0) this.forgetUnder(unrecorded.map((s) => s.root));
       for (const [key, scope] of next) if (!scope.own && !scope.waiting) this.laneBranches.set(key, scope.branch);
       for (const lane of gone) this.timeline.setLaneRecording(lane, false);
       for (const scope of this.laneScopes()) this.defineLane(scope);
@@ -996,6 +1001,7 @@ export class Recorder implements vscode.Disposable {
       const gitFile = await gitFileId(listed.path);
       if (w.gitFile !== undefined && gitFile !== undefined && gitFile !== w.gitFile) {
         this.forgetUnder([rootUri(folder, root)]);
+        this.remade.add(lane);
         this.knownWorktrees.get(key)?.delete(pathKey(listed.path));
         // Its new baselines come with the next full refresh.
         this.scheduleWorktreeRefresh();
@@ -1051,7 +1057,7 @@ export class Recorder implements vscode.Disposable {
    */
   private async autoRecord(scopes: Scope[]): Promise<boolean> {
     const { autoRecordWorktrees: mode, autoIgnoreWorktrees: patterns } = this.settings();
-    const fresh: Array<{ folder: vscode.WorkspaceFolder; worktree: Worktree }> = [];
+    const fresh: Array<{ folder: vscode.WorkspaceFolder; worktree: Worktree; root: string }> = [];
     const creating: string[] = [];
     // A lock left by a `git worktree add` that died never goes; after a while the worktree is taken as it is.
     const stillInitializing = (w: Worktree) => initializing(w) && (this.initWaits.get(pathKey(w.path)) ?? 0) < INIT_RETRIES;
@@ -1072,12 +1078,14 @@ export class Recorder implements vscode.Disposable {
           this.initWaits.set(pathKey(w.path), (this.initWaits.get(pathKey(w.path)) ?? 0) + 1);
           continue;
         }
-        // Listed by several folders (worktrees of one repository): it waits in the first.
-        if (fresh.some((f) => pathKey(f.worktree.path) === pathKey(w.path))) continue;
+        // Listed by several folders (worktrees of one repository): it waits in the first that would record
+        // this part of it. Folders that are different subdirectories of the repository each wait for theirs.
+        const root = pathKey(rootIn(w, ownCheckout(folder.uri.fsPath, listed), folder.uri.fsPath));
+        if (fresh.some((f) => f.root === root)) continue;
         // Known from now on, so it is decided once: it never takes a lane's place or counts toward the cap.
         const pattern = ignoringPattern(patterns, w.path, w.branch);
         if (pattern !== undefined) this.log.appendLine(`The new worktree ${checkoutName(w)} (${w.path}) is not recorded: it matches autoIgnoreWorktrees pattern ${pattern}.`);
-        else fresh.push({ folder, worktree: w });
+        else fresh.push({ folder, worktree: w, root });
       }
     }
     // Git removes the lock once the files are out; the watcher sees that, and this looks again in case it does not.
@@ -1170,7 +1178,8 @@ export class Recorder implements vscode.Disposable {
         continue;
       }
       const folderKey = folder.uri.toString();
-      this.waiting.set(laneKey(folderKey, false, worktree.path), { folderKey, checkout: worktree.path });
+      const lane = laneKey(folderKey, false, worktree.path);
+      this.waiting.set(lane, { folderKey, checkout: worktree.path, since: Date.now(), ...(this.remade.has(lane) && { remade: true }) });
       waitingChanged = true;
       this.log.appendLine(`Watching the new worktree ${name}; it gets its own lane once it records a change.`);
     }
@@ -1677,10 +1686,17 @@ export class Recorder implements vscode.Disposable {
     });
   }
 
-  /** Forgets baselines and saves of every file under these directories. */
+  /**
+   * Forgets baselines and saves of the files under these directories, except
+   * ones a checkout recorded inside such a directory owns, as a folder opened
+   * at a nested worktree sits inside the main checkout.
+   */
   private forgetUnder(dirs: vscode.Uri[]): void {
-    const keys = this.keysUnder(new Set(dirs.map((d) => foldKey(d.toString().replace(/\/+$/, '')))));
-    for (const key of keys) {
+    const folded = dirs.map((d) => foldKey(d.toString().replace(/\/+$/, '')));
+    for (const key of this.keysUnder(new Set(folded))) {
+      const owner = this.scopeOf(vscode.Uri.parse(key));
+      const ownerRoot = owner && foldKey(owner.root.toString().replace(/\/+$/, ''));
+      if (ownerRoot && folded.some((d) => ownerRoot.startsWith(d + '/'))) continue;
       this.snapshots.delete(key);
       this.gitBaselines.delete(key);
       this.ownSaves.delete(key);
@@ -2039,7 +2055,12 @@ export class Recorder implements vscode.Disposable {
         // Its `.git` may just not be gone yet: wait until deletes there stop.
         if (!isDir && previous !== undefined) {
           this.snapshots.delete(key);
-          const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, await removedAt(uri, scope?.root));
+          const at = await removedAt(uri, scope.root);
+          if (this.beforeWaiting(scope, burst, at)) {
+            this.note(`before its worktree waited, dropped ${relPath}`);
+            return;
+          }
+          const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, at);
           try {
             if (dropped()) return;
             if (git.op) return this.skipGitWrite(git.op, scope, uri, relPath, false);
@@ -2134,7 +2155,8 @@ export class Recorder implements vscode.Disposable {
       this.snapshots.set(key, snap);
       if (!created) {
         this.note(`baseline captured ${relPath}`);
-        this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
+        // A waiting worktree removed before its first change is named once, when it starts waiting.
+        if (!scope?.waiting) this.log.appendLine(`Baseline captured for ${relPath}; its next change will be replayed.`);
         return;
       }
       kind = 'create';
@@ -2152,6 +2174,10 @@ export class Recorder implements vscode.Disposable {
       before = previous.text;
     }
     this.snapshots.set(key, snap);
+    if (this.beforeWaiting(scope, burst, exists.mtime)) {
+      this.note(`before its worktree waited, baseline ${relPath}`);
+      return;
+    }
     const git = await this.gitVerdict(scope, uri, writtenAt, true, exists.mtime);
     try {
       if (dropped()) return;
@@ -2160,6 +2186,18 @@ export class Recorder implements vscode.Disposable {
     } finally {
       git.end();
     }
+  }
+
+  /**
+   * Whether a change in a waiting worktree came before it started waiting, so
+   * is no first change: its first event arrived earlier, or, for a worktree
+   * made again at the same path, its write did (`at`, the file's mtime or the
+   * mtime of the directory it left), as git's checkout of the new copy may be
+   * reported only after the listing that found it.
+   */
+  private beforeWaiting(scope: Scope | undefined, burst: Burst, at: number | undefined): boolean {
+    const w = scope?.waiting ? this.waiting.get(scope.key) : undefined;
+    return !!w && (burst.firstArrival < w.since || (!!w.remade && at !== undefined && at < w.since));
   }
 
   /**
@@ -2251,7 +2289,7 @@ export class Recorder implements vscode.Disposable {
     op.skipped++;
     const pending = this.gitSummaries.get(op);
     if (pending) clearTimeout(pending.timer);
-    this.gitSummaries.set(op, { lane: laneName(scope), timer: setTimeout(() => this.logGitSummary(op), GIT_SUMMARY_DELAY_MS) });
+    this.gitSummaries.set(op, { lane: laneName(scope), quiet: !!scope.waiting, timer: setTimeout(() => this.logGitSummary(op), GIT_SUMMARY_DELAY_MS) });
   }
 
   private logGitSummary(op: GitOperation): void {
@@ -2259,7 +2297,10 @@ export class Recorder implements vscode.Disposable {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.gitSummaries.delete(op);
-    this.log.appendLine(`Skipped ${op.skipped} file${op.skipped === 1 ? '' : 's'} written by git (${op.label}) in ${pending.lane}.`);
+    const line = `Skipped ${op.skipped} file${op.skipped === 1 ? '' : 's'} written by git (${op.label}) in ${pending.lane}.`;
+    // Git in a waiting worktree gives it no lane, and it is named once, when it starts waiting.
+    if (pending.quiet) this.note(line);
+    else this.log.appendLine(line);
     op.skipped = 0;
   }
 

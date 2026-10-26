@@ -244,6 +244,32 @@ test('auto-record rotate: a new worktree\'s first change stops the idlest lane, 
   assert.deepEqual(t.events(), [`modify ${path.basename(next)}/src/a.ts`]);
 });
 
+test('auto-record rotate: stopping a lane whose root holds the folder\'s nested checkout keeps the folder\'s baselines', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const feat = path.join(repo, '.worktrees', 'feat');
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat', feat);
+  const others = ['w1', 'w2', 'w3'].map((n) => `${repo}-${n}`);
+  for (const [i, d] of others.entries()) git(repo, 'worktree', 'add', '-q', '-b', `w${i + 1}`, d);
+  // VS Code opened on the nested worktree; the main checkout around it records as a lane, idle longest.
+  const t = recorderOn(settings({ autoRecordWorktrees: 'rotate' }), {}, feat);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [feat, repo, ...others]);
+  const mainLane = t.timeline.laneList().find((l) => l.root === repo)!;
+  t.timeline.defineLane({ ...mainLane, since: Date.now() - 30 * 60_000 });
+  const own = path.join(feat, 'src', 'a.ts');
+  const y = `${repo}-y`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'y', y);
+  t.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(y)));
+  await untilWatched(t, path.join(y, 'src', 'a.ts'));
+  t.change(path.join(y, 'src', 'a.ts'), 'y\n');
+  await t.settle();
+  assert.ok(!t.recorder.recordedLanes().some((l) => l.lane === mainLane.id), 'rotation stopped the main checkout');
+  assert.ok(t.recorder.hasBaseline(t.uri(own)));
+  t.change(own, 'feat edit\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [`modify ${path.basename(y)}/src/a.ts`, 'modify src/a.ts']);
+});
+
 test('auto-record rotate: a new worktree removed before anything is written there stops no lane', { skip: noGit }, async () => {
   const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
   for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);

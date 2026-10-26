@@ -6,9 +6,12 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CheckoutChoiceFile, listWorktrees, pathKey } from '../src/worktrees';
+import { Recorder } from '../src/recorder';
+import { Timeline } from '../src/timeline';
+import { CheckoutChoiceFile, laneKey, listWorktrees, pathKey } from '../src/worktrees';
+import { mock } from './vscode-mock';
 import { git, noGit, tempDir, write } from './gitFixture';
-import { sleep, settings, recorderOn, until, untilWatched, committedRepo, addWorktree } from './recorderScopeFixture';
+import { sleep, HOLD_MS, settings, recorderOn, until, untilWatched, committedRepo, addWorktree, track } from './recorderScopeFixture';
 
 /** Reports a worktree added or removed the way git's common directory watcher would. */
 function fireCommon(t: ReturnType<typeof recorderOn>, repo: string, kind: 'create' | 'delete', dir: string): void {
@@ -140,6 +143,96 @@ for (const c of [
   });
 }
 
+// Without the git operation watch, only the recorder's own timing tells git's checkout of the new copy from an
+// agent's write: a burst that began before the worktree waited again, or a write from before then reported after.
+for (const c of [
+  { what: 'a create still debouncing at the listing', debounceMs: 600, late: false },
+  { what: 'a create reported after the listing', debounceMs: 200, late: true },
+] as const) {
+  test(`a waiting worktree made again within one listing, without ignoreGitOperations: ${c.what} is no first change`, { skip: noGit }, async () => {
+    const repo = repoWithPr({ 'src/a.ts': 'a\n', 'src/b.ts': 'b main\n' });
+    const t = recorderOn(settings({ autoRecordWorktrees: 'fill', ignoreGitOperations: false, gitBaselines: false, debounceMs: c.debounceMs }), {}, repo);
+    await t.recorder.start();
+    const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+    const [a, b] = ['a', 'b'].map((n) => path.join(review, 'src', `${n}.ts`));
+    git(repo, 'worktree', 'add', '-q', '--detach', review, 'main');
+    fireCommon(t, repo, 'create', review);
+    for (const f of [a, b]) await untilWatched(t, f);
+    await sleep(400);
+    const watching = () => t.logs.filter((l) => l.startsWith('Watching the new worktree')).length;
+    git(repo, 'worktree', 'remove', '--force', review);
+    fireCommon(t, repo, 'delete', review);
+    t.fire('delete', a);
+    t.fire('delete', b);
+    git(repo, 'worktree', 'add', '-q', '--detach', review, 'pr');
+    fireCommon(t, repo, 'create', review);
+    t.fire('create', a);
+    if (c.late) {
+      await until('waits afresh', () => watching() === 2);
+      await sleep(100);
+    }
+    t.fire('create', b);
+    await t.settle(c.debounceMs + 1000);
+    assert.equal(watching(), 2, t.logs.join('\n'));
+    assert.deepEqual(t.events(), [], "git's checkout of it is no first change");
+    assert.equal(t.checkout()?.lanes, 1);
+    t.change(b, 'reviewed\n');
+    await t.settle();
+    assert.deepEqual(t.events(), ['modify review-1/src/b.ts'], 'a write after it waits again still is');
+    assert.equal(t.timeline.all()[0].before, 'b pr\n');
+  });
+}
+
+test('a waiting worktree made again within one listing from a commit without one of its files: the old checkout\'s held delete is no first change', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n', 'src/old.ts': 'old\n' });
+  git(repo, 'checkout', '-q', '-b', 'pr');
+  git(repo, 'rm', '-q', 'src/old.ts');
+  git(repo, 'commit', '-q', '-m', 'pr');
+  git(repo, 'checkout', '-q', 'main');
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill', ignoreGitOperations: false }), {}, repo);
+  await t.recorder.start();
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  const [a, old] = ['a', 'old'].map((n) => path.join(review, 'src', `${n}.ts`));
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'main');
+  fireCommon(t, repo, 'create', review);
+  await untilWatched(t, old);
+  await sleep(400);
+  git(repo, 'worktree', 'remove', '--force', review);
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'pr');
+  fireCommon(t, repo, 'delete', review);
+  fireCommon(t, repo, 'create', review);
+  // Reported once the new copy is there, so it is held until deletes there stop.
+  t.fire('delete', old);
+  await t.settle(HOLD_MS);
+  assert.deepEqual(t.events(), []);
+  assert.equal(t.checkout()?.lanes, 1);
+  t.change(a, 'reviewed\n');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify review-1/src/a.ts']);
+});
+
+test('a new worktree of a repository whose subdirectories are separate folders waits in each folder', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'pa/a.ts': 'a\n', 'pb/b.ts': 'b\n' });
+  mock.open(path.join(repo, 'pa'), path.join(repo, 'pb'));
+  const logs: string[] = [];
+  const timeline = new Timeline(1000);
+  const recorder = new Recorder(timeline, () => settings({ autoRecordWorktrees: 'fill' }), { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel);
+  track(recorder);
+  await recorder.start();
+  const fresh = `${repo}-fresh`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'fresh', fresh);
+  mock.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(fresh)));
+  const b = path.join(fresh, 'pb', 'b.ts');
+  await until('watched in both folders', () => ['pa/a.ts', 'pb/b.ts'].every((f) => recorder.hasBaseline(vscode.Uri.file(path.join(fresh, f)))));
+  write(fresh, 'pb/b.ts', 'fresh b\n');
+  mock.fire('change', b);
+  await until('recorded', () => recorder.recordedLanes().length === 3, 5000);
+  await sleep(300);
+  recorder.drainHeld();
+  const pb = mock.folders[1].uri.toString();
+  assert.deepEqual(timeline.all().map((e) => [e.kind, e.before, e.after, e.lane]), [['modify', 'b\n', 'fresh b\n', laneKey(pb, false, fresh)]]);
+});
+
 test('a worktree refused at the cap while its baselines are still read keeps none of them', { skip: noGit }, async () => {
   const files: Record<string, string> = { 'src/a.ts': 'a\n' };
   for (let i = 0; i < 400; i++) files[`gen/f${i}.ts`] = `export const v${i} = 'main';\n`;
@@ -198,7 +291,7 @@ test('a waiting worktree saves no display label unless it gets a lane', { skip: 
   assert.ok(!saved.includes('review-1'), `no trace of the waiting worktree: ${saved}`);
 });
 
-test('a git checkout in a waiting worktree is no first change; a write after it is, from the checked-out text', { skip: noGit }, async () => {
+test('a git checkout in a waiting worktree is no first change and is not logged; a write after it is, from the checked-out text', { skip: noGit }, async () => {
   const repo = committedRepo({ 'src/a.ts': 'a\n' });
   git(repo, 'checkout', '-q', '-b', 'pr');
   write(repo, 'src/a.ts', 'pr\n');
@@ -216,9 +309,12 @@ test('a git checkout in a waiting worktree is no first change; a write after it 
   git(dir, 'checkout', '-q', 'pr');
   t.fire('change', file);
   t.fire('create', path.join(dir, 'src', 'new.ts'));
-  await t.settle();
+  // Past the delay before git's skipped writes are summed up.
+  await t.settle(1000);
   assert.deepEqual(t.events(), []);
   assert.equal(t.checkout()?.lanes, 1);
+  // Removed now, it would have been named only when it started waiting.
+  assert.deepEqual(t.logs.filter((l) => /^(Skipped|Baseline captured)/.test(l)), [], t.logs.join('\n'));
   t.change(file, 'edited\n');
   await t.settle();
   assert.deepEqual(t.events(), [`modify ${path.basename(dir)}/src/a.ts`]);
