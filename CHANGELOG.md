@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pre-releases: tested builds of `develop` are published from time to time to the Marketplace's pre-release channel ("Switch to Pre-Release Version"). They use odd minor versions (0.5.x for now), and stable releases use even ones, so this release skips ahead from 0.3.0 to 0.6.0.
 - Changes are typed in the order a person writes them: a new block gets its closing line right after its opening line, then its body is filled in between, and a function's signature comes before its body, even with its parameters on several lines (`naturalOrder`, default on). Moving back into the block and past its closing line never waits for the read pause or scrolls. Edits in different places are still typed top to bottom.
 - The default typing speed (`charsPerMinute`) is 1000 characters per minute (was 350). A speed you set yourself is kept.
 - Docs moved to [agent-typewriter.com](https://agent-typewriter.com), with search and a settings reference generated from the extension, and the Marketplace listing links there. The README keeps install and quick start.

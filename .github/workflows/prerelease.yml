@@ -1,0 +1,136 @@
+name: Pre-release
+
+# Publishes a tested develop build to the Marketplace's pre-release channel.
+#
+# ci.yml tags each develop push that passes everything pre-v<version>; this
+# workflow publishes one of those tags. Run it from the Actions tab, or:
+#   gh workflow run prerelease.yml                       # the newest pre-v tag
+#   gh workflow run prerelease.yml -f tag=pre-v0.5.3     # a chosen one
+#
+# It builds the tagged commit with the tag's version and the pre-release flag
+# (package.json keeps the stable version), publishes it, creates a GitHub
+# release marked pre-release with the .vsix, then removes all but the newest 2
+# pre-releases from the Marketplace and from GitHub releases. Stable versions
+# and pre-v tags are never removed.
+#
+# It refuses a tag that isn't pre-v*, one whose commit isn't on develop, and a
+# version not above everything on the Marketplace, since testers would never
+# be offered it. Rerunning it for a version it already published finishes the
+# steps that didn't complete. Needs the VSCE_PAT repository secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish (pre-v<version>). Empty publishes the newest.
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prerelease-publish
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  publish:
+    name: Publish pre-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Everything after this runs from the tagged commit.
+      - name: Choose the tag
+        id: tag
+        run: |
+          tag=${INPUT_TAG:-$(node scripts/version-cli.mjs newest-prerelease-tag)}
+          if [ -z "$tag" ]; then
+            echo "No pre-v tag to publish" >&2
+            exit 1
+          fi
+          case "$tag" in
+            pre-v*) ;;
+            *) echo "$tag is not a pre-release tag (pre-v<version>)" >&2; exit 1 ;;
+          esac
+          if ! git rev-parse -q --verify "refs/tags/${tag}^{commit}" >/dev/null; then
+            echo "No tag $tag" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "refs/tags/$tag" origin/develop; then
+            echo "$tag is not on develop" >&2
+            exit 1
+          fi
+          git checkout -q --detach "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#pre-v}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+
+      - run: npm ci
+
+      - name: Check against the Marketplace
+        run: |
+          versions=$(node scripts/marketplace.mjs versions)
+          mode=$(echo "$versions" | node scripts/version-cli.mjs publish-check "$VERSION")
+          echo "Marketplace: $versions"
+          echo "$TAG: $mode"
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+
+      # vsce runs vscode:prepublish, the minified build, first.
+      - name: Build .vsix
+        run: npx vsce package "$VERSION" --pre-release --no-dependencies --no-update-package-json --no-git-tag-version
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+
+      - name: Publish to the Marketplace
+        run: npx vsce publish --pre-release --packagePath "agent-typewriter-${VERSION}.vsix" --skip-duplicate
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Create GitHub release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists"
+            exit 0
+          fi
+          start=$(gh release list --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName' \
+            | node scripts/version-cli.mjs notes-start "$VERSION")
+          gh release create "$TAG" "agent-typewriter-${VERSION}.vsix" --verify-tag --prerelease --title "$TAG" \
+            --generate-notes ${start:+--notes-start-tag "$start"}
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+
+      - name: Keep the newest 2 pre-releases on the Marketplace
+        run: node scripts/marketplace.mjs prune --keep 2 --include "$VERSION"
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      # Deletes the releases only; the pre-v tags stay, since they number the builds.
+      - name: Keep the newest 2 pre-releases on GitHub
+        run: |
+          remove=$(gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '[.[] | select(.isPrerelease and (.tagName | startswith("pre-v"))) | {version: (.tagName | ltrimstr("pre-v")), preRelease: true}]' \
+            | node scripts/version-cli.mjs prune 2)
+          for version in $remove; do
+            gh release delete "pre-v$version" --yes
+            echo "Deleted GitHub release pre-v$version"
+          done
