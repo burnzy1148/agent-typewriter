@@ -40,7 +40,7 @@ import type { ChangeKind, LaneInfo, NewChangeEvent, Timeline } from './timeline'
 import { colorSlot, laneLabel, MAX_LANES, ROTATE_IDLE_MS, rotationVictim } from './lanes';
 import type { Settings } from './config';
 import { BRANCH_PREFIX, ignoringPattern } from './worktreeIgnore';
-import { WatchGaps, type WatchDir } from './watchGaps';
+import { dirId, WatchGaps, type WatchDir } from './watchGaps';
 
 /** Where display prefixes of workspace folders are remembered among labels; folder keys are URIs, so never this. */
 const FOLDER_PREFIXES = 'folders';
@@ -109,9 +109,6 @@ const GIT_SUMMARY_DELAY_MS = 1000;
 
 /** At most one write of a file per this long is passed on from our own folder watches, as VS Code's watcher merges its own. */
 const GAP_MERGE_MS = 50;
-
-/** A directory made this recently, that VS Code's watcher calls changed, was deleted and made again. */
-const REMADE_DIR_MS = 10_000;
 
 /** Whether a git operation made a write, and the place in write order held while that took a wait. */
 interface GitVerdict {
@@ -235,6 +232,8 @@ export class Recorder implements vscode.Disposable {
   private gapEvents: Promise<void> = Promise.resolve();
   /** Writes those watches reported, by file, waiting GAP_MERGE_MS for more of the same. */
   private readonly gapWrites = new Map<string, NodeJS.Timeout>();
+  /** Events of those watches queued and not yet handled; a sweep of deletes waits for them. */
+  private gapsQueued = 0;
 
   constructor(
     private readonly timeline: Timeline,
@@ -1316,10 +1315,7 @@ export class Recorder implements vscode.Disposable {
   private onWatcherEvent(key: string | undefined, uri: vscode.Uri, event: 'create' | 'change' | 'delete', from: 'watcher' | 'gap' = 'watcher'): void {
     this.noteWorktreeEvent(uri, event);
     if (this.gaps && from === 'watcher' && event === 'change' && uri.scheme === 'file' && this.running) {
-      const k = uri.toString();
-      if (!this.snapshots.has(k) && !this.gitBaselines.has(k)) {
-        this.checkRemadeDirectory(uri).catch((err) => this.log.appendLine(`Failed to read changed directory ${relPathOf(uri)}: ${String(err)}`));
-      }
+      this.checkRemadeDirectory(uri).catch((err) => this.log.appendLine(`Failed to read changed directory ${relPathOf(uri)}: ${String(err)}`));
     }
     const current = key === undefined ? undefined : this.scopes.get(key);
     if (event === 'delete' && current && !current.own) {
@@ -1354,22 +1350,32 @@ export class Recorder implements vscode.Disposable {
 
   private queueGapEvent(session: number, dir: vscode.Uri, uri: vscode.Uri, kind: 'rename' | 'change'): void {
     const current = () => this.running && session === this.session;
+    this.gapsQueued++;
     this.gapEvents = this.gapEvents
       .then(async () => {
         let event: 'create' | 'change' | 'delete' = 'change';
         if (kind === 'rename') {
           const entry = await stat(uri);
           // The watched directory itself went; where its parent is watched, that reports it.
-          if (!entry && !(await stat(dir))) return this.gaps?.deleted(dir.path);
-          if (!current()) return;
-          // A directory here now is a new one, even where the one it replaced is still known (rm -rf and mkdir
-          // read as two creates once both are done): its old watches see nothing of it.
-          if (entry && entry.type & vscode.FileType.Directory) this.forgetDirectory(uri);
+          if (!entry && !(await stat(dir))) return this.gaps?.gone(dir.path);
+          if (entry && entry.type & vscode.FileType.Directory) {
+            // A directory's own attributes changing (chmod, touch) reads as a rename too: the one known here is still here.
+            const known = this.gaps?.idOf(uri.path);
+            if (known !== undefined && known === (await dirId(uri.fsPath))) return;
+            if (!current()) return;
+            // A directory here now is a new one, even where the one it replaced is still known (rm -rf and mkdir
+            // read as two creates once both are done): its old watches see nothing of it.
+            this.forgetDirectory(uri);
+          }
           event = entry ? 'create' : 'delete';
         }
         if (current()) this.onWatcherEvent(this.scopeOf(uri)?.key, uri, event, 'gap');
       })
-      .catch((err) => this.log.appendLine(`Failed to handle a change in ${relPathOf(uri)}: ${String(err)}`));
+      .catch((err) => this.log.appendLine(`Failed to handle a change in ${relPathOf(uri)}: ${String(err)}`))
+      .finally(() => {
+        // Deletes that waited for these events are swept together.
+        if (--this.gapsQueued === 0 && this.deletedDirs.size > 0) this.deleteSweep ??= setImmediate(() => this.sweepDeletes());
+      });
   }
 
   /**
@@ -1384,20 +1390,21 @@ export class Recorder implements vscode.Disposable {
 
   /**
    * VS Code's watcher merges a delete and a create of one path in a batch
-   * into a change, as `rm -rf dir && mkdir -p dir/...` makes of dir. A
-   * directory made again is handled as one deleted and created, since that
-   * watcher does not see into what was made in it at once. One whose
-   * metadata merely changed is left alone: nothing in it or its parent was
-   * made while recording, and it was not made just now.
+   * into a change, as `rm -rf dir && mkdir -p dir/...` makes of dir; a
+   * directory's attributes changing (chmod, touch) is a change too. A
+   * directory known here, reported or watched while recording, that is not
+   * the one there now was made again: it is handled as deleted and created,
+   * since that watcher does not see into what was made in it at once. Of one
+   * nothing is known, a change of attributes is far likelier, so it is left alone.
    */
   private async checkRemadeDirectory(uri: vscode.Uri): Promise<void> {
+    const known = this.gaps?.idOf(uri.path);
+    if (known === undefined) return;
     const session = this.session;
     const st = await stat(uri);
     if (!st || !(st.type & vscode.FileType.Directory) || st.type & vscode.FileType.SymbolicLink) return;
-    if (!this.running || session !== this.session || !this.gaps) return;
-    const parent = uri.path.slice(0, uri.path.lastIndexOf('/'));
-    // FileStat.ctime is when it was made.
-    if (!this.gaps.knows(uri.path) && !this.gaps.knows(parent) && st.ctime < Date.now() - REMADE_DIR_MS) return;
+    const id = await dirId(uri.fsPath);
+    if (!this.running || session !== this.session || id === undefined || id === known) return;
     this.note(`made again ${this.traceName(uri)}`);
     this.forgetDirectory(uri);
     await this.expandCreatedDirectory(uri, true);
@@ -1631,7 +1638,7 @@ export class Recorder implements vscode.Disposable {
     if (!st || !(st.type & vscode.FileType.Directory) || st.type & vscode.FileType.SymbolicLink || stale()) return;
     if (dir.scheme === 'file' && this.gaps) {
       // Before any check that leaves it unread: a worktree in it may be recorded later.
-      if (reported) this.gaps.noteReported(dir.path);
+      if (reported) this.gaps.noteReported(dir.path, await dirId(dir.fsPath));
       // A lane already recording a checkout at or in it walked before this event, or lost its watches to it
       // (a late create of its root, a root made again): it walks again for what it should watch.
       for (const s of this.scopes.values()) {
@@ -1660,13 +1667,22 @@ export class Recorder implements vscode.Disposable {
     const scope = this.scopeOf(dir);
     if (!scope || this.skipsTree(scope, this.relOf(scope, dir))) return;
     this.deletedDirs.add(foldKey(key.replace(/\/+$/, '')));
-    this.deleteSweep ??= setImmediate(() => {
-      this.deleteSweep = undefined;
-      const dirs = new Set(this.deletedDirs);
-      this.deletedDirs.clear();
-      if (!this.running) return;
-      for (const child of this.keysUnder(dirs)) this.schedule(vscode.Uri.parse(child), 'delete', 'dir');
-    });
+    this.deleteSweep ??= setImmediate(() => this.sweepDeletes());
+  }
+
+  /**
+   * Schedules as deleted each file recorded under the directories deleted
+   * since the last sweep. Events of our own folder watches come a tick apart,
+   * so while some are still queued it waits for them: one pass over the
+   * baselines then serves the whole burst, as for a batch of the watcher's.
+   */
+  private sweepDeletes(): void {
+    this.deleteSweep = undefined;
+    if (this.gapsQueued > 0) return;
+    const dirs = new Set(this.deletedDirs);
+    this.deletedDirs.clear();
+    if (!this.running) return;
+    for (const child of this.keysUnder(dirs)) this.schedule(vscode.Uri.parse(child), 'delete', 'dir');
   }
 
   /** Baselined keys inside any of these directories (folded keys without a trailing slash). */

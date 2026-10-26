@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { GAP_WATCH_LIMIT, type WatchDir } from '../src/watchGaps';
+import { dirIdNow, GAP_WATCH_LIMIT, nodeWatchDir, shareOfSystemWatches, type WatchDir } from '../src/watchGaps';
 import { committedRepo, laneOf, recorderOn, rm, settings, until } from './recorderScopeFixture';
 import { git, noGit, tempDir, write } from './gitFixture';
 import { mock, workspace } from './vscode-mock';
@@ -22,7 +22,7 @@ function fakeWatches() {
   const watchDir: WatchDir = (fsPath, onEntry) => {
     open.set(fsPath, onEntry);
     opens.set(fsPath, (opens.get(fsPath) ?? 0) + 1);
-    return { close: () => open.get(fsPath) === onEntry && open.delete(fsPath) };
+    return { close: () => open.get(fsPath) === onEntry && open.delete(fsPath), id: dirIdNow(fsPath) };
   };
   const kill = (dir: string) => open.delete(dir);
   const watched = (root: string) => [...open.keys()].map((d) => path.relative(root, d).split(path.sep).join('/')).sort();
@@ -213,7 +213,9 @@ test('a lane on a worktree in a new folder watches it even when added before tha
   assert.deepEqual(w.watched(repo), ['.claude/worktrees']);
 });
 
-test('a lane is not held back by another lane that reached its limit of watches', { skip: noGit }, async () => {
+const fewWatches = shareOfSystemWatches() < GAP_WATCH_LIMIT + 100 ? 'the system allows too few inotify watches' : undefined;
+
+test('a lane is not held back by another lane that reached its limit of watches', { skip: noGit ?? fewWatches }, async () => {
   const repo = committedRepo({ 'src/a.ts': 'a\n' });
   const w = fakeWatches();
   const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
@@ -262,32 +264,115 @@ test('a folder deleted and made again in one batch, which the watcher reports as
   assert.equal(t.events()[3], 'modify gen/api/v1/two.ts');
 });
 
-test('a folder that was there before recording, deleted and made again in one batch, is checked and walked again', async () => {
+test('a change the watcher reports for a folder nothing is known of is left alone, made again or not', async () => {
   const dir = tempDir('at-gap-');
   write(dir, 'src/gen/one.ts', 'one\n');
   const w = fakeWatches();
   const t = recorderOn(settings(), { watchDir: w.watchDir }, dir);
   await t.recorder.start();
+  // Its attributes changed, as far likelier for a folder that was there before recording.
+  t.fire('change', path.join(dir, 'src'));
+  // Or made again in one quick step, which cannot be told apart from that.
   await rm(path.join(dir, 'src/gen'));
   write(dir, 'src/gen/v1/two.ts', 'two\n');
   t.fire('change', path.join(dir, 'src/gen'));
-  await until('src/gen/v1 watched', () => w.watched(dir).includes('src/gen/v1'));
   await t.settle();
-  assert.deepEqual(t.events().sort(), ['create src/gen/v1/two.ts', 'delete src/gen/one.ts']);
+  assert.doesNotMatch(t.recorder.describeActivity(), /made again/);
+  assert.deepEqual(w.watched(dir), []);
+  assert.deepEqual(t.events(), []);
 });
 
-test('a change the watcher reports for a folder made long ago, with nothing of it known, is left alone', async () => {
-  const { t, at } = await started();
+test('a change the watcher reports for a watched folder whose attributes changed leaves it watched (chmod)', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'scripts/bin/run.ts', 'run\n');
+  t.fire('create', at('scripts'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['scripts/bin']);
+  fs.chmodSync(at('scripts/bin'), 0o700);
+  t.fire('change', at('scripts/bin'));
+  await t.settle();
+  assert.doesNotMatch(t.recorder.describeActivity(), /made again/);
+  assert.deepEqual(w.watched(dir), ['scripts/bin']);
+  write(dir, 'scripts/bin/new.ts', 'new\n');
+  w.entry(at('scripts/bin/new.ts'), 'rename');
+  await t.settle();
+  assert.deepEqual(t.events(), ['create scripts/bin/run.ts', 'create scripts/bin/new.ts']);
+});
+
+test('a folder whose attributes change under a folder watch records nothing and keeps its watches, even just after baselines are taken', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // Baselines taken again just now, of a file written a while ago: a create read within moments of one is taken for a new file.
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(at('a/b/c/one.ts'), old, old);
+  await t.recorder.refreshBaselines();
+  const before = t.recorder.describeActivity().split('\n').length;
+  // chmod a/b/c: fs.watch on a/b says 'rename c', as for c deleted or made.
+  fs.chmodSync(at('a/b/c'), 0o700);
+  w.entry(at('a/b/c'), 'rename');
+  await t.settle();
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+  assert.equal(w.opens.get(at('a/b/c')), 1, 'its watch was kept');
+  assert.doesNotMatch(t.recorder.describeActivity().split('\n').slice(before - 1).join('\n'), /in directory/);
+});
+
+test('with real folder watches, a chmod of a watched folder records nothing and writes in it are still recorded', { skip: process.platform !== 'linux' && 'fs.watch reports folders this way on Linux' }, async () => {
+  const dir = tempDir('at-gap-');
+  write(dir, 'src/a.ts', 'a\n');
+  const t = recorderOn(settings(), { watchDir: nodeWatchDir }, dir);
+  await t.recorder.start();
+  const at = (rel: string) => path.join(dir, rel);
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await until('one.ts created', () => t.events().includes('create a/b/c/one.ts'));
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(at('a/b/c/one.ts'), old, old);
+  await t.settle(300);
+  await t.recorder.refreshBaselines();
+  fs.chmodSync(at('a/b/c'), 0o700);
+  fs.chmodSync(at('a/b'), 0o700);
+  t.fire('change', at('a/b'));
+  await t.settle(300);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+  fs.writeFileSync(at('a/b/c/one.ts'), 'one 2\n');
+  fs.writeFileSync(at('a/b/two.ts'), 'two\n');
+  await until('both written', () => t.events().length === 3);
+  await t.settle();
+  assert.deepEqual(t.events().slice(1).sort(), ['create a/b/two.ts', 'modify a/b/c/one.ts']);
+});
+
+test('deletes reported by folder watches a tick apart share one pass over the baselines', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // Real stats take a tick or more, so the events of folder watches are handled a tick apart.
   const stat = workspace.fs.stat;
-  workspace.fs.stat = async (uri) => ({ ...(await stat(uri)), ctime: 0 });
+  workspace.fs.stat = async (uri) => {
+    await new Promise((r) => setImmediate(r));
+    return stat(uri);
+  };
+  // keysUnder is the pass over every baseline; count how often it runs.
+  const recorder = t.recorder as unknown as { keysUnder(dirs: Set<string>): string[] };
+  const keysUnder = recorder.keysUnder.bind(recorder);
+  let passes = 0;
+  recorder.keysUnder = (dirs) => {
+    passes++;
+    return keysUnder(dirs);
+  };
   try {
-    t.fire('change', at('src'));
-    await t.settle();
+    fs.rmSync(at('a/b/one.ts'));
+    // Temp files of atomic writes, gone by the time they are read.
+    for (let i = 0; i < 50; i++) w.entry(at(`a/b/tmp${i}.ts`), 'rename');
+    w.entry(at('a/b/one.ts'), 'rename');
+    await t.settle(300);
   } finally {
     workspace.fs.stat = stat;
   }
-  assert.doesNotMatch(t.recorder.describeActivity(), /made again/);
-  assert.deepEqual(t.events(), []);
+  assert.ok(passes <= 2, `${passes} passes`);
+  assert.deepEqual(t.events(), ['create a/b/one.ts', 'delete a/b/one.ts']);
 });
 
 test('a lane stopped while one of its walks waits takes no watches from that walk', { skip: noGit }, async () => {
@@ -346,10 +431,11 @@ test('a lane keeps watching its checkout when a folder watch reports its root ma
   await until('.claude/worktrees watched', () => w.watched(repo).includes('.claude/worktrees'));
   await t.settle();
   await t.recorder.addCheckout(t.folder, x);
-  // The watch of .claude/worktrees reports x late, after the lane walked it.
+  // The watch of .claude/worktrees reports x late, after the lane walked it: the same x, so its watches stay.
   w.entry(x, 'rename');
-  await until('x/src watched again', () => w.opens.get(path.join(x, 'src')) === 2);
   await t.settle();
+  assert.equal(w.opens.get(path.join(x, 'src')), 1);
+  assert.ok(w.watched(repo).includes('.claude/worktrees/x/src'));
   write(x, 'src/a.ts', 'a 2\n');
   w.entry(path.join(x, 'src/a.ts'), 'change');
   await t.settle();
