@@ -4,8 +4,33 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { runTests } from '@vscode/test-electron';
 
+const extensionDevelopmentPath = path.resolve(__dirname, '..');
+/** VS Code flags every launch shares, after its workspace and user-data dir. */
+const flags = ['--disable-extensions', '--disable-gpu', '--no-sandbox', '--disable-workspace-trust'];
+
+// IT_GROUP picks launches to run, as a comma-separated list: a part of
+// suite.ts (recording, playback, reload or edits, see PARTS there), each in a
+// fresh main workspace; suite, for every part in one launch; or workspaces,
+// for the launches with workspaces of their own. CI runs them as parallel
+// jobs. Unset, suite and workspaces run.
+const PARTS = ['recording', 'playback', 'reload', 'edits'];
+
 async function main() {
-  const extensionDevelopmentPath = path.resolve(__dirname, '..');
+  // Launches get IT_PART only from suiteLaunches; one left in the shell would reach them all.
+  delete process.env.IT_PART;
+  for (const group of process.env.IT_GROUP?.split(',') ?? ['suite', 'workspaces']) {
+    if (group === 'workspaces') await workspaceLaunches();
+    else if (group === 'suite') await suiteLaunches();
+    else if (PARTS.includes(group)) await suiteLaunches(group);
+    else throw new Error(`unknown IT_GROUP ${group}`);
+  }
+}
+
+/**
+ * The main workspace: suite.ts, or one part of it, then, unless the part
+ * leaves nothing for them, reloads of it that check what it left.
+ */
+async function suiteLaunches(part?: string) {
   const extensionTestsPath = path.resolve(__dirname, 'suite.js');
 
   const workspace = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-ws-'));
@@ -66,17 +91,11 @@ async function main() {
   // checkouts such as worktrees, so keep it short.
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
 
-  const launchArgs = [
-    workspace,
-    `--user-data-dir=${userData}`,
-    '--disable-extensions',
-    '--disable-gpu',
-    '--no-sandbox',
-    '--disable-workspace-trust',
-  ];
+  const launchArgs = [workspace, `--user-data-dir=${userData}`, ...flags];
   // The first launch leaves the expected timeline here; the second checks it was restored.
   const extensionTestsEnv = { IT_EXPECT: path.join(userData, 'expected-timeline.json') };
-  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
+  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv: part ? { ...extensionTestsEnv, IT_PART: part } : extensionTestsEnv });
+  if (part && part !== 'reload') return;
   await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
 
   // The repository file's autoStart applies at activation: true there starts
@@ -115,7 +134,10 @@ exports.run = async () => {
   const actUser = JSON.parse(fs.readFileSync(actUserFile, 'utf8'));
   delete actUser['agentTypewriter.autoStart'];
   fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
+}
 
+/** Launches that each set up a workspace of their own. */
+async function workspaceLaunches() {
   // A saved multi-root workspace [a, b] where b has a sibling worktree, for
   // adding and removing folders while recording (folders.ts). Adding a folder
   // to a single-folder window restarts the extension host, so it needs its own
@@ -154,7 +176,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'folders.js'),
-    launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...launchArgs.slice(2)],
+    launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...flags],
     extensionTestsEnv: { IT_MULTI: multi },
   });
 
@@ -186,7 +208,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'nestedFolders.js'),
-    launchArgs: [nestFile, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [nestFile, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
     extensionTestsEnv: { IT_NEST: nestRepo },
   });
 
@@ -241,7 +263,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'folders.js'),
-    launchArgs: [path.join(rec4Open, 'rec4.code-workspace'), `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [path.join(rec4Open, 'rec4.code-workspace'), `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
     extensionTestsEnv: { IT_REC4: rec4Open },
   });
 
@@ -294,7 +316,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'gitReplay.js'),
-    launchArgs: [replayRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [replayRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
   });
 
   // Lanes (lanes.ts): a repository with a nested worktree, recorded together.
@@ -328,7 +350,7 @@ exports.run = async () => {
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath: path.resolve(__dirname, 'lanes.js'),
-      launchArgs: [lanesRepo, `--user-data-dir=${lanesUserData}`, ...launchArgs.slice(2)],
+      launchArgs: [lanesRepo, `--user-data-dir=${lanesUserData}`, ...flags],
       extensionTestsEnv: { ...lanesEnv, IT_LANES_PHASE: phase },
     });
   }
@@ -371,7 +393,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'gitOperations.js'),
-    launchArgs: [opsRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [opsRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
   });
 }
 
