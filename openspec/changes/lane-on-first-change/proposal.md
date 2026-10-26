@@ -31,7 +31,7 @@ None.
 
 ## Impact
 
-- `src/recorder.ts`: auto-record puts new worktrees in a waiting set instead of the folder's saved choice; waiting checkouts get watchers and baselines but no lane; a waiting checkout's first change asks for a lane and is held in write order until the cap and rotation decide; the waiting set is pruned when a worktree goes, matches a pattern, or auto-record is turned off. Lane counts, recorded lanes and the followed lane leave waiting checkouts out.
+- `src/recorder.ts`: auto-record puts new worktrees in a waiting set instead of the folder's saved choice; waiting checkouts get watchers and baselines but no lane; a waiting checkout's first change asks for a lane and is held in write order until the cap and rotation decide; the waiting set is pruned when a worktree goes, matches a pattern, or auto-record is turned off. Lane counts, recorded lanes and the followed lane leave waiting checkouts out. A dropped worktree's baselines are forgotten with it, so one made again at the same path starts from its own text.
 - `src/lanes.ts`: a constant for how many new worktrees may wait at once.
 - `package.json`, `schemas/agent-typewriter.schema.json`: `autoRecordWorktrees` descriptions.
 - `site/src/content/docs/docs/lanes.md`, `CHANGELOG.md`, the tour's worktree step text in `scripts/tour-scenarios.mjs`.

@@ -57,6 +57,11 @@ It returns true when a choice set or the waiting set changed, so `refreshScopes(
 - Considered: promoting synchronously in `record()`. Rejected: the cap needs a fresh view of the choice sets, rotation has to stop another lane, and a refresh already in flight could re-apply the old state; running the decision on the scope queue avoids all three.
 - Only a change that would reach the timeline asks: a baseline captured for a file it had none for, an own save, an unchanged write and a skipped git operation write do not.
 
+### A removed worktree's baselines go with it
+
+Watchers often report a worktree removed at once as just its directory, so its files' baselines were left behind. Once git no longer lists a worktree nested in the folder, its paths fall to the folder's own scope, where those baselines pass the filter and survive `refreshFilter`'s purge. A review worktree made again at the same path from another commit would then record its first change from the old commit's text. `refreshScopes()` now forgets the baselines under the root of any other-worktree scope it drops when no remaining scope records that root.
+- Considered: only for waiting scopes. Rejected: a removed lane's worktree has the same problem, and the fix costs nothing extra.
+
 ### Ticking a waiting worktree
 
 The Checkouts view and Choose Checkout read `recordedLanes()`, so a waiting worktree shows unticked. Ticking it adds it to the choice set as any hand pick; `resolveScopes()` then makes it a chosen scope, and `autoRecord()` drops the waiting entry. It is not in `autoAdded`, so a pattern never stops it.

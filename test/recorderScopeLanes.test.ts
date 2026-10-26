@@ -11,7 +11,7 @@ import { Timeline } from '../src/timeline';
 import { laneKey, listWorktrees, pathKey, type WorktreeListResult } from '../src/worktrees';
 import { mock } from './vscode-mock';
 import { git, noGit, tempDir, write } from './gitFixture';
-import { sleep, HOLD_MS, settings, recorderOn, until, committedRepo, repoWithWorktrees, laneOf, addWorktree, track } from './recorderScopeFixture';
+import { sleep, HOLD_MS, settings, recorderOn, until, untilWatched, committedRepo, repoWithWorktrees, laneOf, addWorktree, track } from './recorderScopeFixture';
 
 // --- at-2i9.4: several checkouts record at once, each in its own lane.
 
@@ -150,54 +150,120 @@ test('auto-record off: a new worktree is not recorded', { skip: noGit }, async (
   assert.equal(t.checkout()?.lanes, 1);
 });
 
-test('auto-record fill: a new worktree gets its own lane and its writes are recorded', { skip: noGit }, async () => {
+test('auto-record fill: a new worktree waits without a lane, and its first write gives it one', { skip: noGit }, async () => {
   const repo = committedRepo({ 'src/a.ts': 'a\n' });
   const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
   await t.recorder.start();
   const dir = addWorktree(t, repo, 'fix');
-  await until('lane added', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
-  assert.equal(t.checkout()?.lanes, 2);
-  assert.ok(t.logs.some((l) => l.startsWith('Recording the new worktree fix')), t.logs.join('\n'));
-  t.change(path.join(dir, 'src', 'a.ts'), 'fix\n');
+  const file = path.join(dir, 'src', 'a.ts');
+  await untilWatched(t, file);
+  assert.ok(t.logs.some((l) => l.startsWith('Watching the new worktree fix')), t.logs.join('\n'));
+  assert.equal(t.checkout()?.lanes, 1, 'no lane while it waits');
+  assert.equal(t.recorder.recordedLanes().length, 1);
+  assert.equal(t.timeline.laneList().length, 1);
+  t.change(file, 'fix\n');
   await t.settle();
   assert.deepEqual(t.events(), [`modify ${path.basename(dir)}/src/a.ts`]);
-  assert.equal(t.timeline.all()[0].before, 'a\n');
+  assert.equal(t.timeline.all()[0].before, 'a\n', 'its baseline was taken while it waited');
+  assert.equal(t.checkout()?.lanes, 2);
+  assert.equal(t.timeline.laneInfo(laneOf(t, 0)!)?.label, 'fix');
+  assert.ok(t.logs.some((l) => l.startsWith('Recording the new worktree fix')), t.logs.join('\n'));
+  t.change(file, 'fix again\n');
+  await t.settle();
+  assert.equal(t.timeline.laneEvents(laneOf(t, 0)!).length, 2, 'later writes record in its lane');
 });
 
-test('auto-record fill at the cap logs and skips the new worktree', { skip: noGit }, async () => {
+test('auto-record fill at the cap: a new worktree waits, and its first change is not recorded and ends the wait', { skip: noGit }, async () => {
   const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
   for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
   const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
   await t.recorder.start();
   await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
-  addWorktree(t, repo, 'extra');
-  await until('skip logged', () => t.logs.some((l) => l.includes('is not recorded: at most 5')));
+  const dir = addWorktree(t, repo, 'extra');
+  const file = path.join(dir, 'src', 'a.ts');
+  await untilWatched(t, file);
+  assert.ok(t.logs.some((l) => l.startsWith('Watching the new worktree extra')), 'a sixth checkout waits: waiting ones do not count');
+  t.change(file, 'extra\n');
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  assert.ok(t.logs.some((l) => l.startsWith('The new worktree extra') && l.includes('is not recorded: at most 5')), t.logs.join('\n'));
+  await until('no longer watched', () => !t.recorder.hasBaseline(t.uri(file)));
+  t.change(file, 'extra again\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [], 'decided once');
   assert.equal(t.checkout()?.lanes, 5);
 });
 
-test('auto-record rotate: the idlest lane stops for a new worktree, unless every lane is busy', { skip: noGit }, async () => {
+test('auto-record fill: a lane cleared while a new worktree waits leaves room for its first change', { skip: noGit }, async () => {
+  const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
+  const dir = addWorktree(t, repo, 'extra');
+  const file = path.join(dir, 'src', 'a.ts');
+  await untilWatched(t, file);
+  await t.recorder.removeCheckout(t.folder, side);
+  t.change(file, 'extra\n');
+  await t.settle();
+  assert.deepEqual(t.events(), [`modify ${path.basename(dir)}/src/a.ts`]);
+  const names = t.recorder.recordedLanes().map((l) => l.name);
+  assert.ok(names.includes('extra') && !names.includes('side'), names.join(', '));
+  assert.equal(t.checkout()?.lanes, 5);
+});
+
+test('auto-record rotate: a new worktree\'s first change stops the idlest lane, unless every lane is busy', { skip: noGit }, async () => {
   const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
   for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
   const t = recorderOn(settings({ autoRecordWorktrees: 'rotate' }), {}, repo);
   await t.recorder.start();
   await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
   // Every lane started recording just now: none has been idle for long.
-  addWorktree(t, repo, 'busy');
-  await until('skip logged', () => t.logs.some((l) => l.includes('every lane but the followed one changed')));
+  const busy = addWorktree(t, repo, 'busy');
+  await untilWatched(t, path.join(busy, 'src', 'a.ts'));
+  t.change(path.join(busy, 'src', 'a.ts'), 'busy\n');
+  await t.settle();
+  assert.ok(t.logs.some((l) => l.includes('every lane but the followed one changed')), t.logs.join('\n'));
+  assert.deepEqual(t.events(), []);
   assert.equal(t.checkout()?.lanes, 5);
   // Make the side lane look idle for long.
   const sideLane = t.timeline.laneList().find((l) => pathKey(l.root) === pathKey(side))!;
   t.timeline.defineLane({ ...sideLane, since: Date.now() - 10 * 60_000 });
   for (const l of t.timeline.laneList()) if (l.id !== sideLane.id) t.timeline.defineLane({ ...l, since: Date.now() });
-  addWorktree(t, repo, 'next');
-  await until('rotated', () => t.logs.some((l) => l.includes('idle longest, to record the new worktree next')));
+  const next = addWorktree(t, repo, 'next');
+  await untilWatched(t, path.join(next, 'src', 'a.ts'));
+  assert.ok(!t.logs.some((l) => l.includes('idle longest')), 'waiting, it stops nothing');
+  assert.equal(t.timeline.laneInfo(sideLane.id)?.recording, true);
+  t.change(path.join(next, 'src', 'a.ts'), 'next\n');
+  await t.settle();
+  assert.ok(t.logs.some((l) => l.includes('idle longest, to record the new worktree next')), t.logs.join('\n'));
   // A stopped lane with no changes is forgotten.
-  await until('lanes refreshed', () => t.timeline.laneInfo(sideLane.id)?.recording !== true);
+  assert.notEqual(t.timeline.laneInfo(sideLane.id)?.recording, true);
   assert.ok(t.recorder.recordedLanes().some((l) => l.name === 'next'));
   assert.equal(t.checkout()?.lanes, 5);
+  assert.deepEqual(t.events(), [`modify ${path.basename(next)}/src/a.ts`]);
 });
 
-test('auto-record rotate: two worktrees added at once each take an idle lane, never each other\'s', { skip: noGit }, async () => {
+test('auto-record rotate: a new worktree removed before anything is written there stops no lane', { skip: noGit }, async () => {
+  const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
+  for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
+  const t = recorderOn(settings({ autoRecordWorktrees: 'rotate' }), {}, repo);
+  await t.recorder.start();
+  await t.recorder.setCheckouts(t.folder, [repo, nested, side, `${repo}-w3`, `${repo}-w4`]);
+  await t.settle();
+  for (const l of t.timeline.laneList()) t.timeline.defineLane({ ...l, since: Date.now() - 30 * 60_000 });
+  const dir = addWorktree(t, repo, 'peek');
+  const file = path.join(dir, 'src', 'a.ts');
+  await untilWatched(t, file);
+  git(repo, 'worktree', 'remove', '--force', dir);
+  t.fire('delete', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(dir)));
+  await until('no longer watched', () => !t.recorder.hasBaseline(t.uri(file)));
+  assert.ok(!t.logs.some((l) => l.startsWith('Stopped recording')), t.logs.join('\n'));
+  assert.equal(t.checkout()?.lanes, 5);
+  assert.equal(t.logs.filter((l) => l.includes(dir)).length, 1, 'named once, when it started waiting');
+});
+
+test('auto-record rotate: two worktrees whose first changes come at once each take an idle lane, never each other\'s', { skip: noGit }, async () => {
   const { repo, nested, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
   for (const name of ['w3', 'w4']) git(repo, 'worktree', 'add', '-q', '-b', name, `${repo}-${name}`);
   const t = recorderOn(settings({ autoRecordWorktrees: 'rotate' }), {}, repo);
@@ -211,12 +277,17 @@ test('auto-record rotate: two worktrees added at once each take an idle lane, ne
   git(repo, 'worktree', 'add', '-q', '-b', 'one', one);
   git(repo, 'worktree', 'add', '-q', '-b', 'two', two);
   t.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(two)));
-  await until('both rotated in', () => t.logs.filter((l) => l.includes('idle longest, to record the new worktree')).length === 2);
-  await until('lanes refreshed', () => t.recorder.recordedLanes().some((l) => l.name === 'two'));
+  await untilWatched(t, path.join(one, 'src', 'a.ts'));
+  await untilWatched(t, path.join(two, 'src', 'a.ts'));
+  t.change(path.join(one, 'src', 'a.ts'), 'one\n');
+  t.change(path.join(two, 'src', 'a.ts'), 'two\n');
+  await t.settle();
+  assert.equal(t.logs.filter((l) => l.includes('idle longest, to record the new worktree')).length, 2, t.logs.join('\n'));
   const names = t.recorder.recordedLanes().map((l) => l.name);
   assert.ok(names.includes('one') && names.includes('two'), names.join(', '));
   assert.ok(!t.logs.some((l) => /Stopped recording (one|two),/.test(l)), t.logs.join('\n'));
   assert.equal(names.length, 5);
+  assert.equal(t.events().length, 2);
 });
 
 test('changes still held when recording stops keep their lane\'s label and color', { skip: noGit }, async () => {
@@ -263,10 +334,12 @@ test('auto-record waits until git worktree add has checked the worktree out', { 
   initializingNow = dir;
   addWorktree(t, repo, 'slow');
   await until('listed while initializing', () => t.logs.some((l) => l.startsWith('Worktrees changed')));
-  assert.equal(t.checkout()?.lanes, 1, 'recorded before git finished');
+  assert.ok(!t.logs.some((l) => l.startsWith('Watching the new worktree slow')), 'watched before git finished');
+  assert.equal(t.recorder.hasBaseline(t.uri(path.join(dir, 'src', 'a.ts'))), false);
   initializingNow = '';
-  await until('recorded once done', () => t.checkout()?.lanes === 2, 5000);
-  assert.ok(t.logs.some((l) => l.startsWith('Recording the new worktree slow')));
+  await until('waits once done', () => t.logs.some((l) => l.startsWith('Watching the new worktree slow')), 5000);
+  await untilWatched(t, path.join(dir, 'src', 'a.ts'));
+  assert.equal(t.checkout()?.lanes, 1);
 });
 
 test('a scope refresh overtaken by a stop and start does not use up the start\'s choice of lane to follow', { skip: noGit }, async () => {
@@ -307,7 +380,7 @@ test('ticking a sixth folder\'s checkout while recording is refused with the cap
   assert.deepEqual(recorder.defaultRecorded(folders[0]), [dirs[0]]);
 });
 
-test('a checkout cleared while auto-record lists worktrees stays cleared', { skip: noGit }, async () => {
+test('a checkout cleared while auto-record decides a new worktree\'s first change stays cleared', { skip: noGit }, async () => {
   const { repo, side } = repoWithWorktrees({ 'src/a.ts': 'a\n' });
   const other = tempDir('at-rs-other-');
   let slow = false;
@@ -324,12 +397,16 @@ test('a checkout cleared while auto-record lists worktrees stays cleared', { ski
   const folder = mock.folders[0] as unknown as vscode.WorkspaceFolder;
   await recorder.start();
   await recorder.setCheckouts(folder, [repo, side]);
-  slow = true;
   const fresh = `${repo}-fresh`;
   git(repo, 'worktree', 'add', '-q', '-b', 'fresh', fresh);
   mock.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', 'fresh'));
-  // Past the debounce, the refresh has read the first folder and waits on the second; clear side meanwhile.
-  await sleep(500);
+  const file = path.join(fresh, 'src', 'a.ts');
+  await until('fresh watched', () => recorder.hasBaseline(vscode.Uri.file(file)));
+  slow = true;
+  write(fresh, 'src/a.ts', 'fresh\n');
+  mock.fire('change', file);
+  // Past the debounce, the refresh deciding its first change has read the first folder and waits on the second; clear side meanwhile.
+  await sleep(300);
   const cleared = recorder.setCheckouts(folder, [repo]);
   await until('fresh recorded', () => recorder.recordedLanes().some((l) => l.name === 'fresh'), 10000);
   await cleared;
@@ -338,6 +415,7 @@ test('a checkout cleared while auto-record lists worktrees stays cleared', { ski
   const names = recorder.recordedLanes().map((l) => l.name);
   assert.ok(!names.includes('side'), `side came back: ${names.join(', ')}`);
   assert.ok(names.includes('fresh'));
+  await until('fresh change recorded', () => timeline.all().length === 1);
 });
 
 test('the remembered lane is followed at start even when a restored lane has changes queued, but never mid-change', { skip: noGit }, async () => {
@@ -369,8 +447,13 @@ test('rotate in a workspace where every folder has one lane says no lane can mak
   track(recorder);
   await recorder.start();
   assert.equal(recorder.recordedLanes().length, 5);
-  git(repos[1], 'worktree', 'add', '-q', '-b', 'extra', `${repos[1]}-extra`);
-  mock.fire('create', path.join(fs.realpathSync.native(repos[1]), '.git', 'worktrees', path.basename(`${repos[1]}-extra`)));
+  const extra = `${repos[1]}-extra`;
+  git(repos[1], 'worktree', 'add', '-q', '-b', 'extra', extra);
+  mock.fire('create', path.join(fs.realpathSync.native(repos[1]), '.git', 'worktrees', path.basename(extra)));
+  const file = path.join(extra, 'src', 'a.ts');
+  await until('extra watched', () => recorder.hasBaseline(vscode.Uri.file(file)));
+  write(extra, 'src/a.ts', 'extra\n');
+  mock.fire('change', file);
   await until('skip logged', () => logs.some((l) => l.includes('is not recorded')));
   assert.ok(logs.some((l) => l.includes("every lane is its folder's only one")), logs.join('\n'));
 });

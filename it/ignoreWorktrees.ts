@@ -2,7 +2,8 @@
 // auto-record `fill`, auto-follow on, and autoIgnoreWorktrees naming
 // review-style worktrees. Review tools make a detached worktree and write a
 // diff into it; those must get no lane and record nothing, while any other
-// new worktree still gets one, until a pattern added mid-run stops it.
+// new worktree still gets one at its first change, until a pattern added
+// mid-run stops it.
 import * as vscode from 'vscode';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -25,6 +26,8 @@ export async function run(): Promise<void> {
     execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', '-c', 'core.autocrlf=false', ...args], { cwd, stdio: 'pipe' })
       .toString()
       .trim();
+  /** True once the recorder watches the file: in a new worktree, once it waits for its first change. */
+  const watched = (file: string) => recorder.hasBaseline(vscode.Uri.file(file));
   async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
     const start = Date.now();
     while (!fn()) {
@@ -41,8 +44,8 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('agentTypewriter.start');
   await until('main recording', () => recorder.recordedLanes().length === 1);
 
-  // --- I1. Review worktrees, one in the folder and one in a temp directory, get no lane. A worktree
-  // no pattern names, added after them, getting its lane shows the listing that decided them was read.
+  // --- I1. Review worktrees, one in the folder and one in a temp directory, are not even watched. A
+  // worktree no pattern names, added after them, being watched shows the listing that decided them was read.
   const review = path.join(root, '.claude', 'worktrees', 'review-1');
   git(root, 'worktree', 'add', '-q', '--detach', review, 'main');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tmp.'));
@@ -50,14 +53,11 @@ export async function run(): Promise<void> {
   git(root, 'worktree', 'add', '-q', '--detach', tmp, 'main');
   const probe = path.join(root, '.worktrees', 'probe');
   git(root, 'worktree', 'add', '-q', '-b', 'probe', probe);
-  await until('probe lane', () => recorder.recordedLanes().length === 2);
-  assert.deepEqual(
-    recorder.recordedLanes().map((l) => l.name).sort(),
-    [recorder.checkoutOf(folder)!.name, 'probe'].sort(),
-    'the review worktrees got no lane',
-  );
+  await until('probe watched', () => watched(path.join(probe, 'src', 'a.ts')));
+  assert.ok(!watched(path.join(review, 'src', 'a.ts')) && !watched(path.join(tmp, 'src', 'a.ts')), 'the review worktrees are not watched');
+  assert.equal(recorder.recordedLanes().length, 1, 'no lane before a first change');
   git(root, 'worktree', 'remove', '--force', probe);
-  await until('probe lane gone', () => recorder.recordedLanes().length === 1);
+  await until('probe gone', () => !watched(path.join(probe, 'src', 'a.ts')));
   console.log('[it] IGNORE: review worktrees in the folder and a temp directory get no lane ok');
 
   // --- I2. Writing the PR diff into them records nothing. A main change written after them being
@@ -94,13 +94,14 @@ export async function run(): Promise<void> {
   await until('review lane stopped', () => recorder.recordedLanes().length === 1);
   console.log('[it] IGNORE: auto-follow never moves to an ignored lane ok');
 
-  // --- I4. Any other new worktree still gets a lane.
+  // --- I4. Any other new worktree still gets a lane, at its first change.
+  const fixFile = path.join(root, '.worktrees', 'fix', 'src', 'a.ts');
   git(root, 'worktree', 'add', '-q', '-b', 'fix', path.join(root, '.worktrees', 'fix'));
+  await until('fix watched', () => watched(fixFile));
+  fs.writeFileSync(fixFile, 'export const a = "fix";\n');
   await until('fix lane', () => recorder.recordedLanes().length === 2);
   const fix = timeline.laneList().find((l) => l.label === 'fix')!;
   assert.ok(fix, 'the fix lane is labeled by its branch');
-  await sleep(500);
-  fs.writeFileSync(path.join(root, '.worktrees', 'fix', 'src', 'a.ts'), 'export const a = "fix";\n');
   await until('fix change recorded', () => timeline.laneEvents(fix.id).length === 1);
   // The control for I3: auto-follow does move to a lane no pattern names.
   await until('auto-follow moves to fix', () => timeline.followed === fix.id);
@@ -110,6 +111,8 @@ export async function run(): Promise<void> {
   // seen through the real watcher on the worktree's HEAD.
   const topic = path.join(root, '.worktrees', 'topic');
   git(root, 'worktree', 'add', '-q', '-b', 'topic', topic);
+  await until('topic watched', () => watched(path.join(topic, 'src', 'a.ts')));
+  fs.writeFileSync(path.join(topic, 'src', 'a.ts'), 'export const a = "topic";\n');
   await until('topic lane', () => recorder.recordedLanes().some((l) => l.name === 'topic'));
   const lanesBefore = recorder.recordedLanes().length;
   git(topic, 'checkout', '-q', '-b', 'review/7');

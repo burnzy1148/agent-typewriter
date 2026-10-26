@@ -399,6 +399,46 @@ async function workspaceLaunches() {
     launchArgs: [ignoreRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
   });
 
+  // Waiting worktrees (waitingWorktrees.ts): with auto-record on and no
+  // ignore patterns, new worktrees get no lane until they record a change,
+  // while a branch `pr` has other text for a checkout inside one.
+  const waitRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-wait-'));
+  fs.mkdirSync(path.join(waitRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(waitRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(waitRepo, '.gitignore'), '.vscode/\n');
+  gitAt(waitRepo, 'init', '-q', '-b', 'main');
+  gitAt(waitRepo, 'add', '-A');
+  gitAt(waitRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(waitRepo, 'checkout', '-q', '-b', 'pr');
+  fs.writeFileSync(path.join(waitRepo, 'src/a.ts'), 'export const a = "pr";\n');
+  gitAt(waitRepo, 'commit', '-q', '-am', 'pr');
+  gitAt(waitRepo, 'checkout', '-q', 'main');
+  // As for ignoreWorktrees.ts, the worktree parents exist before VS Code starts.
+  fs.mkdirSync(path.join(waitRepo, '.claude', 'worktrees'), { recursive: true });
+  fs.mkdirSync(path.join(waitRepo, '.worktrees'));
+  fs.mkdirSync(path.join(waitRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(waitRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.autoRecordWorktrees': 'fill',
+      'agentTypewriter.autoFollow': true,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'waitingWorktrees.js'),
+    launchArgs: [waitRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
   // Git operations (gitOperations.ts): main is behind `feature`, which a
   // fast-forward merge brings in, and `clash` changes the same line of
   // src/a.ts as feature does.
