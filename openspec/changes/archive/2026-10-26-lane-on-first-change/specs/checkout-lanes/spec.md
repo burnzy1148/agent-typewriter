@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Auto-record new worktrees
-With `agentTypewriter.autoRecordWorktrees` set to `fill` or `rotate` (default `off`), a worktree added while recording to a repository whose checkout is recorded SHALL get its own lane at its first recorded change, while fewer than five lanes record, unless it matches an ignore pattern. With `fill` and five lanes recording then, that change SHALL NOT be recorded, the worktree SHALL no longer be watched, and the output channel SHALL say the cap was reached. With `off`, a new worktree SHALL NOT be recorded unless the user adds it.
+With `agentTypewriter.autoRecordWorktrees` set to `fill` or `rotate` (default `off`), a worktree added while recording to a repository whose checkout is recorded SHALL get its own lane at its first recorded change while fewer than five lanes record, unless it matches an ignore pattern. With `fill` and five lanes recording then, that change and the worktree SHALL NOT be recorded, and the output channel SHALL say why. With `off`, a new worktree SHALL NOT be recorded unless the user adds it.
 
 #### Scenario: Agent creates a worktree
 - **WHEN** auto-record is `fill`, the main checkout records, and an agent runs `git worktree add .claude/worktrees/fix` and writes files there
@@ -22,7 +22,7 @@ With `agentTypewriter.autoRecordWorktrees` set to `fill` or `rotate` (default `o
 - **THEN** it is not recorded, and two lanes still record
 
 ### Requirement: Rotation stops the idlest lane
-With `autoRecordWorktrees` set to `rotate` and five lanes recording when a new worktree records its first change, the new worktree SHALL take the place of the lane whose latest recorded change is oldest, among lanes that are not followed and have recorded nothing for at least 2 minutes. When no lane qualifies, that change SHALL NOT be recorded, the worktree SHALL no longer be watched, and the output channel SHALL say why. A worktree that matches an ignore pattern, or has recorded nothing yet, SHALL NOT stop any lane.
+With `autoRecordWorktrees` set to `rotate` and five lanes recording when a new worktree records its first change, it SHALL take the place of the lane whose latest recorded change is oldest, among lanes that are not followed and have recorded nothing for at least 2 minutes. When no lane qualifies, that change and the worktree SHALL NOT be recorded, and the output channel SHALL say why. A worktree that matches an ignore pattern, or has recorded nothing yet, SHALL NOT stop any lane.
 
 #### Scenario: Idle lane makes room
 - **WHEN** rotate is on, five lanes record, `fix/hud` last changed 30 minutes ago and every other lane changed within 2 minutes, and a new worktree records its first change

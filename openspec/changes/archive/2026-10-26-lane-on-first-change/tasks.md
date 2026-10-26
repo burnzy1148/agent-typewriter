@@ -17,7 +17,7 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Add an integration launch, `it/waitingWorktrees.ts` started from `it/runTest.ts`, with `fill` and auto-follow on: a review worktree re-created three times and read from gets no lane and leaves the status count at one; a `git checkout` inside a waiting worktree gives it no lane; a worktree written to gets a lane whose first change has the checked-out before text, and auto-follow moves to it. Update `it/lanes.ts` and `it/ignoreWorktrees.ts` steps that expect a lane at once. Verify with `IT_GROUP=workspaces npm run it` locally and green CI on Ubuntu and Windows.
+- [x] 4.1 Add an integration launch, `it/waitingWorktrees.ts` started from `it/runTest.ts`, with `fill` and auto-follow on: a review worktree re-created three times and read from gets no lane and leaves the status count at one; a `git checkout` inside a waiting worktree gives it no lane; a worktree written to gets a lane whose first change has the checked-out before text, and auto-follow moves to it. Update `it/lanes.ts` and `it/ignoreWorktrees.ts` steps that expect a lane at once. Verify with `IT_GROUP=workspaces npm run it` locally and green CI on Ubuntu and Windows.
 
 ## Workflow follow-up
 
