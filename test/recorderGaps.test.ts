@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import { GAP_WATCH_LIMIT, type WatchDir } from '../src/watchGaps';
 import { committedRepo, laneOf, recorderOn, rm, settings, until } from './recorderScopeFixture';
 import { git, noGit, tempDir, write } from './gitFixture';
+import { mock, workspace } from './vscode-mock';
 
 /**
  * Directory watches the test drives: `watched` lists them under a root, `entry`
@@ -63,7 +64,7 @@ test('writes in a folder tree made several levels deep at once are recorded thro
   assert.deepEqual(t.events(), ['create a/b/c/one.ts', 'modify a/b/c/one.ts', 'create a/b/c/two.ts']);
   assert.match(t.recorder.describeActivity(), /folder watch change a\/b\/c\/one\.ts/);
   // A rename is told apart from a delete by a stat; the write after it waits for that.
-  assert.match(t.recorder.describeActivity(), /folder watch create a\/b\/c\/two\.ts\n.*folder watch change a\/b\/c\/two\.ts/);
+  assert.match(t.recorder.describeActivity(), /folder watch create a\/b\/c\/two\.ts\n[\s\S]*folder watch change a\/b\/c\/two\.ts/);
   // A tree made in a watched folder is blind too, all the way down.
   write(dir, 'a/b/c/d/e/z.ts', 'z\n');
   w.entry(at('a/b/c/d'), 'rename');
@@ -224,7 +225,6 @@ test('a lane is not held back by another lane that reached its limit of watches'
   const x = path.join(repo, '.claude', 'worktrees', 'x');
   git(repo, 'worktree', 'add', '-q', '-b', 'x', x);
   t.fire('create', path.join(repo, '.claude'));
-  await until('.claude/worktrees reached', () => t.recorder.describeActivity().includes('watcher create .claude'));
   await t.settle();
   await t.recorder.addCheckout(t.folder, x);
   assert.ok(w.watched(repo).includes('.claude/worktrees/x/src'), 'the lane watches its checkout');
@@ -235,4 +235,138 @@ test('a lane is not held back by another lane that reached its limit of watches'
   const limits = t.logs.filter((l) => l.includes(`over ${GAP_WATCH_LIMIT} new folders`));
   assert.equal(limits.length, 1, limits.join('\n'));
   assert.ok(limits[0].startsWith(`${t.timeline.laneInfo(t.folder.uri.toString())!.label}: `), 'named by the lane that reached it');
+});
+
+test('a folder deleted and made again in one batch, which the watcher reports as changed, is checked and walked again', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'gen/api/v1/one.ts', 'one\n');
+  t.fire('create', at('gen'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['gen/api', 'gen/api/v1']);
+  // rm -rf gen/api: its watches hear it go, before mkdir runs, and forget it.
+  await rm(at('gen/api'));
+  w.entry(at('gen/api/v1/one.ts'), 'rename');
+  w.entry(at('gen/api/v1/v1'), 'rename');
+  w.entry(at('gen/api/v1'), 'rename');
+  w.entry(at('gen/api/api'), 'rename');
+  await until('the old watches gone', () => w.watched(dir).length === 0);
+  // mkdir -p gen/api/v1 and a write: VS Code's watcher merges the delete and create of gen/api into a change.
+  write(dir, 'gen/api/v1/two.ts', 'two\n');
+  t.fire('change', at('gen/api'));
+  await until('gen/api/v1 watched again', () => w.watched(dir).includes('gen/api/v1'));
+  await t.settle();
+  assert.deepEqual(t.events().slice(1).sort(), ['create gen/api/v1/two.ts', 'delete gen/api/v1/one.ts']);
+  write(dir, 'gen/api/v1/two.ts', 'two 2\n');
+  w.entry(at('gen/api/v1/two.ts'), 'change');
+  await t.settle();
+  assert.equal(t.events()[3], 'modify gen/api/v1/two.ts');
+});
+
+test('a folder that was there before recording, deleted and made again in one batch, is checked and walked again', async () => {
+  const dir = tempDir('at-gap-');
+  write(dir, 'src/gen/one.ts', 'one\n');
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, dir);
+  await t.recorder.start();
+  await rm(path.join(dir, 'src/gen'));
+  write(dir, 'src/gen/v1/two.ts', 'two\n');
+  t.fire('change', path.join(dir, 'src/gen'));
+  await until('src/gen/v1 watched', () => w.watched(dir).includes('src/gen/v1'));
+  await t.settle();
+  assert.deepEqual(t.events().sort(), ['create src/gen/v1/two.ts', 'delete src/gen/one.ts']);
+});
+
+test('a change the watcher reports for a folder made long ago, with nothing of it known, is left alone', async () => {
+  const { t, at } = await started();
+  const stat = workspace.fs.stat;
+  workspace.fs.stat = async (uri) => ({ ...(await stat(uri)), ctime: 0 });
+  try {
+    t.fire('change', at('src'));
+    await t.settle();
+  } finally {
+    workspace.fs.stat = stat;
+  }
+  assert.doesNotMatch(t.recorder.describeActivity(), /made again/);
+  assert.deepEqual(t.events(), []);
+});
+
+test('a lane stopped while one of its walks waits takes no watches from that walk', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const x = path.join(repo, '.claude', 'worktrees', 'x');
+  git(repo, 'worktree', 'add', '-q', '-b', 'x', x);
+  t.fire('create', path.join(repo, '.claude'));
+  await until('.claude/worktrees watched', () => w.watched(repo).includes('.claude/worktrees'));
+  await t.settle();
+  await t.recorder.addCheckout(t.folder, x);
+  // A deep tree made in the lane, whose walk waits on a slow directory read.
+  fs.mkdirSync(path.join(x, 'src', 'n', 'a', 'b'), { recursive: true });
+  let open!: () => void;
+  mock.readDirectoryGate = new Promise<void>((r) => (open = r));
+  w.entry(path.join(x, 'src', 'n'), 'rename');
+  await until('the walk started', () => w.watched(repo).includes('.claude/worktrees/x/src/n'));
+  const removing = t.recorder.removeCheckout(t.folder, x);
+  await until('the lane stopped', () => t.recorder.recordedLanes().length === 1);
+  open();
+  mock.readDirectoryGate = undefined;
+  await removing;
+  await t.settle();
+  assert.deepEqual(w.watched(repo), ['.claude/worktrees']);
+});
+
+test('a lane keeps watching its checkout when its root is reported made after the lane started', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  fs.mkdirSync(path.join(repo, '.claude', 'worktrees'), { recursive: true });
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const x = path.join(repo, '.claude', 'worktrees', 'x');
+  git(repo, 'worktree', 'add', '-q', '-b', 'x', x);
+  // Added at once, from code; the watcher reports x after.
+  await t.recorder.addCheckout(t.folder, x);
+  assert.deepEqual(w.watched(repo), []);
+  t.fire('create', x);
+  await until('the lane watches x/src', () => w.watched(repo).includes('.claude/worktrees/x/src'));
+  write(x, 'src/a.ts', 'a 2\n');
+  w.entry(path.join(x, 'src/a.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify x/src/a.ts']);
+});
+
+test('a lane keeps watching its checkout when a folder watch reports its root made after the lane started', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const x = path.join(repo, '.claude', 'worktrees', 'x');
+  git(repo, 'worktree', 'add', '-q', '-b', 'x', x);
+  t.fire('create', path.join(repo, '.claude'));
+  await until('.claude/worktrees watched', () => w.watched(repo).includes('.claude/worktrees'));
+  await t.settle();
+  await t.recorder.addCheckout(t.folder, x);
+  // The watch of .claude/worktrees reports x late, after the lane walked it.
+  w.entry(x, 'rename');
+  await until('x/src watched again', () => w.opens.get(path.join(x, 'src')) === 2);
+  await t.settle();
+  write(x, 'src/a.ts', 'a 2\n');
+  w.entry(path.join(x, 'src/a.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify x/src/a.ts']);
+});
+
+test('a file written in many chunks in a watched folder is passed on once per short while', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  for (let i = 0; i < 100; i++) {
+    fs.appendFileSync(at('a/b/one.ts'), `${i}\n`);
+    w.entry(at('a/b/one.ts'), 'change');
+  }
+  await t.settle();
+  const passed = t.recorder.describeActivity().split('\n').filter((l) => l.includes('folder watch change a/b/one.ts'));
+  assert.equal(passed.length, 1);
+  assert.deepEqual(t.events(), ['create a/b/one.ts', 'modify a/b/one.ts']);
 });

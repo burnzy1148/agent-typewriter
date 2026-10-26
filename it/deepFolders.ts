@@ -2,8 +2,8 @@
 // VS Code's watcher reports a folder tree made several levels deep at once as
 // its top folder alone and reports nothing written below it later (at-net.15),
 // so the recorder watches those folders itself. Writes there, a while after the
-// tree was made, are recorded: in the folder's own checkout, and in a lane on
-// a worktree added the way agent tools add theirs.
+// tree was made, are recorded: in the folder's own checkout, in a folder deleted
+// and made again, and in a lane on a worktree added the way agent tools add theirs.
 import * as vscode from 'vscode';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -67,6 +67,20 @@ export async function run(): Promise<void> {
   write('moved/m/n/k.ts', 'export const k = 2;\n');
   await until('k.ts modified', () => events().includes('modify moved/m/n/k.ts'));
   console.log('[it] DEEP: a write in a tree moved in is recorded ok');
+
+  // --- G5. A folder deleted and made again at once, as a code generator does, then a write in it a second later.
+  fs.mkdirSync(path.join(root, 'gen', 'api', 'v1'), { recursive: true });
+  write('gen/api/v1/one.ts', 'export const one = 1;\n');
+  await until('one.ts created', () => events().includes('create gen/api/v1/one.ts'));
+  await sleep(1000);
+  fs.rmSync(path.join(root, 'gen', 'api'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'gen', 'api', 'v1'), { recursive: true });
+  write('gen/api/v1/two.ts', 'export const two = 2;\n');
+  await until('the old file deleted and the new one created', () => events().includes('delete gen/api/v1/one.ts') && events().includes('create gen/api/v1/two.ts'));
+  await sleep(1000);
+  write('gen/api/v1/two.ts', 'export const two = 3;\n');
+  await until('two.ts modified', () => events().includes('modify gen/api/v1/two.ts'));
+  console.log('[it] DEEP: a write in a folder deleted and made again is recorded ok');
 
   // --- G4. git worktree add .claude/worktrees/x with no .claude yet, recorded by hand, then a write in it.
   // The lane starts once the checkout's own events have come: one late on Windows reads as a new file.

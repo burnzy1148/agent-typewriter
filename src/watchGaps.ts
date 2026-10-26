@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { MAX_LANES } from './lanes';
 
 /** A watch of one directory; `close` stops it. */
 export interface DirWatch {
@@ -21,11 +22,23 @@ export const nodeWatchDir: WatchDir = (fsPath, onEntry, onError) => {
   return watcher;
 };
 
-/**
- * Most directories one lane has watched, so a lane's large tree never takes
- * watches from another lane, and gaps never use up the system's inotify watches.
- */
+/** Most directories one lane has watched, so a lane's large tree never takes watches from another lane. */
 export const GAP_WATCH_LIMIT = 2000;
+
+/**
+ * Most directories watched at once across lanes: a quarter of the inotify
+ * watches the system allows a user, which VS Code's own watcher and other
+ * programs share, and no more than every lane's limit together.
+ */
+export function shareOfSystemWatches(file = '/proc/sys/fs/inotify/max_user_watches'): number {
+  const most = MAX_LANES * GAP_WATCH_LIMIT;
+  try {
+    const max = Number(fs.readFileSync(file, 'utf8').trim());
+    return max > 0 ? Math.min(most, Math.floor(max / 4)) : most;
+  } catch {
+    return most;
+  }
+}
 
 /** Most directories remembered; past it, ones known only as reported are forgotten. */
 const ENTRY_LIMIT = 20_000;
@@ -65,6 +78,10 @@ export class WatchGaps {
   private readonly counts = new Map<string, number>();
   /** Lanes whose limit was logged since closeAll or their release. */
   private readonly limitNoted = new Set<string>();
+  /** Set once the total was logged, until closeAll. */
+  private totalNoted = false;
+  /** Set once the system ran out of inotify watches: no more are tried until closeAll. */
+  private exhausted = false;
   /** Set once a watch could not be made, so the reason is logged once until closeAll. */
   private problemNoted = false;
   /** Stamps each request for a watch, so a sweep can tell the ones made after it began. */
@@ -77,10 +94,14 @@ export class WatchGaps {
     private readonly log: (line: string) => void,
     /** A lane's name, for the log. */
     private readonly nameOf: (owner: string) => string,
+    /** Most directories watched at once across lanes. */
+    private readonly total = shareOfSystemWatches(),
   ) {}
 
   /** VS Code's watcher reported this directory created, so it watches it now: ours is no longer needed. */
   noteReported(dir: string): void {
+    // Before it is marked: a trim forgets directories known only as reported, as this one is about to be.
+    this.trim();
     const e = this.make(dir);
     e.reported = true;
     e.blind = false;
@@ -109,19 +130,34 @@ export class WatchGaps {
     return !e?.reported && (parentBlind || !!e?.blind || !!p?.reported);
   }
 
-  /** True when `owner` relies on a watch of this directory. */
-  owns(dir: string, owner: string): boolean {
-    return !!this.find(dir)?.watch?.owners.has(owner);
+  /** True when this directory was reported, found blind, or is watched. */
+  knows(dir: string): boolean {
+    const e = this.find(dir);
+    return !!(e?.reported || e?.blind || e?.watch);
   }
 
-  /** Watches a blind directory for `owner`; true when this started a watch. One reported since it was found blind is left to VS Code. */
+  /**
+   * Watches a blind directory for `owner`; true when this started a watch.
+   * One reported since it was found blind is left to VS Code. One refused for
+   * a limit is not remembered as blind, so refusals take no memory.
+   */
   watch(dir: string, fsPath: string, owner: string): boolean {
     const e = this.make(dir);
     if (e.reported) return false;
-    e.blind = true;
     const stamp = ++this.clock;
     if (e.watch) {
       if (e.watch.owners.has(owner) || this.take(owner)) e.watch.owners.set(owner, stamp);
+      return false;
+    }
+    if (this.exhausted) return false;
+    if (this.watched.size >= this.total) {
+      if (!this.totalNoted) {
+        this.totalNoted = true;
+        this.log(
+          `Over ${this.total} new folders are hidden from VS Code's file watcher, so changes in the rest are not recorded. ` +
+            "Reloading the window (Developer: Reload Window) lets VS Code's watcher see them.",
+        );
+      }
       return false;
     }
     if (!this.take(owner)) return false;
@@ -131,16 +167,24 @@ export class WatchGaps {
         (name, kind) => this.onEntry(fsPath, name, kind),
         () => this.close(dir),
       );
+      e.blind = true;
       e.watch = { handle, owners: new Map([[owner, stamp]]) };
       this.watched.set(dir, e);
       this.trim();
       return true;
     } catch (err) {
       this.give(owner);
+      const code = (err as NodeJS.ErrnoException).code;
       // Gone already: its delete is reported where its parent is watched.
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        this.problem(`Could not watch ${fsPath}, a new folder VS Code's file watcher does not see: ${String(err)}. Changes in it are not recorded.`);
-      }
+      if (code === 'ENOENT') return false;
+      if (code === 'ENOSPC') {
+        // VS Code's own watcher needs the rest.
+        this.exhausted = true;
+        this.problem(
+          `The system's limit on inotify watches is reached, so changes in folders VS Code's file watcher does not see are not recorded. ` +
+            'Raising fs.inotify.max_user_watches and reloading the window helps.',
+        );
+      } else this.problem(`Could not watch ${fsPath}, a folder VS Code's file watcher does not see: ${String(err)}. Changes in it are not recorded.`);
       return false;
     }
   }
@@ -195,6 +239,8 @@ export class WatchGaps {
     this.watched.clear();
     this.counts.clear();
     this.limitNoted.clear();
+    this.totalNoted = false;
+    this.exhausted = false;
     this.problemNoted = false;
   }
 
