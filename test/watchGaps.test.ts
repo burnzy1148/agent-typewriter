@@ -18,8 +18,15 @@ function gaps() {
     onEntry.set(fsPath, entry);
     return { close: () => open.delete(fsPath) };
   };
-  const g = new WatchGaps(watchDir, (dir, name, kind) => entries.push(`${kind} ${dir}/${name}`), (l) => logs.push(l));
-  return { g, open, logs, entries, state, onEntry };
+  const g = new WatchGaps(
+    watchDir,
+    (dir, name, kind) => entries.push(`${kind} ${dir}/${name}`),
+    (l) => logs.push(l),
+    (owner) => `lane ${owner}`,
+  );
+  /** Watches `dir` for `owner`, with its path as its file system path. */
+  const watch = (dir: string, owner = 'L') => g.watch(dir, dir, owner);
+  return { g, watch, open, logs, entries, state, onEntry };
 }
 
 test('a directory is blind under a reported one until reported itself, and anything under a blind one is too', () => {
@@ -41,66 +48,100 @@ test('a directory is blind under a reported one until reported itself, and anyth
 });
 
 test('a watched directory is blind, and a report of it stops the watch', () => {
-  const { g, open } = gaps();
-  assert.equal(g.watch('/ws/t', '/ws/t'), true);
-  assert.equal(g.watch('/ws/t', '/ws/t'), false, 'already watched');
+  const { g, watch, open } = gaps();
+  assert.equal(watch('/ws/t'), true);
+  assert.equal(watch('/ws/t'), false, 'already watched');
   assert.equal(g.isBlind('/ws/t/u'), true);
   g.noteReported('/ws/t');
   assert.deepEqual([...open], []);
   // Found blind, then reported before its watch started.
-  assert.equal(g.watch('/ws/t', '/ws/t'), false);
+  assert.equal(watch('/ws/t'), false);
 });
 
-test('a deleted path stops the watches in it and forgets the reports in it', () => {
-  const { g, open } = gaps();
-  g.noteReported('/ws/a');
-  g.noteReported('/ws/a/b');
-  for (const d of ['/ws/a/b/c', '/ws/a/b/c/d', '/ws/ab']) g.watch(d, d);
-  g.deleted('/ws/a/b/c/file.ts');
+test('a directory once found blind stays blind after every watch is closed, even with its reported parent forgotten', () => {
+  const { g, watch } = gaps();
+  watch('/ws/.claude/worktrees');
+  g.closeAll();
+  // A walk after a restart reaches it from a parent it has no report of.
+  assert.equal(g.isBlindIn('/ws/.claude', false, '/ws/.claude/worktrees'), true);
+  assert.equal(g.isBlind('/ws/.claude/worktrees/x'), true);
+});
+
+test('a deleted path stops the watches in it and forgets what was known there, through folders known only by what is in them', () => {
+  const { g, watch, open } = gaps();
+  g.noteReported('/ws/p/q');
+  for (const d of ['/ws/p/q/r', '/ws/p/q/r/s', '/ws/pq']) watch(d);
+  g.deleted('/ws/p/q/r/file.ts');
   assert.equal(open.size, 3, 'a file delete stops nothing');
-  g.deleted('/ws/a');
-  assert.deepEqual([...open], ['/ws/ab'], 'only the paths in it');
-  assert.equal(g.isBlind('/ws/a/b/x'), false, 'its reports are forgotten, so a tree made there again is judged afresh');
+  // p itself was never reported or watched.
+  g.deleted('/ws/p');
+  assert.deepEqual([...open], ['/ws/pq'], 'only the paths in it');
+  assert.equal(g.isBlind('/ws/p/q/x'), false, 'its reports are forgotten, so a tree made there again is judged afresh');
 });
 
 test('entries changed in a watched directory are passed on with its file system path', () => {
   const { g, entries, onEntry } = gaps();
-  g.watch('/ws/a/b', '/fs/a/b');
+  g.watch('/ws/a/b', '/fs/a/b', 'L');
   onEntry.get('/fs/a/b')!('x.ts', 'rename');
   onEntry.get('/fs/a/b')!('x.ts', 'change');
   assert.deepEqual(entries, ['rename /fs/a/b/x.ts', 'change /fs/a/b/x.ts']);
 });
 
-test('watches stop at the limit, which is logged once until every watch is closed', () => {
-  const { g, logs, open } = gaps();
-  for (let i = 0; i < GAP_WATCH_LIMIT; i++) assert.equal(g.watch(`/ws/d${i}`, `/ws/d${i}`), true);
-  assert.equal(g.watch('/ws/over', '/ws/over'), false);
-  assert.equal(g.watch('/ws/over2', '/ws/over2'), false);
+test('each lane has its own limit, logged once by name until it is released', () => {
+  const { g, watch, logs, open } = gaps();
+  for (let i = 0; i < GAP_WATCH_LIMIT; i++) assert.equal(watch(`/ws/big/d${i}`, 'main'), true);
+  assert.equal(watch('/ws/big/over', 'main'), false);
+  assert.equal(watch('/ws/big/over2', 'main'), false);
   assert.equal(logs.length, 1);
-  assert.match(logs[0], new RegExp(`Over ${GAP_WATCH_LIMIT} new folders`));
-  g.closeAll();
-  assert.equal(open.size, 0);
-  assert.equal(g.watch('/ws/again', '/ws/again'), true);
+  assert.match(logs[0], new RegExp(`^lane main: over ${GAP_WATCH_LIMIT} new folders .*Reload Window`));
+  // Another lane is not held back by it, and neither is a watch it shares.
+  assert.equal(watch('/ws/.claude/worktrees/x/src', 'x'), true);
+  watch('/ws/big/d0', 'x');
+  assert.equal(open.size, GAP_WATCH_LIMIT + 1);
+  // Letting go of its own watches frees the lane's room; the shared one stays for the other lane.
+  g.release('main');
+  assert.equal(open.size, 2);
+  assert.equal(watch('/ws/big/over', 'main'), true);
+  assert.equal(logs.length, 1);
+});
+
+test('keepOnly lets go of the watches a full walk no longer reached, and keeps ones asked for since it began', () => {
+  const { g, watch, open } = gaps();
+  for (const d of ['/ws/a', '/ws/b', '/ws/c']) watch(d);
+  watch('/ws/c', 'other');
+  const mark = g.mark();
+  // During the walk: a new folder elsewhere, and b asked for again by another walk.
+  watch('/ws/d');
+  watch('/ws/b');
+  g.keepOnly('L', new Set(['/ws/a']), mark);
+  assert.deepEqual([...open].sort(), ['/ws/a', '/ws/b', '/ws/c', '/ws/d'], 'c is still the other lane’s');
+  g.unwatch('/ws/c', 'other');
+  assert.deepEqual([...open].sort(), ['/ws/a', '/ws/b', '/ws/d']);
+  assert.equal(g.owns('/ws/a', 'L'), true);
+  assert.equal(g.owns('/ws/a', 'other'), false);
+});
+
+test('past 20000 directories, ones known only as reported are forgotten, and blind ones are kept', () => {
+  const { g, watch } = gaps();
+  g.noteReported('/ws/keep');
+  watch('/ws/keep/b');
+  for (let i = 0; i < 20_000; i++) g.noteReported(`/ws/many/d${i}`);
+  assert.equal(g.isBlind('/ws/many/d0/x'), false, 'forgotten, so taken as watched');
+  assert.equal(g.isBlind('/ws/many/d19999/x'), true, 'reported after the trim, so still known');
+  assert.equal(g.isBlind('/ws/keep/b/c'), true);
+  assert.equal(g.isBlindIn('/ws/keep', false, '/ws/keep/c'), true, 'the parent of a blind one is kept as reported');
 });
 
 test('a directory gone before its watch starts is skipped quietly; other failures are logged once', () => {
-  const { g, logs, state } = gaps();
+  const { watch, logs, state } = gaps();
   state.fail = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
-  assert.equal(g.watch('/ws/gone', '/ws/gone'), false);
+  assert.equal(watch('/ws/gone'), false);
   assert.deepEqual(logs, []);
   state.fail = Object.assign(new Error('ENOSPC: System limit for number of file watchers reached'), { code: 'ENOSPC' });
-  assert.equal(g.watch('/ws/a', '/ws/a'), false);
-  assert.equal(g.watch('/ws/b', '/ws/b'), false);
+  assert.equal(watch('/ws/a'), false);
+  assert.equal(watch('/ws/b'), false);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /Could not watch \/ws\/a.*ENOSPC/);
-});
-
-test('reports outlive closeAll, so a restarted recording watches the same blind directories', () => {
-  const { g } = gaps();
-  g.noteReported('/ws/a');
-  g.watch('/ws/a/b', '/ws/a/b');
-  g.closeAll();
-  assert.equal(g.isBlind('/ws/a/b'), true);
 });
 
 test('nodeWatchDir names entries created and written in the directory', async () => {

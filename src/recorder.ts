@@ -238,7 +238,14 @@ export class Recorder implements vscode.Disposable {
     /** Watches a directory VS Code's watcher misses, where it can miss them (Linux). */
     watchDir?: WatchDir,
   ) {
-    this.gaps = watchDir && new WatchGaps(watchDir, (dir, name, kind) => this.gapEntry(dir, name, kind), (line) => this.log.appendLine(line));
+    this.gaps =
+      watchDir &&
+      new WatchGaps(
+        watchDir,
+        (dir, name, kind) => this.gapEntry(dir, name, kind),
+        (line) => this.log.appendLine(line),
+        (key) => this.timeline.laneInfo(key)?.label ?? this.scopes.get(key)?.name ?? key,
+      );
     this.filter = this.buildFilter();
     this.reorder = new ReorderBuffer(
       (events) => {
@@ -754,6 +761,7 @@ export class Recorder implements vscode.Disposable {
         if (fresh && fresh.root.toString() === old.root.toString()) fresh.watcher = old.watcher;
         else {
           for (const d of old.watcher) d.dispose();
+          this.gaps?.release(key);
           this.dropHeldDeletes(key);
         }
       }
@@ -1323,6 +1331,9 @@ export class Recorder implements vscode.Disposable {
           const entry = await stat(uri);
           // The watched directory itself went; where its parent is watched, that reports it.
           if (!entry && !(await stat(dir))) return this.gaps?.deleted(dir.path);
+          // A directory here now is a new one, even where the one it replaced is still known (rm -rf and mkdir
+          // read as two creates once both are done): a watch of the old one sees nothing of it.
+          if (entry && entry.type & vscode.FileType.Directory) this.gaps?.deleted(uri.path);
           event = entry ? 'create' : 'delete';
         }
         if (this.running) this.onWatcherEvent(this.scopeOf(uri)?.key, uri, event, 'gap');
@@ -1478,10 +1489,10 @@ export class Recorder implements vscode.Disposable {
    * and below the start any directory holding a linked worktree's `.git` file,
    * which git may not have listed yet. Unlike findFiles, it ignores
    * `files.exclude`, which the watcher does not apply either. Each directory
-   * VS Code's watcher cannot see into is watched before it is read, so
-   * nothing written in it after the read goes unseen.
+   * VS Code's watcher cannot see into is watched for the scope before it is
+   * read, so nothing written in it after the read goes unseen, and added to `seen`.
    */
-  private async walk(scope: Scope, stale: () => boolean, start = scope.root, startRel = ''): Promise<vscode.Uri[]> {
+  private async walk(scope: Scope, stale: () => boolean, start = scope.root, startRel = '', seen?: Set<string>): Promise<vscode.Uri[]> {
     const files: vscode.Uri[] = [];
     const ignored = this.ignored.get(scope.key);
     const gaps = start.scheme === 'file' ? this.gaps : undefined;
@@ -1490,7 +1501,10 @@ export class Recorder implements vscode.Disposable {
     while (dirs.length > 0 && !stale()) {
       await Promise.all(
         dirs.splice(0, 64).map(async ([dir, rel, blind]) => {
-          if (blind && gaps!.watch(dir.path, dir.fsPath)) watched++;
+          if (blind) {
+            if (gaps!.watch(dir.path, dir.fsPath, scope.key)) watched++;
+            seen?.add(dir.path);
+          }
           let entries: [string, vscode.FileType][];
           try {
             entries = await vscode.workspace.fs.readDirectory(dir);
@@ -1498,7 +1512,14 @@ export class Recorder implements vscode.Disposable {
             return;
           }
           const gitFile = entries.some(([name, type]) => name === '.git' && type & vscode.FileType.File);
-          if (rel && gitFile && this.isWorktreeGitFile(vscode.Uri.joinPath(dir, '.git').fsPath, scope)) return;
+          if (rel && gitFile && this.isWorktreeGitFile(vscode.Uri.joinPath(dir, '.git').fsPath, scope)) {
+            // Another worktree: its own lane, if it gets one, watches it.
+            if (blind) {
+              gaps!.unwatch(dir.path, scope.key);
+              seen?.delete(dir.path);
+            }
+            return;
+          }
           for (const [name, type] of entries) {
             const childRel = rel ? `${rel}/${name}` : name;
             if (type & vscode.FileType.Directory) {
@@ -1544,7 +1565,14 @@ export class Recorder implements vscode.Disposable {
     const st = await stat(dir);
     if (!st || !(st.type & vscode.FileType.Directory) || st.type & vscode.FileType.SymbolicLink || stale()) return;
     // Before any check that leaves it unread: a worktree in it may be recorded later.
-    if (reported && dir.scheme === 'file') this.gaps?.noteReported(dir.path);
+    if (reported && dir.scheme === 'file' && this.gaps) {
+      this.gaps.noteReported(dir.path);
+      // A lane already recording a checkout in it walked before this report, so it watched nothing it needs.
+      for (const s of this.scopes.values()) {
+        if (s.own || !s.root.path.startsWith(dir.path + '/') || !this.gaps.isBlind(s.root.path) || this.gaps.owns(s.root.path, s.key)) continue;
+        this.walk(s, stale).catch((err) => this.log.appendLine(`Failed to watch new folders in ${s.root.fsPath}: ${String(err)}`));
+      }
+    }
     const scope = this.scopeOf(dir);
     if (!scope) return;
     const rel = this.relOf(scope, dir);
@@ -1617,9 +1645,14 @@ export class Recorder implements vscode.Disposable {
     const tracked: Array<[vscode.Uri, GitBaselineRef]> = [];
     const candidates: vscode.Uri[] = [];
     for (const scope of [...this.scopes.values()]) {
-      const found = await this.walk(scope, stale);
+      const mark = this.gaps?.mark();
+      const blind = new Set<string>();
+      const found = await this.walk(scope, stale, undefined, undefined, blind);
       const clean = s.gitBaselines ? await this.cleanTracked(scope) : undefined;
       if (stale()) return;
+      // Watches of the folders this walk no longer reached (excluded, or gone) are let go; a scope gone meanwhile lets all go.
+      if (this.scopes.get(scope.key)?.root.toString() !== scope.root.toString()) this.gaps?.release(scope.key);
+      else if (mark !== undefined) this.gaps!.keepOnly(scope.key, blind, mark);
       for (const uri of found) {
         // A file in a workspace folder or recorded checkout nested in this one is that one's, with paths relative to it.
         if (this.scopeOf(uri)?.key !== scope.key || !this.passes(uri) || known(uri.toString())) continue;
