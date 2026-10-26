@@ -102,6 +102,8 @@ export async function run(): Promise<void> {
   await sleep(500);
   fs.writeFileSync(path.join(root, '.worktrees', 'fix', 'src', 'a.ts'), 'export const a = "fix";\n');
   await until('fix change recorded', () => timeline.laneEvents(fix.id).length === 1);
+  // The control for I3: auto-follow does move to a lane no pattern names.
+  await until('auto-follow moves to fix', () => timeline.followed === fix.id);
   console.log('[it] IGNORE: a worktree no pattern names still gets a lane ok');
 
   // --- I6. A lane auto-record added stops when its worktree switches to a branch a pattern names,

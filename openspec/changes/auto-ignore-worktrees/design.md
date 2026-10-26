@@ -55,7 +55,7 @@ In `autoRecord()`, a worktree that is new and settled but matches is logged and 
 
 ### Watching HEAD for branch switches
 
-While some pattern starts with `branch:`, `watchCommonDirs` adds `worktrees/*/HEAD` to its glob and also handles change events for HEAD files, since git rewrites HEAD in place. A change event on a `worktrees/<name>` directory only means a write inside it, so it is ignored. A branch switch then schedules a worktree refresh like any other worktree event.
+While some pattern starts with `branch:`, `watchCommonDirs` adds `worktrees/*/HEAD` and the main worktree's `HEAD` to its glob and also handles change events for HEAD files, since git rewrites HEAD in place. A change event on a `worktrees/<name>` directory only means a write inside it, so it is ignored. A branch switch then schedules a worktree refresh like any other worktree event.
 - Only with a branch pattern: commits in a detached worktree, rebase steps and bisect also rewrite HEAD, and each would cost a full refresh for nothing.
 - With a branch pattern the common directory is watched even when auto-record is off, so a hand-recorded lane's branch stays current for auto-follow.
 - The watcher remembers its glob and is replaced when the patterns change whether HEAD is needed.

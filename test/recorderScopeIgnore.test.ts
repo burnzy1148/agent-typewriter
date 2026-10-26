@@ -99,6 +99,11 @@ test('the common-dir watcher sees HEAD, which a branch switch rewrites, only whi
   assert.equal(refreshes(), before, 'still none for the directory');
   t.fire('change', path.join(gitDir, 'worktrees', 'fix', 'HEAD'));
   await until('HEAD refreshes', () => refreshes() > before);
+  // The main worktree's HEAD too: a lane may record the main checkout from a folder opened at a linked worktree.
+  assert.ok(minimatch('HEAD', watcher()!.pattern), watcher()!.pattern);
+  before = refreshes();
+  t.fire('change', path.join(gitDir, 'HEAD'));
+  await until('main HEAD refreshes', () => refreshes() > before);
   // A branch pattern also keeps hand-recorded lanes' branches current for auto-follow with auto-record off.
   s.autoRecordWorktrees = 'off';
   await t.recorder.refreshFilter('autoRecordWorktrees changed');

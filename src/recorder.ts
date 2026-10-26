@@ -1107,7 +1107,8 @@ export class Recorder implements vscode.Disposable {
     // A branch pattern needs branch switches seen, which rewrite a worktree's HEAD; otherwise commits in a detached one would refresh for nothing.
     const branches = autoIgnoreWorktrees.some((p) => p.trim().startsWith(BRANCH_PREFIX));
     // A new worktree's directory, and the lock `git worktree add` holds until its files are checked out.
-    const glob = branches ? '{worktrees/*,worktrees/*/locked,worktrees/*/HEAD}' : '{worktrees/*,worktrees/*/locked}';
+    // HEAD on its own is the main worktree's, which a non-own lane may record too.
+    const glob = branches ? '{worktrees/*,worktrees/*/locked,worktrees/*/HEAD,HEAD}' : '{worktrees/*,worktrees/*/locked}';
     const want = new Map<string, string>();
     if (autoRecordWorktrees !== 'off' || branches) for (const s of this.scopes.values()) if (s.commonKey && s.commonDir) want.set(s.commonKey, s.commonDir);
     for (const [key, w] of this.commonWatchers) {
