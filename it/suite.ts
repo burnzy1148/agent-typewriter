@@ -1661,7 +1661,7 @@ async function playback(c: Context): Promise<void> {
     const savedPace = (['charsPerMinute', 'catchUpFactor'] as const).map((k) => [k, cfg().inspect(k)?.workspaceValue] as const);
     await cfg().update('charsPerMinute', 'fast', WS);
     await cfg().update('catchUpFactor', 'auto', WS);
-    assert.equal(readSettings().charsPerMinute, 350);
+    assert.equal(readSettings().charsPerMinute, 1000);
     assert.equal(readSettings().catchUpFactor, 0.5);
     const atPace = timeline.all().length;
     write('src/setPace.ts', 'export const pace = 1;\n');

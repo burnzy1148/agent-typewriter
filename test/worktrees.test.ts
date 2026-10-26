@@ -21,6 +21,9 @@ import {
   ownCheckout,
   parseWorktreeList,
   initializing,
+  pathKey,
+  realPathAsync,
+  realPathKey,
   relativeInside,
   rootIn,
   uniqueLabels,
@@ -213,6 +216,40 @@ test('listWorktrees: a nested worktree whose .git file is deleted is still liste
   assert.equal(feature?.prunable, true);
   assert.deepEqual(nestedUnder(repo, r.worktrees), ['.claude/worktrees/feature/']);
   assert.deepEqual(liveWorktrees(r.worktrees).length, 1);
+});
+
+// --- at-dd6: a workspace folder opened through a symlink, worktrees listed by their real paths.
+
+test('at-dd6 a folder opened through a symlink: own checkout, nested worktrees and relative paths still match', { skip: noGit }, async (ctx) => {
+  const repo = tempRepo('at-wt-');
+  write(repo, 'packages/app/a.ts', 'a\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'initial');
+  git(repo, 'worktree', 'add', '-q', '-b', 'coupons', path.join('.claude', 'worktrees', 'coupons'));
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', `${repo}-side`);
+  const link = path.join(tempDir('at-wt-link-'), 'repo');
+  try {
+    fs.symlinkSync(repo, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    return ctx.skip('cannot create a symlink here');
+  }
+  const r = await listWorktrees(link);
+  assert.ok(r.kind === 'ok');
+  const main = r.worktrees.find((w) => pathKey(w.path) === pathKey(repo));
+  assert.ok(main, 'git lists the main checkout');
+  assert.equal(ownCheckout(link, r.worktrees), main);
+  assert.equal(ownCheckout(path.join(link, '.claude', 'worktrees', 'coupons'), r.worktrees)?.branch, 'coupons');
+  assert.deepEqual(nestedUnder(link, r.worktrees), ['.claude/worktrees/coupons/']);
+  assert.deepEqual(
+    Object.fromEntries(r.worktrees.map((w) => [w.branch, relativeInside(link, w.path)])),
+    { main: '', coupons: '.claude/worktrees/coupons', side: undefined },
+  );
+  // Read without blocking, a path gets the same key.
+  for (const p of [link, path.join(link, '.claude', 'worktrees', 'coupons'), path.join(link, 'no-such-dir'), 'relative/dir']) {
+    assert.equal(realPathKey(await realPathAsync(p)), pathKey(p), p);
+  }
+  const side = r.worktrees.find((w) => w.branch === 'side')!;
+  assert.equal(rootIn(side, main, path.join(link, 'packages', 'app')), path.join(side.path, 'packages', 'app'));
 });
 
 // --- at-l3q.10.7: a .git file hides its directory only when it is a worktree of the folder's repository.
