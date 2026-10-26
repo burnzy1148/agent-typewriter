@@ -55,6 +55,9 @@ async function prune({ keep, include, dryRun }) {
       continue;
     }
     if (!pat) throw new Error('VSCE_PAT is needed to remove versions');
+    // The API takes the version as a query parameter: without one, it removes
+    // the whole extension, stable versions included.
+    if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Refusing to remove ${JSON.stringify(version)}: not a version`);
     const api = new gallery.GalleryApi(MARKETPLACE, [webApi.getBasicHandler('OAuth', pat)]);
     await api.deleteExtension(publisher, name, version);
     console.log(`Removed ${publisher}.${name}@${version}`);
@@ -72,8 +75,8 @@ try {
       console.log(JSON.stringify(await versions()));
       break;
     case 'prune': {
+      if (!/^\d+$/.test(values.keep ?? '')) throw new Error('prune needs --keep <n>, n >= 0');
       const keep = Number(values.keep);
-      if (!Number.isInteger(keep) || keep < 0) throw new Error('prune needs --keep <n>, n >= 0');
       await prune({ keep, include: values.include, dryRun: values['dry-run'] });
       break;
     }

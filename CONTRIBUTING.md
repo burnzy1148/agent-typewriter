@@ -108,7 +108,7 @@ A merge whose run is cancelled by a newer push gets no tag of its own; the next 
 **Publishing is manual.** Run the **Pre-release** workflow from the Actions tab, or:
 
 ```
-gh workflow run prerelease.yml                      # the newest pre-v tag
+gh workflow run prerelease.yml                      # the newest pre-v tag on develop
 gh workflow run prerelease.yml -f tag=pre-v0.5.3    # a chosen one
 ```
 
@@ -119,7 +119,7 @@ It refuses, without publishing:
 - a tag whose commit isn't on `develop`
 - a version that isn't higher than everything on the Marketplace, because testers would never be offered it (for example, after a stable release has overtaken it)
 
-If a run fails partway, rerun it. It finishes the steps that didn't complete and doesn't publish the version twice.
+If a run fails partway, rerun it. A rerun picks the same tag, even if CI has tagged newer merges since. It finishes the steps that didn't complete and doesn't publish the version twice.
 
 To see what's on the Marketplace, or what pruning would remove:
 
@@ -128,7 +128,14 @@ node scripts/marketplace.mjs versions
 node scripts/marketplace.mjs prune --keep 2 --dry-run
 ```
 
-To remove every pre-release, for example to stop offering them, run `VSCE_PAT=<token> node scripts/marketplace.mjs prune --keep 0` with a Marketplace token that can publish. Keep the even-minor rule afterwards, so the next stable release still sorts above the pre-releases testers have installed.
+To remove every pre-release, for example to stop offering them, remove them from both places. The tags stay.
+
+```
+VSCE_PAT=<token> node scripts/marketplace.mjs prune --keep 0
+gh release list --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease and (.tagName | startswith("pre-v"))) | .tagName' | while read -r tag; do gh release delete "$tag" --yes; done
+```
+
+The first command removes them from the Marketplace and needs a Marketplace token that can publish. The second deletes the GitHub pre-releases. Keep the even-minor rule afterwards, so the next stable release still sorts above the pre-releases testers have installed.
 
 ## License
 

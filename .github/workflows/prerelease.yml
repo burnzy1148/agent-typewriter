@@ -4,7 +4,7 @@ name: Pre-release
 #
 # ci.yml tags each develop push that passes everything pre-v<version>; this
 # workflow publishes one of those tags. Run it from the Actions tab, or:
-#   gh workflow run prerelease.yml                       # the newest pre-v tag
+#   gh workflow run prerelease.yml                       # the newest pre-v tag on develop
 #   gh workflow run prerelease.yml -f tag=pre-v0.5.3     # a chosen one
 #
 # It builds the tagged commit with the tag's version and the pre-release flag
@@ -33,6 +33,11 @@ concurrency:
   group: prerelease-publish
   cancel-in-progress: false
 
+# bash with pipefail, so a failing command in a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 env:
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
@@ -53,11 +58,13 @@ jobs:
           node-version: 22
           cache: npm
 
-      # Everything after this runs from the tagged commit.
+      # Without a tag input, the newest tag reachable from the commit the run
+      # was dispatched on, so a rerun picks the same tag even after CI has
+      # tagged newer merges. Everything after this runs from the tagged commit.
       - name: Choose the tag
         id: tag
         run: |
-          tag=${INPUT_TAG:-$(node scripts/version-cli.mjs newest-prerelease-tag)}
+          tag=${INPUT_TAG:-$(node scripts/version-cli.mjs newest-prerelease-tag "$GITHUB_SHA")}
           if [ -z "$tag" ]; then
             echo "No pre-v tag to publish" >&2
             exit 1
@@ -104,15 +111,20 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
+      # A run that died mid-upload can leave a draft without the .vsix; finish it.
       - name: Create GitHub release
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "GitHub release $TAG already exists"
+          asset="agent-typewriter-${VERSION}.vsix"
+          if state=$(gh release view "$TAG" --json isDraft,assets --jq "[.isDraft, any(.assets[]; .name == \"$asset\")] | @tsv" 2>/dev/null); then
+            read -r draft uploaded <<< "$state"
+            [ "$uploaded" = true ] || gh release upload "$TAG" "$asset" --clobber
+            [ "$draft" = false ] || gh release edit "$TAG" --draft=false --prerelease
+            echo "GitHub release $TAG exists (draft: $draft, .vsix uploaded: $uploaded)"
             exit 0
           fi
           start=$(gh release list --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName' \
             | node scripts/version-cli.mjs notes-start "$VERSION")
-          gh release create "$TAG" "agent-typewriter-${VERSION}.vsix" --verify-tag --prerelease --title "$TAG" \
+          gh release create "$TAG" "$asset" --verify-tag --prerelease --title "$TAG" \
             --generate-notes ${start:+--notes-start-tag "$start"}
         env:
           TAG: ${{ steps.tag.outputs.tag }}

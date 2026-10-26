@@ -79,7 +79,8 @@ Steps: check out with `fetch-depth: 0`, which brings the tags, then run `scripts
 1. Skip the bump merge: `package.json`'s `version` differs from `HEAD^`'s.
 2. If a `pre-v*` tag is already on `HEAD`, stop.
 3. If `HEAD` doesn't descend from the newest tag in its stream, stop.
-4. Create the `nextPrerelease` tag locally and print it.
+4. If only the site changed since the newest tag in the stream, or since `v<version>` when the stream has none, stop. `ci.yml`'s `changes` job classifies paths on pull requests only, so a push has to be checked here. Diffing from the last tag, not from `HEAD^`, keeps the changes of a cancelled run counted when a site-only merge follows them. It uses the same `scripts/ci-changes.mjs` classification as pull requests.
+5. Create the `nextPrerelease` tag locally and print it.
 
 ### `prerelease.yml` workflow
 
@@ -87,7 +88,7 @@ Steps: check out with `fetch-depth: 0`, which brings the tags, then run `scripts
 - `concurrency: { group: prerelease-publish, cancel-in-progress: false }`, `permissions: contents: write`, and `VSCE_PAT`.
 
 Steps:
-1. Fetch tags. Resolve the tag: the input, or `newestPrereleaseTag`. Refuse anything not `pre-v*`, or whose commit is not an ancestor of `origin/develop`.
+1. Fetch tags. Resolve the tag: the input, or `newestPrereleaseTag` among tags reachable from `GITHUB_SHA`, the dispatched commit. A rerun keeps `GITHUB_SHA`, so it resolves the same tag even after CI has tagged newer merges. Refuse anything not `pre-v*`, or whose commit is not an ancestor of `origin/develop`.
 2. Run `publishCheck` against `marketplace.mjs versions`. Refuse, or continue in `publish` or `finish` mode.
 3. Check out the tag, `npm ci`, then `npx vsce package "$VERSION" --pre-release --no-dependencies --no-update-package-json --no-git-tag-version`. It doesn't rerun the tests, because the tag means CI passed on this commit. It doesn't reuse a CI artifact, because those expire and are packaged as stable.
 4. `npx vsce publish --pre-release --packagePath *.vsix --skip-duplicate`.
