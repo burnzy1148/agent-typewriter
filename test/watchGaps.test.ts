@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { GAP_WATCH_LIMIT, nodeWatchDir, shareOfSystemWatches, WatchGaps, type WatchDir } from '../src/watchGaps';
+import { MAX_LANES, MAX_WAITING } from '../src/lanes';
 import { tempDir } from './gitFixture';
 
 /** WatchGaps on a fake WatchDir, watching at most `total` at once: `open` lists the watched paths, and `fail` makes watches throw. */
@@ -152,14 +153,14 @@ test('once the system is out of inotify watches, none is tried again until every
   assert.deepEqual([...open], ['/ws/b']);
 });
 
-test('the total is a quarter of the inotify watches the system allows a user, up to every lane\'s limit', () => {
+test('the total is a quarter of the inotify watches the system allows a user, up to the limits of every lane and waiting worktree', () => {
   const dir = tempDir('at-gap-max-');
   const file = path.join(dir, 'max_user_watches');
   fs.writeFileSync(file, '8192\n');
   assert.equal(shareOfSystemWatches(file), 2048);
   fs.writeFileSync(file, '1048576\n');
-  assert.equal(shareOfSystemWatches(file), 5 * GAP_WATCH_LIMIT);
-  assert.equal(shareOfSystemWatches(path.join(dir, 'missing')), 5 * GAP_WATCH_LIMIT);
+  assert.equal(shareOfSystemWatches(file), (MAX_LANES + MAX_WAITING) * GAP_WATCH_LIMIT);
+  assert.equal(shareOfSystemWatches(path.join(dir, 'missing')), (MAX_LANES + MAX_WAITING) * GAP_WATCH_LIMIT);
 });
 
 test('a directory reported or watched, or a watched one that went, is known until it is deleted', () => {

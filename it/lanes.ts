@@ -94,14 +94,20 @@ export async function run(): Promise<void> {
   await vscode.workspace.getConfiguration('agentTypewriter').update('autoFollow', false, vscode.ConfigurationTarget.Workspace);
   console.log('[it] LANES: auto-follow tours the lanes ok');
 
-  // --- L5. Auto-record fill gives a worktree added while recording its own lane.
+  // --- L5. Auto-record fill gives a worktree added while recording its own lane, at its first change.
   await vscode.workspace.getConfiguration('agentTypewriter').update('autoRecordWorktrees', 'fill', vscode.ConfigurationTarget.Workspace);
   git('worktree', 'add', '-q', '-b', 'extra', '.worktrees/extra');
-  await until('auto-recorded lane', () => recorder.recordedLanes().length === 3);
+  const extraFile = path.join(root, '.worktrees', 'extra', 'src', 'a.ts');
+  await until('extra watched', () => recorder.hasBaseline(vscode.Uri.file(extraFile)));
+  assert.equal(recorder.recordedLanes().length, 2, 'no lane before its first change');
+  assert.equal(laneNamed('extra'), undefined);
+  write(extraFile, 'export const a = "extra";\n');
+  await until('extra change recorded', () => {
+    const id = laneNamed('extra');
+    return id !== undefined && timeline.laneEvents(id).length === 1;
+  });
   const extra = laneNamed('extra')!;
-  await sleep(500);
-  write(path.join(root, '.worktrees', 'extra', 'src', 'a.ts'), 'export const a = "extra";\n');
-  await until('extra change recorded', () => timeline.laneEvents(extra).length === 1);
+  assert.equal(recorder.recordedLanes().length, 3);
   assert.equal(timeline.laneEvents(extra)[0].before, 'export const a = 0;\n', 'the new lane had a baseline');
   await vscode.workspace.getConfiguration('agentTypewriter').update('autoRecordWorktrees', 'off', vscode.ConfigurationTarget.Workspace);
   console.log('[it] LANES: auto-record fill adds a lane ok');

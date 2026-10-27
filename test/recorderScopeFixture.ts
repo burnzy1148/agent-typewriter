@@ -97,10 +97,10 @@ export function recorderOn(s: Settings, opts: Options, dir: string) {
     write(path.dirname(file), path.basename(file), text);
     fire(kind, file);
   };
-  /** Waits for every debounce and read to finish, then hands held changes to the timeline. */
+  /** Waits for every debounce and read to finish, and for new worktrees' first changes to get a lane, then hands held changes to the timeline. */
   const settle = async (extra = 0) => {
     await sleep(s.debounceMs + 150 + extra);
-    for (let i = 0; i < 250 && !recorder.describeActivity().includes('debouncing: none; reading: 0;'); i++) await sleep(20);
+    for (let i = 0; i < 250 && !recorder.describeActivity().includes('debouncing: none; reading: 0; waiting for a lane: 0;'); i++) await sleep(20);
     await sleep(50);
     recorder.drainHeld();
   };
@@ -189,4 +189,9 @@ export function addWorktree(t: ReturnType<typeof recorderOn>, repo: string, name
   git(repo, 'worktree', 'add', '-q', '-b', name, dir);
   t.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(dir)));
   return dir;
+}
+
+/** Waits until the recorder watches a file, so its next change is recorded: in a new worktree, once it waits for its first change. */
+export async function untilWatched(t: ReturnType<typeof recorderOn>, file: string): Promise<void> {
+  await until(`${file} watched`, () => t.recorder.hasBaseline(t.uri(file)));
 }

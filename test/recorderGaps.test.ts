@@ -213,6 +213,76 @@ test('a lane on a worktree in a new folder watches it even when added before tha
   assert.deepEqual(w.watched(repo), ['.claude/worktrees']);
 });
 
+test('a new worktree in a folder made while recording waits with folder watches: its first write, seen only by one, gives it a lane, and one that stops waiting lets go of them', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const w = fakeWatches();
+  const s = settings({ autoRecordWorktrees: 'fill' });
+  const t = recorderOn(s, { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const common = path.join(fs.realpathSync.native(repo), '.git', 'worktrees');
+  // A review tool's worktree with no .claude yet: the watcher reports .claude alone.
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  const fix = path.join(repo, '.claude', 'worktrees', 'fix');
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'HEAD');
+  git(repo, 'worktree', 'add', '-q', '-b', 'fix', fix);
+  t.fire('create', path.join(repo, '.claude'));
+  t.fire('create', path.join(common, 'review-1'));
+  t.fire('create', path.join(common, 'fix'));
+  await until('both wait with their folders watched', () => ['review-1/src', 'fix/src'].every((d) => w.watched(repo).includes(`.claude/worktrees/${d}`)));
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  assert.equal(t.checkout()?.lanes, 1, 'no lane while they wait');
+  write(fix, 'src/a.ts', 'fixed\n');
+  w.entry(path.join(fix, 'src/a.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify fix/src/a.ts']);
+  assert.equal(t.checkout()?.lanes, 2);
+  // Still there, it stops waiting once it matches a pattern.
+  s.autoIgnoreWorktrees = ['review-*'];
+  await t.recorder.refreshFilter('autoIgnoreWorktrees changed');
+  assert.deepEqual(
+    w.watched(repo).filter((d) => d.includes('review-1')),
+    [],
+    'it lets go of its watches',
+  );
+  assert.ok(w.watched(repo).includes('.claude/worktrees/fix/src'), 'the lane keeps its own');
+  assert.equal(t.checkout()?.lanes, 2);
+});
+
+test('a waiting worktree in a folder made while recording, removed and made again within one listing, is watched again even when no folder event tells', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  git(repo, 'checkout', '-q', '-b', 'pr');
+  write(repo, 'src/a.ts', 'pr\n');
+  git(repo, 'commit', '-q', '-am', 'pr');
+  git(repo, 'checkout', '-q', 'main');
+  const w = fakeWatches();
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const common = path.join(fs.realpathSync.native(repo), '.git', 'worktrees');
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'main');
+  t.fire('create', path.join(repo, '.claude'));
+  t.fire('create', path.join(common, 'review-1'));
+  await until('it waits with its folders watched', () => w.watched(repo).includes('.claude/worktrees/review-1/src'));
+  await t.settle();
+  const opens = w.opens.get(path.join(review, 'src'))!;
+  // Removed and made again from pr: the kernel drops the old watches, and what the folder watch above saw is lost.
+  git(repo, 'worktree', 'remove', '--force', review);
+  w.kill(path.join(review, 'src'));
+  w.kill(review);
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'pr');
+  t.fire('delete', path.join(common, 'review-1'));
+  t.fire('create', path.join(common, 'review-1'));
+  await until('its folders are watched again', () => (w.opens.get(path.join(review, 'src')) ?? 0) > opens && w.watched(repo).includes('.claude/worktrees/review-1/src'));
+  await t.settle();
+  assert.deepEqual(t.events(), []);
+  write(review, 'src/a.ts', 'reviewed\n');
+  w.entry(path.join(review, 'src/a.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify review-1/src/a.ts']);
+  assert.equal(t.timeline.all()[0].before, 'pr\n');
+});
+
 const fewWatches = shareOfSystemWatches() < GAP_WATCH_LIMIT + 100 ? 'the system allows too few inotify watches' : undefined;
 
 test('a lane is not held back by another lane that reached its limit of watches', { skip: noGit ?? fewWatches }, async () => {

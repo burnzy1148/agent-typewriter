@@ -850,11 +850,11 @@
           ],
           "enumDescriptions": [
             "A new worktree records only when you add it.",
-            "A new worktree gets its own lane while fewer than 5 checkouts record.",
+            "A new worktree gets its own lane at its first change, while fewer than 5 checkouts record.",
             "Like fill, and when all 5 are taken the lane idle longest stops to make room."
           ],
           "default": "off",
-          "markdownDescription": "Give each worktree added while recording to a recorded repository its own lane. `fill` adds one while fewer than 5 checkouts record. `rotate` also makes room when all 5 are taken, by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). `off` records a new worktree only when you add it."
+          "markdownDescription": "Give each worktree added while recording to a recorded repository its own lane, once something is written there. Until its first change it is watched but has no lane, doesn't count toward the 5, and can't be followed, so a worktree a tool checks out and removes without writing leaves no lane; at most 5 wait like this at once. At that first change, `fill` gives it a lane while fewer than 5 checkouts record, and otherwise records neither that change nor the worktree. `rotate` also makes room when all 5 are taken, by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). `off` records a new worktree only when you add it."
         },
         "agentTypewriter.autoIgnoreWorktrees": {
           "type": "array",
@@ -862,7 +862,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Glob patterns for worktrees that auto-record never gives a lane and auto-follow never moves to, such as review or other throwaway checkouts. A pattern without a slash matches the worktree's directory name (`review-*`); one with a slash matches its full path as git reports it, with symlinks resolved, so start it with `**/` (`**/T/tmp.*`). A pattern starting with `branch:` matches its branch instead (`branch:review/*`); a detached worktree has no branch. A lane auto-record added since recording started stops once it matches, unless it is its folder's last. The folder's own checkout never matches, and you can still record a matching worktree by hand."
+          "markdownDescription": "Glob patterns for worktrees that auto-record never gives a lane and auto-follow never moves to, such as review or other throwaway checkouts. A pattern without a slash matches the worktree's directory name (`review-*`); one with a slash matches its full path as git reports it, with symlinks resolved, so start it with `**/` (`**/T/tmp.*`). A pattern starting with `branch:` matches its branch instead (`branch:review/*`); a detached worktree has no branch. A lane auto-record added since recording started stops once it matches, unless it is its folder's last, and a new worktree still waiting for its first change is no longer watched. The folder's own checkout never matches, and you can still record a matching worktree by hand."
         },
         "agentTypewriter.autoFollow": {
           "type": "boolean",
@@ -881,7 +881,7 @@
     "tour": "node scripts/replay-tour.mjs",
     "demo": "node scripts/demo/record.mjs",
     "vscode:prepublish": "npm run build -- --minify",
-    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts it/lanes.ts it/gitOperations.ts it/ignoreWorktrees.ts it/deepFolders.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
+    "it": "npm run build && esbuild it/suite.ts it/restore.ts it/runTest.ts it/folders.ts it/nestedFolders.ts it/gitReplay.ts it/lanes.ts it/gitOperations.ts it/ignoreWorktrees.ts it/deepFolders.ts it/waitingWorktrees.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --external:@vscode/test-electron --outdir=.it-out && node scripts/run-it.mjs"
   },
   "dependencies": {
     "diff": "^9.0.0",

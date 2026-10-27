@@ -1,11 +1,13 @@
 /**
  * Lane policy, kept pure so it is tested without VS Code: how many checkouts
  * record at once, which color a lane gets, which lane rotation stops for a new
- * worktree, and which lane auto-follow moves to.
+ * worktree's first change, and which lane auto-follow moves to.
  */
 
 /** Most checkouts that record at once, across every workspace folder. */
 export const MAX_LANES = 5;
+/** Most new worktrees auto-record watches at once while they wait for their first change, which gives them a lane. */
+export const MAX_WAITING = 5;
 /** Number of lane colors; with more lanes in the buffer, colors repeat. */
 export const LANE_COLORS = 5;
 /** A lane must have recorded nothing for this long before rotation may stop it. */

@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { MAX_LANES } from './lanes';
+import { MAX_LANES, MAX_WAITING } from './lanes';
 
 /** A watch of one directory; `close` stops it. */
 export interface DirWatch {
@@ -44,10 +44,12 @@ export const GAP_WATCH_LIMIT = 2000;
 /**
  * Most directories watched at once across lanes: a quarter of the inotify
  * watches the system allows a user, which VS Code's own watcher and other
- * programs share, and no more than every lane's limit together.
+ * programs share, and no more than the limits of every lane and every new
+ * worktree waiting for its first change together. Only where the system
+ * allows that many can every one of them have all it may.
  */
 export function shareOfSystemWatches(file = '/proc/sys/fs/inotify/max_user_watches'): number {
-  const most = MAX_LANES * GAP_WATCH_LIMIT;
+  const most = (MAX_LANES + MAX_WAITING) * GAP_WATCH_LIMIT;
   try {
     const max = Number(fs.readFileSync(file, 'utf8').trim());
     return max > 0 ? Math.min(most, Math.floor(max / 4)) : most;

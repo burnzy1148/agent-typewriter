@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- With `autoRecordWorktrees` set to `fill` or `rotate`, a new worktree gets its lane at its first change instead of as soon as git lists it. Until then it is watched but has no lane, doesn't count toward the 5-lane cap, can't make `rotate` stop a lane and can't be followed, so worktrees that review tools check out and remove without writing leave no lanes. The cap and rotation are decided at that first change. At most 5 new worktrees wait at once.
 - Pre-releases: tested builds of `develop` are published from time to time to the Marketplace's pre-release channel ("Switch to Pre-Release Version"). They use odd minor versions (0.5.x for now), and stable releases use even ones, so the next minor release after 0.3.0 is 0.6.0.
 - Changes are typed in the order a person writes them: a new block gets its closing line right after its opening line, then its body is filled in between, and a function's signature comes before its body, even with its parameters on several lines (`naturalOrder`, default on). Moving back into the block and past its closing line never waits for the read pause or scrolls. Edits in different places are still typed top to bottom.
 - The default typing speed (`charsPerMinute`) is 1000 characters per minute (was 350). A speed you set yourself is kept.

@@ -39,7 +39,7 @@ const [atX, atY] = opts.at.split(',').map(Number);
 const width = 1280;
 const height = 820;
 // Tour steps to play, by id, each followed by a pause in ms before the next.
-// add-worktrees itself waits for both new lanes to record before returning.
+// add-worktrees itself waits for auto-record to watch both new worktrees before returning.
 const shot = [
   ['add-worktrees', 0],
   ['two-agents', 0],

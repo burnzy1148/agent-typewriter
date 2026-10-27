@@ -203,19 +203,19 @@ export const steps = [
   {
     id: 'add-worktrees',
     title: 'Two agents get their own checkouts',
-    look: 'Two git worktrees appear under .claude/worktrees, on branches coupons and tax. In the Checkouts view (Agent Typewriter in the Activity Bar), each is ticked within a few seconds and gets its own lane color: main blue, coupons green, tax orange. The eye stays on main.',
+    look: 'Two git worktrees appear under .claude/worktrees, on branches coupons and tax. In the Checkouts view (Agent Typewriter in the Activity Bar) they are listed but not ticked: auto-record watches them, and gives each its own lane once an agent writes there. The eye stays on main.',
     run: async (ws) => {
       ws.git('worktree', 'add', '-q', '-b', 'coupons', COUPONS);
       ws.git('worktree', 'add', '-q', '-b', 'tax', TAX);
-      // Writes in a worktree before it records are not replayed, so give
-      // auto-record time to tick both before the next step can start.
+      // Writes in a worktree before auto-record watches it are not replayed,
+      // so give it time to take both worktrees' baselines before the next step.
       await sleep(2500);
     },
   },
   {
     id: 'two-agents',
     title: 'Two agents at once',
-    look: 'The coupons and tax agents edit their own worktrees, taking turns. Each change queues in its checkout\'s lane. Auto-follow moves the eye to coupons and types its changes in green-tinted tabs while tax\'s queue grows in the Checkouts view. Once coupons is caught up and quiet for 3 seconds, playback follows tax, in orange-tinted tabs. Each lane has its own cart.ts tab.',
+    look: 'The coupons and tax agents edit their own worktrees, taking turns. Each worktree is ticked with its agent\'s first change and gets its own lane color: main blue, coupons green, tax orange. Each change queues in its checkout\'s lane. Auto-follow moves the eye to coupons and types its changes in green-tinted tabs while tax\'s queue grows in the Checkouts view. Once coupons is caught up and quiet for 3 seconds, playback follows tax, in orange-tinted tabs. Each lane has its own cart.ts tab.',
     run: async (ws) => {
       ws.write(`${COUPONS}/src/coupons.ts`, 'export interface Coupon {\n  code: string;\n  percentOff: number;\n}\n');
       await sleep(600);
