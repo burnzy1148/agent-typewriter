@@ -217,7 +217,8 @@ export const workspace = {
   fs: {
     async stat(uri: Uri) {
       const st = fs.statSync(uri.fsPath, { throwIfNoEntry: false }) ?? fs.lstatSync(uri.fsPath);
-      return { type: typeOf(uri.fsPath), size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs };
+      // VS Code's ctime is the birth time.
+      return { type: typeOf(uri.fsPath), size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs };
     },
     async readFile(uri: Uri): Promise<Uint8Array> {
       mock.onReadFile?.(uri.fsPath);

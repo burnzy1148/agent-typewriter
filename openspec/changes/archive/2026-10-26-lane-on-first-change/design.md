@@ -67,6 +67,7 @@ Watchers often report a worktree removed at once as just its directory, so its f
 Each worktree event restarts the 300 ms wait before worktrees are listed again, so `git worktree remove X && git worktree add X <ref>` can reach one listing that still shows X. Its waiting scope then keeps the old checkout's baselines, and the files git checks out for the new one arrive as creates that would count as a first change. `resolveScopes()` therefore remembers the identity (inode, mtime, birth time) of each waiting worktree's `.git` file, which `git worktree add` writes anew. When a listing finds a different one, it forgets the baselines under the root, drops the worktree from `knownWorktrees` and gives it no scope, so `autoRecord()` lets it wait afresh as a new worktree, and the next full refresh takes new baselines. A change read in between is dropped: it can't be told from git's checkout.
 
 Changes already on their way when it waits again are the old checkout's removal or git's checkout of the new one, and `ignoreGitOperations` doesn't always catch them (it may be off). So the new scope gets a new watcher instead of the old scope's, which drops the deletes held for the old checkout. And each waiting entry records when it started waiting (`since`): `flush()` takes a change whose burst began before then as a baseline, or drops it if a delete, rather than as a first change. For a worktree made again, a change whose file (or, for a delete, its directory) was last written before then is treated the same, since git's checkout of the new copy may be reported only after the listing.
+- With folder watches on Linux (at-net.15), the old scope's watches are released with its watcher, so the new checkout's folders are watched again even when no folder event says the old ones went.
 - Trade-off: that mtime test is only for worktrees made again. On filesystems with coarse timestamps, an agent's write within the same tick as the listing could read as older; for a new worktree that would cost its first change, so new ones go by event arrival alone.
 - Considered: ending the wait on the `worktrees/<name>` delete event in the common git directory. Rejected: it needs a mapping from admin names to paths, and watchers coalesce or drop such events; the listing sees every case.
 
@@ -75,6 +76,10 @@ Changes already on their way when it waits again are the old checkout's removal 
 `laneFor()` runs `refreshScopes()` outside `refreshFilter()`, so a decision can drop a scope while a capture is still reading its files. `captureBaseline()` checks `passes()` again just before it stores each baseline, so it never keeps one for a checkout no longer recorded. Running decisions behind `refreshFilter()` instead was rejected: a first change, and every lane's changes held behind it, would wait for a full baseline walk.
 
 `enqueue()` also holds a change while a lane decision for its worktree is still being handed out, not only while the scope is waiting, so a later change of the same file never overtakes the first one.
+
+### Waiting worktrees and folder watches
+
+On Linux, a waiting worktree takes folder watches where VS Code's watcher can't see (at-net.15), as a lane does: a nested `git worktree add` into a new `.claude/worktrees` makes exactly such a tree, and its first write may be seen only there. A waiting scope that is dropped releases its watches where any dropped scope does. The share of the system's inotify watches is sized for MAX_LANES plus MAX_WAITING owners, so waiting worktrees don't use up recording lanes' watches.
 
 ### Ticking a waiting worktree
 
