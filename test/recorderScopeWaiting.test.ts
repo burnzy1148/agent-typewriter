@@ -273,6 +273,42 @@ test('a waiting worktree ticked in another folder of the workspace stops waiting
   assert.ok(!logs.some((l) => l.startsWith('Recording the new worktree')), logs.join('\n'));
 });
 
+test('a waiting worktree ticked in another folder stops waiting when the first folder is opened through a symlink', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const side = `${repo}-side`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', side);
+  const link = path.join(tempDir('at-link-'), 'repo');
+  fs.symlinkSync(repo, link, process.platform === 'win32' ? 'junction' : 'dir');
+  mock.open(link, side);
+  const logs: string[] = [];
+  const timeline = new Timeline(1000);
+  const recorder = new Recorder(timeline, () => settings({ autoRecordWorktrees: 'fill' }), { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel);
+  track(recorder);
+  await recorder.start();
+  const [, b] = mock.folders as unknown as vscode.WorkspaceFolder[];
+  const x = path.join(repo, '.claude', 'worktrees', 'x');
+  git(repo, 'worktree', 'add', '-q', '-b', 'x', x);
+  mock.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', 'x'));
+  // Reported to the first folder's watchers in its spelling, and to a lane's watcher in git's.
+  const viaLink = path.join(link, '.claude', 'worktrees', 'x', 'src', 'a.ts');
+  await until('waits in the first folder', () => recorder.hasBaseline(vscode.Uri.file(viaLink)));
+  await recorder.addCheckout(b, x);
+  write(x, 'src/a.ts', 'one\n');
+  mock.fire('change', viaLink);
+  mock.fire('change', path.join(x, 'src', 'a.ts'));
+  await until('recorded in the lane ticked', () => timeline.all().length > 0);
+  await sleep(500);
+  recorder.drainHeld();
+  assert.deepEqual(timeline.all().map((e) => e.lane), [laneKey(b.uri.toString(), false, x)], 'recorded once');
+  await recorder.removeCheckout(b, x);
+  write(x, 'src/a.ts', 'two\n');
+  mock.fire('change', viaLink);
+  await sleep(800);
+  recorder.drainHeld();
+  assert.equal(timeline.all().length, 1, 'cleared by the user, it is not recorded');
+  assert.ok(!logs.some((l) => l.startsWith('Recording the new worktree')), logs.join('\n'));
+});
+
 test('a write in a waiting worktree whose git check outlasts the listing that finds it made again is no first change', { skip: noGit }, async (tc) => {
   const repo = repoWithPr({ 'src/a.ts': 'a\n' });
   const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
@@ -305,6 +341,72 @@ test('a write in a waiting worktree whose git check outlasts the listing that fi
   await t.settle();
   assert.deepEqual(t.events(), ['modify review-1/src/a.ts']);
   assert.equal(t.timeline.all()[0].before, 'agent\n');
+});
+
+// Watchers may hand over a large checkout's events in chunks, the last only after the listing that starts the wait.
+for (const gitBaselines of [false, true]) {
+  test(`git's checkout of a new worktree reported after it starts waiting is no first change (gitBaselines ${gitBaselines})`, { skip: noGit }, async () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 300; i++) files[`src/f${i}.ts`] = `export const v${i} = 1;\n`;
+    const repo = committedRepo(files);
+    const t = recorderOn(settings({ autoRecordWorktrees: 'fill', gitBaselines, debounceMs: 20 }), {}, repo);
+    await t.recorder.start();
+    const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+    const file = path.join(review, 'src', 'f0.ts');
+    let late = false;
+    t.recorder.onDidChangeScope(() => {
+      if (late || !t.logs.some((l) => l.startsWith('Watching the new worktree'))) return;
+      late = true;
+      t.fire('create', file);
+    });
+    git(repo, 'worktree', 'add', '-q', '--detach', review, 'HEAD');
+    fireCommon(t, repo, 'create', review);
+    await until('reported late', () => late);
+    await untilWatched(t, path.join(review, 'src', 'f1.ts'));
+    await t.settle(300);
+    assert.deepEqual(t.events(), []);
+    assert.equal(t.checkout()?.lanes, 1);
+    t.change(file, 'reviewed\n');
+    await t.settle();
+    assert.deepEqual(t.events(), ['modify review-1/src/f0.ts'], 'a write after it still is');
+  });
+}
+
+test('a waiting worktree made again and listed while git still checks it out: its checkout reported later is no first change', { skip: noGit }, async () => {
+  const repo = repoWithPr({ 'src/a.ts': 'a\n', 'src/b.ts': 'b main\n' });
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  let locked = false;
+  const lister = async (folder: string) => {
+    const r = await listWorktrees(folder);
+    if (r.kind !== 'ok' || !locked) return r;
+    return { kind: 'ok' as const, worktrees: r.worktrees.map((w) => (pathKey(w.path) === pathKey(review) ? { ...w, locked: 'initializing' } : w)) };
+  };
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill', ignoreGitOperations: false, gitBaselines: false }), { lister }, repo);
+  await t.recorder.start();
+  const [a, b] = ['a', 'b'].map((n) => path.join(review, 'src', `${n}.ts`));
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'main');
+  fireCommon(t, repo, 'create', review);
+  for (const f of [a, b]) await untilWatched(t, f);
+  await sleep(400);
+  const watching = () => t.logs.filter((l) => l.startsWith('Watching the new worktree')).length;
+  const refreshes = () => t.logs.filter((l) => l.startsWith('Worktrees changed')).length;
+  locked = true;
+  git(repo, 'worktree', 'remove', '--force', review);
+  fireCommon(t, repo, 'delete', review);
+  t.fire('delete', a);
+  t.fire('delete', b);
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'pr');
+  fireCommon(t, repo, 'create', review);
+  const before = refreshes();
+  await until('listed while checked out', () => refreshes() > before);
+  locked = false;
+  await until('waits afresh', () => watching() === 2, 5000);
+  await sleep(100);
+  t.fire('create', a);
+  t.fire('create', b);
+  await t.settle(1000);
+  assert.deepEqual(t.events(), [], "git's checkout of it is no first change");
+  assert.equal(t.checkout()?.lanes, 1);
 });
 
 test('a new worktree of a repository whose subdirectories are separate folders waits in each folder', { skip: noGit }, async () => {

@@ -14,6 +14,7 @@ import {
   commonDirOf,
   folderCheckoutChoice,
   folderLabels,
+  gitdirOf,
   initializing,
   innermostRoot,
   isWorktreeOf,
@@ -189,7 +190,7 @@ export class Recorder implements vscode.Disposable {
    * change, by the lane key they would get, with their folder and checkout
    * path. Never saved: after a restart they are no longer new.
    */
-  private readonly waiting = new Map<string, { folderKey: string; checkout: string; since: number; remade?: boolean; gitFile?: string }>();
+  private readonly waiting = new Map<string, { folderKey: string; checkout: string; since: number; checkedOut?: number; remade?: boolean; gitFile?: string }>();
   /** Lane keys of waiting worktrees this refresh found removed and made again: their watchers and held deletes are the old checkout's. */
   private readonly remade = new Set<string>();
   /** Lane keys of waiting worktrees whose first change asks auto-record for a lane. */
@@ -1135,7 +1136,7 @@ export class Recorder implements vscode.Disposable {
     // Only the last says so: it is the one worth a line.
     for (const [lane, w] of this.waiting) {
       const found = mode === 'off' ? undefined : scopes.find((s) => s.key === lane && s.waiting);
-      const scope = found && !scopes.some((s) => !s.waiting && s.root.toString() === found.root.toString()) ? found : undefined;
+      const scope = found && !scopes.some((s) => !s.waiting && pathKey(s.root.fsPath) === pathKey(found.root.fsPath)) ? found : undefined;
       const pattern = scope && ignoringPattern(patterns, scope.checkout.fsPath, scope.branch);
       if (scope && pattern === undefined) continue;
       this.waiting.delete(lane);
@@ -1219,7 +1220,8 @@ export class Recorder implements vscode.Disposable {
       }
       const folderKey = folder.uri.toString();
       const lane = laneKey(folderKey, false, worktree.path);
-      this.waiting.set(lane, { folderKey, checkout: worktree.path, since: Date.now(), ...(this.remade.has(lane) && { remade: true }) });
+      const checkedOut = await indexWrittenAt(worktree.path);
+      this.waiting.set(lane, { folderKey, checkout: worktree.path, since: Date.now(), checkedOut, ...(this.remade.has(lane) && { remade: true }) });
       waitingChanged = true;
       this.log.appendLine(`Watching the new worktree ${name}; it gets its own lane once it records a change.`);
     }
@@ -2469,14 +2471,18 @@ export class Recorder implements vscode.Disposable {
 
   /**
    * Whether a change in a waiting worktree came before it started waiting, so
-   * is no first change: its first event arrived earlier, or, for a worktree
-   * made again at the same path, its write did (`at`, the file's mtime or the
-   * mtime of the directory it left), as git's checkout of the new copy may be
-   * reported only after the listing that found it.
+   * is no first change: its first event arrived earlier, or its write (`at`,
+   * the file's mtime or the mtime of the directory it left) was no later
+   * than the end of git's checkout of it. Watchers may hand a large
+   * checkout's events over only after the listing that started the wait.
+   * Without the checkout's end, a worktree made again goes by when it
+   * started waiting.
    */
   private beforeWaiting(scope: Scope | undefined, burst: Burst, at: number | undefined): boolean {
     const w = scope?.waiting ? this.waiting.get(scope.key) : undefined;
-    return !!w && (burst.firstArrival < w.since || (!!w.remade && at !== undefined && at < w.since));
+    if (!w) return false;
+    const cutoff = w.checkedOut ?? (w.remade ? w.since : undefined);
+    return burst.firstArrival < w.since || (at !== undefined && cutoff !== undefined && at <= cutoff);
   }
 
   /**
@@ -3114,6 +3120,20 @@ async function gitFileId(checkout: string): Promise<string | undefined> {
   try {
     const st = await fs.promises.stat(path.join(checkout, '.git'));
     return `${st.ino}:${st.mtimeMs}:${st.birthtimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * When git last wrote a linked worktree's index, which `git worktree add`
+ * does once its files are checked out, so every file git wrote then is no
+ * newer; undefined when unreadable.
+ */
+async function indexWrittenAt(checkout: string): Promise<number | undefined> {
+  try {
+    const named = gitdirOf(await fs.promises.readFile(path.join(checkout, '.git'), 'utf8'));
+    return named === undefined ? undefined : (await fs.promises.stat(path.join(path.resolve(checkout, named), 'index'))).mtimeMs;
   } catch {
     return undefined;
   }
