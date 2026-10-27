@@ -56,6 +56,8 @@ interface Entry {
   blind?: boolean;
   /** The watched directory here went; one made here again is still known here. */
   gone?: boolean;
+  /** When a walk last began reading it: a file found in it later that was made before then was there already. */
+  scannedAt?: number;
   /** Some of the ones inside it were forgotten by a trim: one not known in it is not blind for being in it. */
   pruned?: boolean;
   /** Our watch of it, with each lane relying on it and when that lane last asked for it. */
@@ -79,8 +81,8 @@ interface Entry {
  * A directory made again reads like the same one with its attributes changed
  * (chmod, touch), to both watchers, and nothing tells them apart for sure: on
  * ext4 one made again quickly mostly gets the inode number it had, and before
- * Linux 6.13 its birth time is only as fine as the clock tick. `remade` treats
- * them alike, and the recorder compares what is in it with what it recorded.
+ * Linux 6.13 its birth time is only as fine as the clock tick. `recheck`
+ * treats them alike, and the recorder compares what is in it with what it recorded.
  */
 export class WatchGaps {
   private readonly root: Entry = {};
@@ -101,6 +103,8 @@ export class WatchGaps {
   private exhausted = false;
   /** Set once a watch could not be made, so the reason is logged once until closeAll. */
   private problemNoted = false;
+  /** Set once a watch was refused or failed, until closeAll: some blind directories are not watched. */
+  private refusedAny = false;
   /** Stamps each request for a watch, so a sweep can tell the ones made after it began. */
   private clock = 0;
 
@@ -155,6 +159,40 @@ export class WatchGaps {
     return !!e && (!!e.reported || !!e.blind || !!e.gone);
   }
 
+  /** True while we watch this directory. */
+  isWatched(dir: string): boolean {
+    return !!this.find(dir)?.watch;
+  }
+
+  /** True once a blind directory went unwatched, for a limit or an error, since closeAll: one not known may still hold what was recorded. */
+  get refused(): boolean {
+    return this.refusedAny;
+  }
+
+  /** A walk began reading this known directory `at` (Date.now()). */
+  scanned(dir: string, at: number): void {
+    const e = this.find(dir);
+    if (e && (e.reported || e.blind || e.gone)) e.scannedAt = at;
+  }
+
+  /** When a walk last began reading this directory, if it is known. */
+  scannedAt(dir: string): number | undefined {
+    return this.find(dir)?.scannedAt;
+  }
+
+  /**
+   * VS Code's watcher reported an event in this directory, so it watches it
+   * after all (as it does a directory made again once it watched its parent):
+   * our watch of it stops. What is known of the ones in it stays.
+   */
+  seenByWatcher(dir: string): void {
+    const e = this.find(dir);
+    if (!e?.watch) return;
+    this.report(e);
+    e.blind = false;
+    this.close(dir, e);
+  }
+
   /**
    * Watches a blind directory for `owner`; true when this started a watch.
    * One reported since it was found blind is left to VS Code. One refused for
@@ -169,8 +207,9 @@ export class WatchGaps {
       if (found.watch.owners.has(owner) || this.take(owner)) found.watch.owners.set(owner, stamp);
       return false;
     }
-    if (this.exhausted) return false;
+    if (this.exhausted) return this.refuse();
     if (this.watched.size >= this.total) {
+      this.refusedAny = true;
       if (!this.totalNoted) {
         this.totalNoted = true;
         this.log(
@@ -180,13 +219,16 @@ export class WatchGaps {
       }
       return false;
     }
-    if (!this.take(owner)) return false;
+    if (!this.take(owner)) return this.refuse();
     let handle: DirWatch;
     try {
       handle = this.watchDir(
         fsPath,
         (name, kind) => this.onEntry(fsPath, name, kind),
-        () => this.close(dir),
+        () => {
+          const e = this.find(dir);
+          if (e?.watch?.handle === handle) this.close(dir, e);
+        },
       );
     } catch (err) {
       this.give(owner);
@@ -194,14 +236,14 @@ export class WatchGaps {
       // Gone already: its delete is reported where its parent is watched.
       if (code === 'ENOENT') return false;
       if (code === 'ENOSPC') {
-        // VS Code's own watcher needs the rest.
+        // VS Code's own watcher needs the rest. Logged whatever failed before: raising the limit is what helps.
         this.exhausted = true;
-        this.problem(
+        this.log(
           `The system's limit on inotify watches is reached, so changes in folders VS Code's file watcher does not see are not recorded. ` +
             'Raising fs.inotify.max_user_watches and reloading the window helps.',
         );
       } else this.problem(`Could not watch ${fsPath}, a folder VS Code's file watcher does not see: ${String(err)}. Changes in it are not recorded.`);
-      return false;
+      return this.refuse();
     }
     const e = found ?? this.make(dir);
     e.blind = true;
@@ -274,7 +316,7 @@ export class WatchGaps {
    * itself stays, except that one VS Code's watcher `reported` changed, and
    * not found blind, is one it watches.
    */
-  remade(path: string, reported: boolean): void {
+  recheck(path: string, reported: boolean): void {
     const e = this.find(path);
     if (!e) return;
     this.clear(keyOf(path), e);
@@ -294,6 +336,12 @@ export class WatchGaps {
     this.totalNoted = false;
     this.exhausted = false;
     this.problemNoted = false;
+    this.refusedAny = false;
+  }
+
+  private refuse(): false {
+    this.refusedAny = true;
+    return false;
   }
 
   private find(dir: string): Entry | undefined {
@@ -388,7 +436,7 @@ export class WatchGaps {
     const prune = (e: Entry) => {
       for (const [name, child] of e.children ?? []) {
         prune(child);
-        if (child.children?.size || child.watch || child.blind || (child.reportedAt ?? 0) > spare) continue;
+        if (child.children?.size || child.watch || child.blind || child.gone || (child.reportedAt ?? 0) > spare) continue;
         e.children!.delete(name);
         e.pruned = true;
         this.entries--;

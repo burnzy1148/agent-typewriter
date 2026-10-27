@@ -37,6 +37,17 @@ export async function run(): Promise<void> {
     }
   }
   const write = (rel: string, text: string) => fs.writeFileSync(path.join(root, rel), text);
+  /** Waits until the recorder has heard nothing for `ms`, for at most 15 s. */
+  async function quiet(ms = 1000) {
+    const start = Date.now();
+    let last = recorder.describeActivity();
+    let since = Date.now();
+    while (Date.now() - since < ms && Date.now() - start < 15000) {
+      await sleep(100);
+      const now = recorder.describeActivity();
+      if (now !== last) [last, since] = [now, Date.now()];
+    }
+  }
 
   await vscode.commands.executeCommand('agentTypewriter.start');
   await until('main recording', () => recorder.recordedLanes().length === 1);
@@ -95,10 +106,10 @@ export async function run(): Promise<void> {
   console.log('[it] DEEP: a chmod of a watched folder records nothing, and a write after it is recorded ok');
 
   // --- G4. git worktree add .claude/worktrees/x with no .claude yet, recorded by hand, then a write in it.
-  // The lane starts once the checkout's own events have come: one late on Windows reads as a new file.
+  // The lane starts once the checkout's own events have stopped coming: one late on Windows reads as a new file.
   const x = path.join(root, '.claude', 'worktrees', 'x');
   git(root, 'worktree', 'add', '-q', '-b', 'x', x);
-  await sleep(1000);
+  await quiet();
   await recorder.addCheckout(folder, x);
   await until('x lane', () => recorder.recordedLanes().length === 2);
   const lane = timeline.laneList().find((l) => l.id !== main && l.recording)!;

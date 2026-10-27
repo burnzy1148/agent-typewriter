@@ -629,3 +629,184 @@ test('folders reported changed together are checked once, from the outermost', a
   assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c']);
   assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
 });
+
+test('a chmod of a watched folder records nothing for a file in it left without a baseline', async () => {
+  const dir = tempDir('at-gap-');
+  write(dir, 'src/a.ts', 'a\n');
+  const w = fakeWatches();
+  const t = recorderOn(settings({ baselineBudgetMB: 0 }), { watchDir: w.watchDir }, dir);
+  await t.recorder.start();
+  const at = (rel: string) => path.join(dir, rel);
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // Started again with no room for baselines: one.ts has none, and its folders are still known.
+  t.recorder.stop();
+  await t.recorder.start();
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c']);
+  // chmod a/b/c under the watch of a/b, and touch a, which VS Code's watcher reports.
+  fs.chmodSync(at('a/b/c'), 0o700);
+  w.entry(at('a/b/c'), 'rename');
+  t.fire('change', at('a'));
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+  // A file made since is new.
+  write(dir, 'a/b/c/two.ts', 'two\n');
+  w.kill(at('a/b/c'));
+  t.fire('change', at('a'));
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts', 'create a/b/c/two.ts']);
+});
+
+test('a chmod of a watched folder while baselines are still being taken records nothing', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  t.recorder.stop();
+  // The next start takes its baselines slowly, as in a large repository.
+  let release!: () => void;
+  mock.readFileGate = new Promise<void>((r) => (release = r));
+  const starting = t.recorder.start();
+  try {
+    await until('a/b/c watched again', () => w.watched(dir).includes('a/b/c'));
+    fs.chmodSync(at('a/b/c'), 0o700);
+    w.entry(at('a/b/c'), 'rename');
+    await new Promise((r) => setTimeout(r, 300));
+  } finally {
+    release();
+    mock.readFileGate = undefined;
+  }
+  await starting;
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+});
+
+test('a watched folder that cannot be read when checked again is not taken for empty', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // chmod 000 a/b/c: reading it, or stating what is in it, is denied.
+  const locked = at('a/b/c');
+  const { stat, readDirectory } = workspace.fs;
+  const denied = () => Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+  workspace.fs.stat = async (uri) => {
+    if (uri.fsPath.startsWith(locked + path.sep)) throw denied();
+    return stat(uri);
+  };
+  workspace.fs.readDirectory = async (uri) => {
+    if (uri.fsPath === locked) throw denied();
+    return readDirectory(uri);
+  };
+  try {
+    w.entry(locked, 'rename');
+    await t.settle(200);
+  } finally {
+    Object.assign(workspace.fs, { stat, readDirectory });
+  }
+  // chmod 755 a/b/c again.
+  w.entry(locked, 'rename');
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+});
+
+test('a write in a lane while a folder above its checkout is checked again is recorded', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const x = path.join(repo, '.claude', 'worktrees', 'x');
+  git(repo, 'worktree', 'add', '-q', '-b', 'x', x);
+  t.fire('create', path.join(repo, '.claude'));
+  await until('.claude/worktrees watched', () => w.watched(repo).includes('.claude/worktrees'));
+  await t.settle();
+  await t.recorder.addCheckout(t.folder, x);
+  // touch .claude/worktrees, which VS Code's watcher reports; its check waits on a slow read.
+  let release!: () => void;
+  mock.readDirectoryGate = new Promise<void>((r) => (release = r));
+  try {
+    t.fire('change', path.join(repo, '.claude', 'worktrees'));
+    await until('the watches in it stopped for the check', () => !w.watched(repo).includes('.claude/worktrees/x/src'));
+    // The lane's agent writes while nothing watches x/src.
+    write(x, 'src/a.ts', 'a 2\n');
+  } finally {
+    release();
+    mock.readDirectoryGate = undefined;
+  }
+  await until('x/src watched again', () => w.watched(repo).includes('.claude/worktrees/x/src'));
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['modify x/src/a.ts']);
+});
+
+test('a folder checked again reads no file that is as it was, and keeps git baselines out of memory', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  const at = (rel: string) => path.join(repo, rel);
+  for (let i = 0; i < 20; i++) write(repo, `a/b/c/f${i}.ts`, `f${i}\n`);
+  t.fire('create', at('a'));
+  await t.settle();
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'generated');
+  // Started again: the generated files are clean, so their baselines are git's.
+  t.recorder.stop();
+  await t.recorder.start();
+  const r = t.recorder as unknown as { gitBaselines: Map<string, unknown>; snapshots: Map<string, unknown> };
+  const gitBaselines = r.gitBaselines.size;
+  const reads: string[] = [];
+  mock.onReadFile = (p) => reads.push(p);
+  fs.writeFileSync(at('a/b/c/f0.ts'), 'f0 changed\n');
+  fs.chmodSync(at('a/b/c'), 0o700);
+  w.entry(at('a/b/c'), 'rename');
+  await t.settle(200);
+  mock.onReadFile = undefined;
+  assert.deepEqual(reads.map((p) => path.basename(p)), ['f0.ts'], 'only the file that changed is read');
+  assert.equal(r.gitBaselines.size, gitBaselines - 1);
+  assert.deepEqual(t.events().slice(20), ['modify a/b/c/f0.ts']);
+});
+
+test('a folder VS Code\'s watcher reports something in is left to it, with what is known in it', async () => {
+  const { dir, w, t, at } = await started();
+  for (const d of ['a', 'a/b', 'a/b/c']) {
+    fs.mkdirSync(at(d));
+    t.fire('create', at(d));
+    await t.settle();
+  }
+  assert.deepEqual(w.watched(dir), []);
+  // touch a: the folders in it may be new ones VS Code's watcher does not see into, so they are watched.
+  t.fire('change', at('a'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c']);
+  // A write it reports in a/b shows it watches a/b after all.
+  write(dir, 'a/b/x.ts', 'x\n');
+  t.fire('create', at('a/b/x.ts'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['a/b/c']);
+  assert.deepEqual(t.events(), ['create a/b/x.ts']);
+});
+
+test('a watched folder\'s own events and temp files gone from it take no pass over the baselines', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  const recorder = t.recorder as unknown as { keysUnder(dirs: Set<string>): string[] };
+  const keysUnder = recorder.keysUnder.bind(recorder);
+  let passes = 0;
+  recorder.keysUnder = (dirs) => {
+    passes++;
+    return keysUnder(dirs);
+  };
+  const before = t.recorder.describeActivity().split('\n').length;
+  // chmod a/b/c: its own watch names it, as fs.watch does.
+  fs.chmodSync(at('a/b/c'), 0o700);
+  w.entry(at('a/b/c/c'), 'rename');
+  // An atomic write's temp file, gone by the time it is read.
+  w.entry(at('a/b/c/.one.ts.tmp'), 'rename');
+  await t.settle();
+  assert.equal(passes, 0);
+  assert.doesNotMatch(t.recorder.describeActivity().split('\n').slice(before - 1).join('\n'), /delete a\/b\/c\/c/);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+});

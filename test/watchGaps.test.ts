@@ -193,25 +193,25 @@ test('a directory that may have been made again loses its watches and what was k
   watch('/ws/a/b');
   watch('/ws/a/b/c');
   // Under a folder watch, or reported changed by VS Code's watcher while found blind: still blind.
-  g.remade('/ws/a/b', false);
-  g.remade('/ws/a/b', true);
+  g.recheck('/ws/a/b', false);
+  g.recheck('/ws/a/b', true);
   assert.deepEqual([...open], ['/ws/a/r/s']);
   assert.equal(g.known('/ws/a/b'), true);
   assert.equal(g.known('/ws/a/b/c'), false);
   assert.equal(g.isBlind('/ws/a/b'), true, 'to be watched again');
   assert.equal(g.isBlind('/ws/a/b/c'), true);
   // A reported one stays reported, and the ones in it are judged afresh: a/r/s may be a new one, made before the watcher watched a/r.
-  g.remade('/ws/a/r', true);
+  g.recheck('/ws/a/r', true);
   assert.deepEqual([...open], []);
   assert.equal(g.isBlind('/ws/a/r'), false);
   assert.equal(g.isBlindIn('/ws/a/r', false, 's'), true);
   // One that went from a folder watch and was reported changed by VS Code's watcher was made again where it watches.
   watch('/ws/a/g');
   g.gone('/ws/a/g');
-  g.remade('/ws/a/g', true);
+  g.recheck('/ws/a/g', true);
   assert.equal(g.isBlind('/ws/a/g'), false);
   // Of one nothing is known, nothing is kept.
-  g.remade('/ws/elsewhere', true);
+  g.recheck('/ws/elsewhere', true);
   assert.equal(g.known('/ws/elsewhere'), false);
 });
 
@@ -293,4 +293,78 @@ test('nodeWatchDir names entries created and written in the directory', async ()
   } finally {
     watch.close();
   }
+});
+
+test('running out of inotify watches is logged even after another watch failed', () => {
+  const { watch, logs, state } = gaps();
+  state.fail = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+  watch('/ws/root-owned');
+  state.fail = Object.assign(new Error('ENOSPC: System limit for number of file watchers reached'), { code: 'ENOSPC' });
+  watch('/ws/a');
+  assert.equal(logs.length, 2);
+  assert.match(logs[1], /max_user_watches/);
+  assert.equal(watch('/ws/b'), false);
+  assert.equal(logs.length, 2);
+});
+
+test('a watch refused or failed is remembered until every watch is closed', () => {
+  const { g, watch, state } = gaps(1);
+  watch('/ws/a');
+  assert.equal(g.refused, false);
+  watch('/ws/b');
+  assert.equal(g.refused, true, 'over the total');
+  g.closeAll();
+  assert.equal(g.refused, false);
+  state.fail = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+  watch('/ws/c');
+  assert.equal(g.refused, true);
+});
+
+test('a trim keeps a watched directory that went, so it stays known', () => {
+  const { g, watch } = gaps();
+  g.noteReported('/ws/a');
+  watch('/ws/a/g');
+  g.gone('/ws/a/g');
+  for (let i = 0; i < 20_000; i++) g.noteReported(`/ws/many/d${i}`);
+  assert.equal(g.known('/ws/a/g'), true);
+});
+
+test('a watch that fails stops itself only, not a newer watch of the same directory', () => {
+  const errors = new Map<string, () => void>();
+  const open = new Set<number>();
+  let n = 0;
+  const watchDir: WatchDir = (_fsPath, _entry, onError) => {
+    const id = ++n;
+    open.add(id);
+    errors.set(String(id), onError as () => void);
+    return { close: () => open.delete(id) };
+  };
+  const g = new WatchGaps(watchDir, () => {}, () => {}, (o) => o, Infinity);
+  g.noteReported('/ws/a');
+  g.watch('/ws/a/b', '/ws/a/b', 'L');
+  g.recheck('/ws/a/b', false);
+  g.watch('/ws/a/b', '/ws/a/b', 'L');
+  // The first watch errors late.
+  errors.get('1')!();
+  assert.deepEqual([...open], [2]);
+  assert.equal(g.isWatched('/ws/a/b'), true);
+});
+
+test('a directory scanned again keeps when it was last read, and VS Code\'s report of an event in a watched one stops our watch', () => {
+  const { g, watch, open } = gaps();
+  g.noteReported('/ws/a');
+  watch('/ws/a/b');
+  watch('/ws/a/b/c');
+  g.scanned('/ws/a/b', 100);
+  g.scanned('/ws/elsewhere', 100);
+  assert.equal(g.scannedAt('/ws/a/b'), 100);
+  assert.equal(g.scannedAt('/ws/elsewhere'), undefined, 'not known, so nothing is kept');
+  g.recheck('/ws/a/b', false);
+  assert.equal(g.scannedAt('/ws/a/b'), 100, 'kept for the check that follows');
+  watch('/ws/a/b');
+  watch('/ws/a/b/c');
+  g.seenByWatcher('/ws/a/b');
+  assert.deepEqual([...open], ['/ws/a/b/c'], 'what is known in it stays');
+  assert.equal(g.isBlind('/ws/a/b'), false);
+  assert.equal(g.isBlind('/ws/a/b/c'), true);
 });
