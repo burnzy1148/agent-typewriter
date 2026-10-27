@@ -355,12 +355,12 @@ test('a directory scanned again keeps when it was last read, and VS Code\'s repo
   g.noteReported('/ws/a');
   watch('/ws/a/b');
   watch('/ws/a/b/c');
-  g.scanned('/ws/a/b', 100);
+  g.scanned('/ws/a/b', 100, 'ino:1');
   g.scanned('/ws/elsewhere', 100);
-  assert.equal(g.scannedAt('/ws/a/b'), 100);
-  assert.equal(g.scannedAt('/ws/elsewhere'), undefined, 'not known, so nothing is kept');
+  assert.deepEqual(g.lastScan('/ws/a/b'), { at: 100, id: 'ino:1' });
+  assert.equal(g.lastScan('/ws/elsewhere'), undefined, 'not known, so nothing is kept');
   g.recheck('/ws/a/b', false);
-  assert.equal(g.scannedAt('/ws/a/b'), 100, 'kept for the check that follows');
+  assert.deepEqual(g.lastScan('/ws/a/b'), { at: 100, id: 'ino:1' }, 'kept for the check that follows');
   watch('/ws/a/b');
   watch('/ws/a/b/c');
   g.seenByWatcher('/ws/a/b');

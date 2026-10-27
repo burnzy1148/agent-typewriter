@@ -40,7 +40,7 @@ import type { ChangeKind, LaneInfo, NewChangeEvent, Timeline } from './timeline'
 import { colorSlot, laneLabel, MAX_LANES, ROTATE_IDLE_MS, rotationVictim } from './lanes';
 import type { Settings } from './config';
 import { BRANCH_PREFIX, ignoringPattern } from './worktreeIgnore';
-import { WatchGaps, type WatchDir } from './watchGaps';
+import { dirId, WatchGaps, type WatchDir } from './watchGaps';
 
 /** Where display prefixes of workspace folders are remembered among labels; folder keys are URIs, so never this. */
 const FOLDER_PREFIXES = 'folders';
@@ -109,6 +109,8 @@ const GIT_SUMMARY_DELAY_MS = 1000;
 
 /** At most one write of a file per this long is passed on from our own folder watches, as VS Code's watcher merges its own. */
 const GAP_MERGE_MS = 50;
+/** How much earlier than its true time a birth time can read: a clock tick, and some. */
+const BIRTH_SLACK_MS = 50;
 
 /** Whether a git operation made a write, and the place in write order held while that took a wait. */
 interface GitVerdict {
@@ -1326,13 +1328,13 @@ export class Recorder implements vscode.Disposable {
    */
   private onWatcherEvent(key: string | undefined, uri: vscode.Uri, event: 'create' | 'change' | 'delete', from: 'watcher' | 'gap' = 'watcher', sweep = true): void {
     this.noteWorktreeEvent(uri, event);
+    const watches = from === 'watcher' && this.watcherWatches(uri);
     if (this.gaps && from === 'watcher' && uri.scheme === 'file' && this.running) {
-      // VS Code's watcher reports only what is in a directory it watches.
-      this.gaps.seenByWatcher(uri.path.slice(0, uri.path.lastIndexOf('/')));
+      if (watches) this.gaps.seenByWatcher(uri.path.slice(0, uri.path.lastIndexOf('/')));
       // It merges a delete and a create of one path in a batch into a change, as `rm -rf dir && mkdir -p dir/...` makes
       // of dir, and it does not see into what was made in it at once. Of a directory nothing is known about, there since
       // before recording, a change of attributes (chmod, touch) is far likelier, so it is left alone.
-      if (event === 'change' && this.gaps.known(uri.path)) this.queueRecheck(uri, true);
+      if (event === 'change' && this.gaps.known(uri.path)) this.queueRecheck(uri, watches);
     }
     const current = key === undefined ? undefined : this.scopes.get(key);
     if (event === 'delete' && current && !current.own) {
@@ -1342,7 +1344,21 @@ export class Recorder implements vscode.Disposable {
       // Deletes are still coming: held ones wait for them to stop.
       if (this.deleteSettles.has(current.key)) this.settleDeletes(current.key);
     }
-    this.schedule(uri, event, from, sweep);
+    this.schedule(uri, event, from, sweep, watches);
+  }
+
+  /**
+   * True when an event of VS Code's watchers shows that its recursive watcher
+   * watches the directory it is in. Events of every watcher reach each one an
+   * extension makes, among them non-recursive ones other extensions make
+   * (the TypeScript server's, for one). Outside the workspace folders those
+   * report a directory we watch too, which the recursive watcher may not see
+   * into; inside them they report only `files.watcherExclude` paths, which
+   * are never watched.
+   */
+  private watcherWatches(uri: vscode.Uri): boolean {
+    if (!this.gaps?.isWatched(uri.path.slice(0, uri.path.lastIndexOf('/')))) return true;
+    return (vscode.workspace.workspaceFolders ?? []).some((f) => isUnder(f.uri, uri));
   }
 
   /**
@@ -1389,7 +1405,7 @@ export class Recorder implements vscode.Disposable {
           // A watched directory names itself for what happens to it: its attributes changing (chmod, touch), its
           // move or delete. Still there, with nothing known or recorded by that name in it, it only changed.
           const own = basename(uri.path) === basename(dir.path);
-          if (own && !entry && !known && !recorded) return;
+          if (own && !entry && !known && !recorded && !this.gaps!.refused) return;
           if (known && entry && entry.type & vscode.FileType.Directory && !(entry.type & vscode.FileType.SymbolicLink)) {
             // Made again, or its attributes changed, which reads as a rename too.
             return this.queueRecheck(uri, false);
@@ -1453,7 +1469,12 @@ export class Recorder implements vscode.Disposable {
     this.note(`checking again ${this.traceName(dir)}`);
     // A worktree added again in its place is another lane's, as when it was first added.
     this.noteWorktreeEvent(dir, 'create');
-    const since = this.gaps!.scannedAt(dir.path);
+    // Made again for sure when it is not the directory last read here (a copy moved in), or was made since it was.
+    const last = this.gaps!.lastScan(dir.path);
+    const id = await dirId(dir.fsPath);
+    if (stale()) return;
+    const remade = !last || (last.id !== undefined && last.id !== id) || bornSince(st.ctime, last.at);
+    const since = remade ? undefined : last.at;
     this.gaps!.recheck(dir.path, reported);
     const lanes = this.lanesAt(dir);
     const compares = lanes.map((s) => this.compareWithRecorded(s, stale, s.root, '', since));
@@ -1468,10 +1489,14 @@ export class Recorder implements vscode.Disposable {
   /**
    * Walks the scope from `start` and schedules what differs from what it
    * recorded there: a file changed since its baseline was taken, a new one,
-   * and one recorded but no longer found. A file found without a baseline is
-   * new only if made since its directory was last read (`since`): one made
-   * before was there, left without one, and only gets a baseline. What is
-   * under a directory that could not be read is not taken for deleted.
+   * and one recorded but no longer found. `since` is when the directory was
+   * last read, unless it was made again since. Then a file found without a
+   * baseline is new only if made since: one made before was there, left
+   * without one, and only gets a baseline; and a file whose stamp is what it
+   * was is not read again. In a directory made again every file is read, and
+   * one without a baseline is new, whenever it was made: it may have been
+   * moved in. What is under a directory that could not be read is not taken
+   * for deleted.
    */
   private async compareWithRecorded(scope: Scope, stale: () => boolean, start: vscode.Uri, startRel: string, since: number | undefined): Promise<void> {
     const failed = new Set<string>();
@@ -1485,8 +1510,8 @@ export class Recorder implements vscode.Disposable {
       const st = await stat(file);
       if (!st || stale()) return;
       const base = this.snapshots.get(key) ?? this.gitBaselines.get(key);
-      if (base?.stamp !== undefined && base.stamp === stampOf(st)) return;
-      const made = !base && (since === undefined || !st.ctime || st.ctime >= since);
+      if (since !== undefined && base?.stamp !== undefined && base.stamp === stampOf(st)) return;
+      const made = !base && (since === undefined || bornSince(st.ctime, since));
       this.schedule(file, made ? 'create' : 'change', 'dir');
     });
     if (stale()) return;
@@ -1499,9 +1524,9 @@ export class Recorder implements vscode.Disposable {
     }
   }
 
-  /** Lanes recording a checkout at or in this directory. */
+  /** Lanes recording a checkout at or in this directory, among them workspace folders nested in it. */
   private lanesAt(dir: vscode.Uri): Scope[] {
-    return [...this.scopes.values()].filter((s) => !s.own && (s.root.path === dir.path || s.root.path.startsWith(dir.path + '/')));
+    return [...this.scopes.values()].filter((s) => s.root.path === dir.path || s.root.path.startsWith(dir.path + '/'));
   }
 
   /**
@@ -1677,6 +1702,7 @@ export class Recorder implements vscode.Disposable {
             if (gaps!.isWatched(dir.path)) seen?.add(dir.path);
           }
           const readAt = Date.now();
+          const readId = gaps?.known(dir.path) ? await dirId(dir.fsPath) : undefined;
           let entries: [string, vscode.FileType][];
           try {
             entries = await vscode.workspace.fs.readDirectory(dir);
@@ -1684,7 +1710,7 @@ export class Recorder implements vscode.Disposable {
             if (!isNotFound(err)) failed?.add(dir.path);
             return;
           }
-          gaps?.scanned(dir.path, readAt);
+          gaps?.scanned(dir.path, readAt, readId);
           const gitFile = entries.some(([name, type]) => name === '.git' && type & vscode.FileType.File);
           if (rel && gitFile && this.isWorktreeGitFile(vscode.Uri.joinPath(dir, '.git').fsPath, scope)) {
             // Another worktree: its own lane, if it gets one, watches it.
@@ -2031,7 +2057,7 @@ export class Recorder implements vscode.Disposable {
    * (`dir`) a file found under a directory an event named. Merges it into the
    * file's debounce burst.
    */
-  private schedule(uri: vscode.Uri, event: 'create' | 'change' | 'delete', from: 'watcher' | 'gap' | 'dir' = 'watcher', sweep = true): void {
+  private schedule(uri: vscode.Uri, event: 'create' | 'change' | 'delete', from: 'watcher' | 'gap' | 'dir' = 'watcher', sweep = true, watches = from === 'watcher'): void {
     if (!this.running || uri.scheme !== 'file') return;
     if (from !== 'dir') {
       if (uri.path.endsWith('/.gitignore') && this.settings().respectGitignore) this.scheduleIgnoreRefresh();
@@ -2040,7 +2066,7 @@ export class Recorder implements vscode.Disposable {
         this.gaps?.deleted(uri.path);
         if (sweep) this.scheduleDeletesUnder(uri);
       } else if (event === 'create') {
-        this.expandCreatedDirectory(uri, from === 'watcher' ? 'reported' : 'found').catch((err) => this.log.appendLine(`Failed to read new directory ${relPathOf(uri)}: ${String(err)}`));
+        this.expandCreatedDirectory(uri, watches ? 'reported' : 'found').catch((err) => this.log.appendLine(`Failed to read new directory ${relPathOf(uri)}: ${String(err)}`));
       }
     }
     const key = uri.toString();
@@ -2070,7 +2096,7 @@ export class Recorder implements vscode.Disposable {
           });
       }, this.settings().debounceMs),
       created: event === 'create' || (existing?.created ?? false),
-      fromWatcher: from === 'watcher' || (existing?.fromWatcher ?? false),
+      fromWatcher: watches || (existing?.fromWatcher ?? false),
       sawDelete: event === 'delete' || (existing?.sawDelete ?? false),
       deletedAt: event === 'delete' ? (existing?.deletedAt ?? now) : undefined,
       firstArrival: existing?.firstArrival ?? now,
@@ -2675,7 +2701,7 @@ interface OwnSave {
 interface Burst {
   timer: NodeJS.Timeout;
   created: boolean;
-  /** VS Code's watcher reported an event of this burst, not only our folder watches or a directory's expansion. */
+  /** VS Code's recursive watcher reported an event of this burst, so it watches the directory it is in. */
   fromWatcher: boolean;
   /** A delete event arrived at some point in this burst. */
   sawDelete: boolean;
@@ -2850,9 +2876,19 @@ interface Snapshot {
   stamp?: string;
 }
 
-/** A file's mtime and size: a file whose stamp is what it was when its baseline was taken is taken to be unchanged. */
-function stampOf(st: { mtime: number; size: number }): string {
-  return `${st.mtime}:${st.size}`;
+/**
+ * A file's mtime, size and birth time (VS Code's ctime): a file whose stamp is
+ * what it was when its baseline was taken is taken to be unchanged. The birth
+ * time tells a file made again with the same mtime and size (an archive
+ * unpacked again, `cp -p`) from the one that was there.
+ */
+function stampOf(st: { mtime: number; size: number; ctime: number }): string {
+  return `${st.mtime}:${st.size}:${st.ctime}`;
+}
+
+/** True for a birth time `ctime` at or after `at`, as far as a coarse clock tells, or none known. */
+function bornSince(ctime: number, at: number): boolean {
+  return !ctime || ctime >= at - BIRTH_SLACK_MS;
 }
 
 async function stat(uri: vscode.Uri): Promise<vscode.FileStat | undefined> {

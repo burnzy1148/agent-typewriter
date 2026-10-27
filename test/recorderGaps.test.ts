@@ -9,7 +9,7 @@ import * as path from 'node:path';
 import { GAP_WATCH_LIMIT, nodeWatchDir, shareOfSystemWatches, type WatchDir } from '../src/watchGaps';
 import { committedRepo, laneOf, recorderOn, rm, settings, until } from './recorderScopeFixture';
 import { git, noGit, tempDir, write } from './gitFixture';
-import { mock, workspace } from './vscode-mock';
+import { mock, Uri, workspace } from './vscode-mock';
 
 /**
  * Directory watches the test drives: `watched` lists them under a root, `entry`
@@ -809,4 +809,110 @@ test('a watched folder\'s own events and temp files gone from it take no pass ov
   assert.equal(passes, 0);
   assert.doesNotMatch(t.recorder.describeActivity().split('\n').slice(before - 1).join('\n'), /delete a\/b\/c\/c/);
   assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
+});
+
+test('a folder made again from an older copy moved in has the files it brings recorded as created', async () => {
+  const { dir, t, at } = await started();
+  // An older copy of lib, holding a file lib lacks.
+  write(dir, 'old/lib/x.ts', 'x old\n');
+  write(dir, 'old/lib/y.ts', 'y\n');
+  await new Promise((r) => setTimeout(r, 100));
+  write(dir, 'lib/x.ts', 'x\n');
+  t.fire('create', at('lib'));
+  await t.settle();
+  // rm -rf lib && mv old/lib lib: VS Code's watcher merges the delete and create of lib into a change.
+  fs.rmSync(at('lib'), { recursive: true });
+  fs.renameSync(at('old/lib'), at('lib'));
+  t.fire('change', at('lib'));
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['create lib/x.ts', 'modify lib/x.ts', 'create lib/y.ts']);
+});
+
+test('a folder made again with a file of the same size and mtime has its change recorded', async () => {
+  const { dir, t, at } = await started();
+  // An archive unpacked again: a fixed mtime, the same size, a new text.
+  const fixed = new Date('1985-10-26T08:15:00Z');
+  write(dir, 'vendor/pkg/version.ts', 'export const v = "1.2.3";\n');
+  fs.utimesSync(at('vendor/pkg/version.ts'), fixed, fixed);
+  t.fire('create', at('vendor'));
+  await t.settle();
+  fs.rmSync(at('vendor/pkg'), { recursive: true });
+  write(dir, 'vendor/pkg/version.ts', 'export const v = "1.2.4";\n');
+  fs.utimesSync(at('vendor/pkg/version.ts'), fixed, fixed);
+  t.fire('change', at('vendor/pkg'));
+  await t.settle(200);
+  assert.deepEqual(t.events(), ['create vendor/pkg/version.ts', 'modify vendor/pkg/version.ts']);
+});
+
+test('a new file whose birth time reads a little before its folder was last read is still created', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // Made just after that read, its event lost; a coarse clock stamps its birth up to a tick early.
+  const gaps = (t.recorder as unknown as { gaps: { lastScan(dir: string): { at: number } | undefined } }).gaps;
+  const readAt = gaps.lastScan(Uri.file(at('a/b/c')).path)!.at;
+  write(dir, 'a/b/c/two.ts', 'two\n');
+  const stat = workspace.fs.stat;
+  workspace.fs.stat = async (uri) => {
+    const st = await stat(uri);
+    return path.basename(uri.fsPath) === 'two.ts' ? { ...st, ctime: readAt - 4 } : st;
+  };
+  try {
+    fs.chmodSync(at('a/b/c'), 0o700);
+    w.entry(at('a/b/c'), 'rename');
+    await t.settle(200);
+  } finally {
+    workspace.fs.stat = stat;
+  }
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts', 'create a/b/c/two.ts']);
+});
+
+test('events another extension\'s watcher reports in a folder we watch outside the workspace leave our watches be', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const wt = `${repo}-wt`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'wt', wt);
+  const w = fakeWatches();
+  const t = recorderOn(settings(), { watchDir: w.watchDir }, repo);
+  await t.recorder.start();
+  await t.recorder.addCheckout(t.folder, wt);
+  // mkdir -p in the lane, outside the workspace: VS Code's watcher of the lane reports src/new alone.
+  fs.mkdirSync(path.join(wt, 'src', 'new', 'sub'), { recursive: true });
+  t.fire('create', path.join(wt, 'src', 'new'));
+  await until('src/new/sub watched', () => w.watched(wt).includes('src/new/sub'));
+  // The TypeScript server watches src/new/sub without recursion, and its events reach us too.
+  write(wt, 'src/new/sub/f.ts', 'f\n');
+  t.fire('create', path.join(wt, 'src', 'new', 'sub', 'f.ts'));
+  fs.mkdirSync(path.join(wt, 'src', 'new', 'sub', 'deeper'));
+  t.fire('create', path.join(wt, 'src', 'new', 'sub', 'deeper'));
+  await t.settle();
+  assert.deepEqual(w.watched(wt).filter((d) => d.startsWith('src/new')), ['src/new/sub', 'src/new/sub/deeper']);
+  write(wt, 'src/new/sub/deeper/g.ts', 'g\n');
+  w.entry(path.join(wt, 'src', 'new', 'sub', 'deeper', 'g.ts'), 'rename');
+  await t.settle();
+  const name = path.basename(wt);
+  assert.deepEqual(t.events().sort(), [`create ${name}/src/new/sub/deeper/g.ts`, `create ${name}/src/new/sub/f.ts`]);
+});
+
+test('a folder named like the one it is in, deleted while its watch was refused, has its files recorded as deleted', async () => {
+  const dir = tempDir('at-gap-');
+  write(dir, 'src/a.ts', 'a\n');
+  const w = fakeWatches();
+  const refused = (fsPath: string) => path.basename(fsPath) === 'mysite' && path.basename(path.dirname(fsPath)) === 'mysite';
+  const watchDir: WatchDir = (fsPath, onEntry, onError) => {
+    if (refused(fsPath)) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    return w.watchDir(fsPath, onEntry, onError);
+  };
+  const t = recorderOn(settings(), { watchDir }, dir);
+  await t.recorder.start();
+  const at = (rel: string) => path.join(dir, rel);
+  write(dir, 'p/mysite/mysite/settings.ts', 's\n');
+  t.fire('create', at('p'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['p/mysite']);
+  // rm -rf p/mysite/mysite: the watch of p/mysite names mysite, as it would name itself.
+  await rm(at('p/mysite/mysite'));
+  w.entry(at('p/mysite/mysite'), 'rename');
+  await t.settle();
+  assert.deepEqual(t.events(), ['create p/mysite/mysite/settings.ts', 'delete p/mysite/mysite/settings.ts']);
 });

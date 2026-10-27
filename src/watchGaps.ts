@@ -22,6 +22,22 @@ export const nodeWatchDir: WatchDir = (fsPath, onEntry, onError) => {
   return { close: () => watcher.close() };
 };
 
+/**
+ * Which directory is at a path: its inode and when it was made. Two that
+ * differ are not the same directory; two alike may still be (ext4 mostly
+ * gives one made again quickly the inode number it had, and before Linux
+ * 6.13 its birth time is only as fine as the clock tick). Undefined when
+ * nothing is there.
+ */
+export async function dirId(fsPath: string): Promise<string | undefined> {
+  try {
+    const st = await fs.promises.stat(fsPath, { bigint: true });
+    return `${st.ino}:${st.birthtimeNs}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Most directories one lane has watched, so a lane's large tree never takes watches from another lane. */
 export const GAP_WATCH_LIMIT = 2000;
 
@@ -56,8 +72,8 @@ interface Entry {
   blind?: boolean;
   /** The watched directory here went; one made here again is still known here. */
   gone?: boolean;
-  /** When a walk last began reading it: a file found in it later that was made before then was there already. */
-  scannedAt?: number;
+  /** When a walk last began reading it, and its `dirId` then: a file found in it later that was made before then was there already. */
+  scan?: { at: number; id?: string };
   /** Some of the ones inside it were forgotten by a trim: one not known in it is not blind for being in it. */
   pruned?: boolean;
   /** Our watch of it, with each lane relying on it and when that lane last asked for it. */
@@ -169,15 +185,15 @@ export class WatchGaps {
     return this.refusedAny;
   }
 
-  /** A walk began reading this known directory `at` (Date.now()). */
-  scanned(dir: string, at: number): void {
+  /** A walk began reading this known directory `at` (Date.now()), when it was the directory `id`. */
+  scanned(dir: string, at: number, id?: string): void {
     const e = this.find(dir);
-    if (e && (e.reported || e.blind || e.gone)) e.scannedAt = at;
+    if (e && (e.reported || e.blind || e.gone)) e.scan = { at, id };
   }
 
-  /** When a walk last began reading this directory, if it is known. */
-  scannedAt(dir: string): number | undefined {
-    return this.find(dir)?.scannedAt;
+  /** When a walk last began reading this directory, and which one it was, if it is known. */
+  lastScan(dir: string): { at: number; id?: string } | undefined {
+    return this.find(dir)?.scan;
   }
 
   /**
