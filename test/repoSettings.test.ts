@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { REPO_SETTING_KINDS, changedKeys, parseRepoSettings, pickLayer } from '../src/repoSettings';
+import { DEFAULT_CHARS_PER_MINUTE } from '../src/pace';
 
 const root = path.join(__dirname, '..');
 const readJson = (rel: string) => JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
@@ -20,7 +21,7 @@ test('valid values pass through', () => {
       extensions: [],
       charsPerMinute: 500,
       autoStart: true,
-      languageSpeeds: { markdown: 600 },
+      languageSpeeds: { markdown: 1500 },
       reorderWindowMs: 'auto',
       viewColumn: 'active',
     }),
@@ -31,7 +32,7 @@ test('valid values pass through', () => {
     extensions: [],
     charsPerMinute: 500,
     autoStart: true,
-    languageSpeeds: { markdown: 600 },
+    languageSpeeds: { markdown: 1500 },
     reorderWindowMs: 'auto',
     viewColumn: 'active',
   });
@@ -147,4 +148,18 @@ test('file format, schema, and package.json settings list the same keys', () => 
   const validation = pkg.contributes.jsonValidation as { fileMatch: string; url: string }[];
   assert.ok(validation.some((v) => v.url === './schemas/agent-typewriter.schema.json'), 'jsonValidation missing');
   assert.match(fs.readFileSync(path.join(root, '.vscodeignore'), 'utf8'), /^!schemas\/agent-typewriter\.schema\.json$/m);
+});
+
+test('package.json and the schema show the base speed replay falls back to', () => {
+  const pkg = readJson('package.json');
+  const schema = readJson('schemas/agent-typewriter.schema.json');
+  assert.equal(pkg.contributes.configuration.properties['agentTypewriter.charsPerMinute'].default, DEFAULT_CHARS_PER_MINUTE);
+  assert.equal(schema.properties.charsPerMinute.default, DEFAULT_CHARS_PER_MINUTE);
+});
+
+test('autoIgnoreWorktrees: patterns pass through; anything but strings is dropped', () => {
+  assert.deepEqual(parsed('{"autoIgnoreWorktrees": ["review-*", "branch:review/*"]}').values, { autoIgnoreWorktrees: ['review-*', 'branch:review/*'] });
+  const r = parsed('{"autoIgnoreWorktrees": "review-*"}');
+  assert.deepEqual(r.values, {});
+  assert.match(r.problems[0], /"autoIgnoreWorktrees" should be an array of strings/);
 });

@@ -7,11 +7,14 @@ A VS Code extension that watches files change on disk and replays each change as
 - `npm test`: unit tests plus a fuzz test of the planner.
 - `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
 - `npm run package`: builds the .vsix.
+- `npm run dev` / `npm run build` in `site/`: the docs site (separate npm project; run `npm install` there first).
 
 ## Architecture
 
 - `src/planner.ts`: diffs before/after text into ordered hunks to type, each offset relative to the text after earlier hunks.
-- `src/timeline.ts`: ordered, bounded buffer of recorded change events with a playback cursor and seek.
+- `src/timeline.ts`: ordered buffer of recorded change events, bounded by count and by text size, with a playback cursor and seek.
+- `src/changeText.ts`: holds each change's before/after text, in memory until it is saved, then read back from the log through a small cache.
+- `src/persistence.ts`: saves the timeline as an append-only log per lane in workspace storage (segment files plus a small state file), with recovery from torn writes and migration from the old one-file format.
 - `src/recorder.ts`: watches the workspace, keeps file snapshots, and records each settled write as a before/after event.
 - `src/player.ts`: consumes the timeline in order and types each change into its mirror editor.
 - `src/mirrorFs.ts`: in-memory filesystem behind the `agent-typewriter:` mirror documents that replay is typed into.
@@ -19,6 +22,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `src/timelineView.ts`: tree view listing recorded changes and their played/playing/pending state.
 - `src/config.ts`: reads and updates the `agentTypewriter.*` settings.
 - `src/extension.ts`: activation; wires recorder, timeline, player, mirror filesystem, view, and commands together.
+- `site/`: the agent-typewriter.com docs site (Astro + Starlight), deployed to Firebase Hosting from `main` by `.github/workflows/site.yml`. Its settings page is generated from `package.json`.
 
 ## Rules that must not break
 
@@ -33,5 +37,6 @@ A VS Code extension that watches files change on disk and replays each change as
 - Each feature or behavior change is one OpenSpec change: explore, propose, apply, archive. The `/opsx:*` commands and `openspec-*` skills in `.claude/` drive each step. Fixes that do not change specified behavior need no change.
 - Implementation tasks live in the change's `tasks.md`.
 - Work lands through a PR to `develop`, the default branch, squash-merged. CI runs typecheck, unit tests, and integration tests on Ubuntu and Windows. Archive the OpenSpec change on the PR branch before merging, once its tasks are done and CI is green, so the updated specs land on `develop` with the code.
-- `main` is the release branch. The Release workflow (`.github/workflows/release.yml`) promotes `develop` through a `release/v<version>` PR into `main`, merged with a merge commit, never squashed. The merge tags `main`, publishes, and opens a PR syncing `main` back into `develop`, also merged with a merge commit. Never commit to `main` directly.
+- `main` is the release branch. The Release workflow (`.github/workflows/release.yml`) first bumps the version through a `bump/v<version>` PR into `develop` and tags its merge `v<version>`, then promotes that tagged commit through a `release/v<version>` PR into `main`, merged with a merge commit, never squashed. The merge to `main` publishes the tag. No sync from `main` back into `develop` is needed. Never commit to `main` directly.
+- Stable versions keep even minors, and pre-releases use the odd minor above them (`scripts/version.mjs`). CI tags each green `develop` push `pre-v<version>` and publishes nothing; the Pre-release workflow (`.github/workflows/prerelease.yml`) publishes a chosen tag to the Marketplace's pre-release channel when a maintainer runs it, and keeps the newest 2.
 - Maintainers may keep personal workflow notes (issue tracker, review automation) in `CLAUDE.local.md`, which is gitignored.

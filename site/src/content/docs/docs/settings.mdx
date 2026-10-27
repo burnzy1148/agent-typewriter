@@ -1,0 +1,38 @@
+---
+title: Settings
+description: Every Agent Typewriter setting, with its type, default and what it does.
+---
+
+import SettingsReference from '../../../components/SettingsReference.astro';
+
+Settings live under `agentTypewriter.*` in VS Code's settings. A repository can also set any of them for everyone who opens it with a [repository settings file](/docs/repository-settings/).
+
+**Set Playback Speed...** also offers a session multiplier (0.5x to 5x) on top of the base speed.
+
+:::caution[Upgrading from before 0.3.0]
+Typing speeds are now in characters per minute. Multiply any `languageSpeeds` values you set before 0.3.0 by 60 to keep the same speed. The deprecated `charsPerSecond` is converted for you.
+:::
+
+## All settings
+
+This list is generated from the extension's manifest, so it always matches the version these docs describe.
+
+<SettingsReference />
+
+## A note on `ignoreOwnSaves`
+
+A save is skipped only when the file on disk holds exactly what your editor saved. If something else writes the file right after your save, as the Claude Code VS Code extension does when it saves your unsaved edits before applying its own, only that later write is replayed, starting from the text you saved.
+
+Claude Code in a terminal writes straight to disk, which is what this extension expects. If an agent instead edits VS Code's own editor buffers and then saves them, those saves look like yours and get skipped. Turn `ignoreOwnSaves` off in that case.
+
+## A note on `ignoreGitOperations`
+
+When you merge, pull, switch branches, rebase, cherry-pick, revert, reset to another commit, or stash and pop, git rewrites files, and those writes are not replayed. A file counts as git's only when git itself shows it: the operation changed that file in the index, and the file on disk matches what git left there. The text git wrote becomes the file's new starting point, so the next real edit replays from it, and the **Agent Typewriter** output channel says how many files each operation skipped. To watch a branch's work typed out, use [Replaying git history](/docs/git-history/) instead.
+
+These are still replayed:
+
+- Conflict resolutions. The conflict markers git writes are skipped; the resolved file replays from them. Picking a side with `git checkout --ours` or `--theirs` counts as resolving. A resolution you save from an editor follows `ignoreOwnSaves`.
+- Edits made while an operation runs, and edits committed right after, unless git wrote that same file with that same text.
+- `git restore`, `git checkout -- <path>`, `git reset --hard` to the current commit, and `git stash apply`. Git leaves nothing that tells them apart from an agent writing a file back to its committed text.
+
+Commands that all finish within the debounce time (`debounceMs`) are read as one operation. For example, `git stash && git merge feature && git stash pop` run together replays the popped edits. A `git stash -u` or `git stash pop` that moves thousands of untracked files (hundreds on Windows) can also go unrecognized, and then its files are replayed.

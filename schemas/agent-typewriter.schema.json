@@ -94,7 +94,7 @@
     },
     "charsPerMinute": {
       "type": "number",
-      "default": 350,
+      "default": 1000,
       "minimum": 1,
       "description": "Base typing speed in characters per minute."
     },
@@ -111,7 +111,7 @@
         "exclusiveMinimum": 0
       },
       "default": {},
-      "markdownDescription": "Base typing speed per language, in characters per minute, keyed by VS Code language ID (for example `{ \"markdown\": 600, \"json\": 1200 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerMinute#`."
+      "markdownDescription": "Base typing speed per language, in characters per minute, keyed by VS Code language ID (for example `{ \"markdown\": 1500, \"json\": 1200 }`). Language IDs are case-sensitive; find them in the language picker in the status bar. Languages not listed use `#agentTypewriter.charsPerMinute#`."
     },
     "jitter": {
       "type": "number",
@@ -139,20 +139,28 @@
     },
     "fileSwitchDelayMs": {
       "type": "number",
-      "default": 600,
-      "description": "Pause when playback flips to a different file, so the switch reads like a person changing tabs."
+      "default": 1000,
+      "minimum": 0,
+      "maximum": 15000,
+      "description": "Pause on the new file's mirror before its first edit, so the switch reads like a person changing tabs. Divided by the playback speed."
     },
     "smoothScroll": {
       "type": "boolean",
       "default": true,
-      "description": "Scroll to the next edit in the same file, after a short pause, instead of jumping there. Edits already in view only move the caret."
+      "description": "Scroll to the next edit in the same file instead of jumping there. Edits already in view only move the caret."
+    },
+    "readPauseSeconds": {
+      "type": "number",
+      "default": 1.5,
+      "minimum": 0,
+      "maximum": 15,
+      "description": "Time to read what was just typed before the view leaves it, for an off-screen edit in the same file or a switch to another file. Counts from the last edit, so idle time counts. Divided by the playback speed; 0 turns it off."
     },
     "scrollPauseMs": {
       "type": "number",
-      "default": 400,
       "minimum": 0,
-      "maximum": 5000,
-      "description": "Pause before scrolling to the next edit in the same file, so the last lines typed can be read. Divided by the playback speed."
+      "description": "Deprecated: use readPauseSeconds. Applies, divided by 1000, where readPauseSeconds is not set.",
+      "deprecated": true
     },
     "scrollLinesPerSecond": {
       "type": "number",
@@ -170,6 +178,11 @@
       "default": 15,
       "minimum": 1,
       "description": "Arrow key presses per second when walking the caret to the next edit. Multiplied by the playback speed."
+    },
+    "naturalOrder": {
+      "type": "boolean",
+      "default": true,
+      "description": "Type each change the way a person writes it: a block's closing line right after its opening line, then the body between, and a signature before its body. Off types every change top to bottom."
     },
     "debounceMs": {
       "type": "number",
@@ -204,17 +217,28 @@
       "type": "number",
       "default": 500,
       "minimum": 10,
-      "description": "How many changes to keep in the buffer for replay. Oldest are dropped first."
+      "description": "How many changes to keep in the buffer for replay. Oldest are dropped first. The buffer also keeps at most historySizeMB of change text."
+    },
+    "historySizeMB": {
+      "type": "number",
+      "default": 64,
+      "minimum": 1,
+      "description": "Megabytes of change text (before and after text, a character counted as a byte) to keep in the buffer for replay. Oldest changes are dropped first, and the newest is always kept. With persistHistory on, this is also about what the saved history takes on disk."
     },
     "persistHistory": {
       "type": "boolean",
       "default": true,
-      "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Up to 64 MB of change text is kept, newest first. Turning this off deletes the saved history."
+      "description": "Keep the recorded changes across window reloads and restarts, in VS Code's storage for this workspace (never in the workspace itself). Saved change text is read back when it is needed rather than kept in memory. Turning this off deletes the saved history."
     },
     "ignoreOwnSaves": {
       "type": "boolean",
       "default": true,
       "description": "Do not replay changes you saved from a VS Code editor yourself. Saves are matched by content: if something else writes the file right after your save, that write is still replayed. Turn off if your agent edits VS Code's editor buffers and then saves them."
+    },
+    "ignoreGitOperations": {
+      "type": "boolean",
+      "default": true,
+      "description": "Do not replay files that git rewrites when you merge, pull, switch branches, rebase, cherry-pick, revert, reset to another commit, or stash and pop. Conflict resolutions, edits made during the operation, git restore and git stash apply are still replayed. Needs the git command; the repository is only read."
     },
     "viewColumn": {
       "type": "string",
@@ -239,6 +263,23 @@
       "type": "boolean",
       "default": true,
       "description": "Show text in red with a strikethrough just before replay deletes it, and mark where text was removed with a gutter marker whose hover shows the removed text."
+    },
+    "autoRecordWorktrees": {
+      "type": "string",
+      "enum": ["off", "fill", "rotate"],
+      "default": "off",
+      "markdownDescription": "Give each worktree added while recording to a recorded repository its own lane, once something is written there. Until its first change it is watched but has no lane, doesn't count toward the 5, and can't be followed, so a worktree a tool checks out and removes without writing leaves no lane; at most 5 wait like this at once. At that first change, `fill` gives it a lane while fewer than 5 checkouts record, and otherwise records neither that change nor the worktree. `rotate` also makes room when all 5 are taken, by stopping the lane idle longest (never the followed one, and only after 2 minutes without a change). `off` records a new worktree only when you add it."
+    },
+    "autoIgnoreWorktrees": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "markdownDescription": "Glob patterns for worktrees that auto-record never gives a lane and auto-follow never moves to, such as review or other throwaway checkouts. A pattern without a slash matches the worktree's directory name (`review-*`); one with a slash matches its full path as git reports it, with symlinks resolved, so start it with `**/` (`**/T/tmp.*`). A pattern starting with `branch:` matches its branch instead (`branch:review/*`); a detached worktree has no branch. A lane auto-record added since recording started stops once it matches, unless it is its folder's last, and a new worktree still waiting for its first change is no longer watched. The folder's own checkout never matches, and you can still record a matching worktree by hand."
+    },
+    "autoFollow": {
+      "type": "boolean",
+      "default": false,
+      "description": "Once the followed lane is caught up and nothing has been typed for 3 seconds, follow the lane whose oldest queued change was recorded first. It never switches lanes in the middle of a change."
     }
   },
   "additionalProperties": false

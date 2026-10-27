@@ -1,7 +1,7 @@
 import { isFiniteNumber } from './numberSetting';
 
 /** Base speed when no settings layer sets one. */
-export const DEFAULT_CHARS_PER_MINUTE = 350;
+export const DEFAULT_CHARS_PER_MINUTE = 1000;
 
 /** One settings layer's speed keys, raw. `charsPerSecond` is the deprecated one. */
 export interface SpeedLayer {

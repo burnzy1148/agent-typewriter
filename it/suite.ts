@@ -25,7 +25,100 @@ async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
   }
 }
 
+// The sections run in four parts. IT_PART names one to run on its own, in a
+// fresh workspace: runTest.ts gives each part a launch of its own, and CI a
+// job of its own, starting from what the parts before it leave (startFrom).
+// Only the reload part leaves state for restore.ts. Unset, every part runs in
+// one launch.
+const PARTS = { recording, playback, reload, edits } as const;
+
 export async function run(): Promise<void> {
+  const part = process.env.IT_PART as Part | undefined;
+  if (part !== undefined && !Object.hasOwn(PARTS, part)) throw new Error(`unknown IT_PART ${part}`);
+  const c = await setUp();
+  if (part) {
+    await startFrom(c, part, true);
+    await PARTS[part](c);
+  } else {
+    for (const [name, run] of Object.entries(PARTS) as [Part, (c: Context) => Promise<void>][]) {
+      await startFrom(c, name, false);
+      await run(c);
+    }
+  }
+  if (!part || part === 'reload') await leaveForReload(c);
+}
+
+type Part = keyof typeof PARTS;
+
+/**
+ * What the parts before `part` leave that its checks were written against:
+ * settings (a CRLF files.eol, fast typing, a wide reorder window, the profile
+ * section 16 saves, which watches every file, and the repository file), the
+ * Playback panel section 12 opens, the real file sections 5 and 9 leave open
+ * beside the mirrors, and for edits, ACT's history settings.
+ * Running alone, a part starts by setting these up. In one launch they are
+ * already so; checking that they are means a change to what an earlier part
+ * leaves fails here instead of quietly changing what the later parts test.
+ */
+async function startFrom(c: Context, part: Part, alone: boolean): Promise<void> {
+  if (part === 'recording') return;
+  const { api, timeline, idle, scrubber, reorderWindow, cfg, WS, repoFile, uriOf } = c;
+  const existing = uriOf('src/existing.ts');
+  const exclude = cfg().inspect<string[]>('exclude')?.defaultValue;
+  const workspace: [string, string, unknown][] = [
+    ['files', 'eol', '\r\n'],
+    ['agentTypewriter', 'charsPerMinute', 240000],
+    ['agentTypewriter', 'reorderWindowMs', reorderWindow],
+    ['agentTypewriter', 'baselineBudgetMB', 256],
+    ['agentTypewriter', 'gitBaselines', true],
+    ['agentTypewriter', 'respectGitignore', false],
+    ['agentTypewriter', 'extensions', undefined],
+    [
+      'agentTypewriter',
+      'profiles',
+      {
+        keep: { include: ['x/**'], exlude: ['typo'] },
+        draft: 'tbd',
+        mine: { include: ['**/*'], exclude, extensions: [], respectGitignore: false },
+      },
+    ],
+    ['agentTypewriter', 'activeProfile', 'mine'],
+  ];
+  const user: [string, unknown][] = part === 'edits' ? [['historyLimit', 10], ['persistHistory', false]] : [];
+  const docs = { docs: { include: ['docs/**'], extensions: ['md'] } };
+  const file = part === 'edits' ? { profiles: docs, historyLimit: 1000, persistHistory: true } : { profiles: docs };
+  if (alone) {
+    fs.writeFileSync(repoFile, JSON.stringify(file));
+    for (const [section, key, value] of workspace) await vscode.workspace.getConfiguration(section).update(key, value, WS);
+    for (const [key, value] of user) await cfg().update(key, value, vscode.ConfigurationTarget.Global);
+    await vscode.window.showTextDocument(existing, { viewColumn: vscode.ViewColumn.One, preview: false });
+    await vscode.commands.executeCommand('agentTypewriter.scrubber.focus');
+    await until('playback panel to resolve', () => scrubber.isResolved, 10000);
+    await until('the saved profile to apply', () => api.recorder.describeFilter().startsWith('mine: '), 10000);
+    // With every file watched, the writes above are recorded too, up to a
+    // reorder window later; wait until nothing new arrives for a full window.
+    for (let n = -1; n !== timeline.all().length; ) {
+      n = timeline.all().length;
+      await sleep(reorderWindow + 1500);
+    }
+    await until('setup changes to play', idle);
+    return;
+  }
+  for (const [section, key, value] of workspace) {
+    assert.deepEqual(vscode.workspace.getConfiguration(section).inspect(key)?.workspaceValue, value, `${part} starts from a different ${section}.${key}`);
+  }
+  for (const [key, value] of user) assert.deepEqual(cfg().inspect(key)?.globalValue, value, `${part} starts from a different user ${key}`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(repoFile, 'utf8')), file, `${part} starts from a different repository file`);
+  assert.ok(scrubber.isResolved, `${part} starts without the Playback panel`);
+  const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs);
+  assert.ok(
+    tabs.some((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === existing.toString()),
+    `${part} starts without src/existing.ts open`,
+  );
+}
+
+/** Activates the extension, starts recording, and gathers what every part uses. */
+async function setUp() {
   const ext = vscode.extensions.getExtension<AgentTypewriterApi>('burnzy1148.agent-typewriter');
   assert.ok(ext, 'extension not found');
   const api = await ext.activate();
@@ -55,6 +148,88 @@ export async function run(): Promise<void> {
       ...timeline.all().slice(-20).map((e) => `  #${e.seq} ${e.kind} ${e.relPath} ${timeline.stateOf(e.seq)}`),
     ].join('\n');
 
+
+  // Helpers sections in more than one part use.
+  const mirrorDoc = (rel: string) =>
+    vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel);
+  const reorderWindow = Number(process.env.IT_REORDER_WINDOW_MS ?? 5000);
+  const lf = (t: string) => t.replace(/\r\n/g, '\n');
+  const cfg = () => vscode.workspace.getConfiguration('agentTypewriter');
+  const WS = vscode.ConfigurationTarget.Workspace;
+  const settle = () => sleep(1500);
+  const { player, scrubber } = api;
+  const repoFile = path.join(root, '.agent-typewriter.json');
+  const uriOf = (rel: string) => vscode.Uri.file(path.join(root, rel));
+  const eventsFor = (rel: string, from: number) => timeline.all().slice(from).filter((e) => e.relPath === rel);
+  const folder = vscode.workspace.workspaceFolders![0];
+  const nestedDir = path.join(root, '.worktrees', 'nested');
+  const gitIn = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', ...args], { cwd, stdio: 'ignore' });
+  const own = () => api.recorder.checkoutOf(folder)?.own;
+  const choose = (p: string) => vscode.commands.executeCommand('agentTypewriter.chooseCheckout', folder.uri, p);
+  const since = (from: number) => timeline.all().slice(from);
+
+  await vscode.commands.executeCommand('agentTypewriter.start');
+  await sleep(500);
+  return {
+    api,
+    timeline,
+    root,
+    write,
+    disk,
+    mirrorText,
+    idle,
+    player,
+    scrubber,
+    reorderWindow,
+    lf,
+    cfg,
+    WS,
+    mirrorDoc,
+    repoFile,
+    settle,
+    uriOf,
+    eventsFor,
+    folder,
+    nestedDir,
+    gitIn,
+    own,
+    choose,
+    since,
+  };
+}
+
+type Context = Awaited<ReturnType<typeof setUp>>;
+
+/** Sections 1-17: live recording, filters, line endings, write order, git baselines, the playback panel, the repository settings file, and worktrees. */
+async function recording(c: Context): Promise<void> {
+  const {
+    api,
+    timeline,
+    root,
+    write,
+    disk,
+    mirrorText,
+    idle,
+    player,
+    scrubber,
+    reorderWindow,
+    lf,
+    cfg,
+    WS,
+    mirrorDoc,
+    repoFile,
+    settle,
+    uriOf,
+    eventsFor,
+    folder,
+    nestedDir,
+    gitIn,
+    own,
+    choose,
+    since,
+  } = c;
+
   // Track which file playback is in, and how many separate edits hit the mirrors.
   const order: string[] = [];
   let lastSeq = -1;
@@ -69,9 +244,6 @@ export async function run(): Promise<void> {
   vscode.workspace.onDidChangeTextDocument((e) => {
     if (e.document.uri.scheme === 'agent-typewriter' && e.contentChanges.length > 0) mirrorEdits++;
   });
-
-  await vscode.commands.executeCommand('agentTypewriter.start');
-  await sleep(500);
 
   // --- 1. Agent touches a.ts, b.ts, existing.ts, then a.ts again; plus a filtered .txt
   write('src/a.ts', 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
@@ -176,8 +348,6 @@ export async function run(): Promise<void> {
   console.log('[it] live filter change ok');
 
   // --- 7. Line endings: CRLF files replay as CRLF, LF files as LF whatever files.eol says.
-  const mirrorDoc = (rel: string) =>
-    vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'agent-typewriter' && d.uri.path === '/' + rel);
   const crlf = (lines: string[]) => lines.map((l) => l + '\r\n').join('');
   const lines = Array.from({ length: 50 }, (_, i) => `export const v${i} = ${i};`);
   write('src/crlf.ts', crlf(lines));
@@ -216,7 +386,6 @@ export async function run(): Promise<void> {
   // y.ts is written and reported first; x.ts is written after that report but
   // its mtime says it was written earlier, so the timeline and replay must put
   // x.ts first. A wide window keeps the mtime clamp out of the way on slow watchers.
-  const reorderWindow = Number(process.env.IT_REORDER_WINDOW_MS ?? 5000);
   await vscode.workspace.getConfiguration('agentTypewriter').update('reorderWindowMs', reorderWindow, vscode.ConfigurationTarget.Workspace);
   const beforeOrder = timeline.all().length;
   const seen = new Set<string>();
@@ -241,7 +410,6 @@ export async function run(): Promise<void> {
   console.log('[it] write order ok');
 
   // --- 9. An outside write right after an own save is still recorded, from the saved text.
-  const lf = (t: string) => t.replace(/\r\n/g, '\n');
   async function saveThenWrite(marker: string, gapMs: number) {
     const at = timeline.all().length;
     const d = await vscode.workspace.openTextDocument(path.join(root, 'src/existing.ts'));
@@ -276,8 +444,6 @@ export async function run(): Promise<void> {
 
   // --- 10. Git-backed baselines: with no memory budget, a committed file's
   // first change is still replayed, from the committed text. Git is only read.
-  const cfg = () => vscode.workspace.getConfiguration('agentTypewriter');
-  const WS = vscode.ConfigurationTarget.Workspace;
   const gitState = () => {
     const head = fs.readFileSync(path.join(root, '.git/HEAD'), 'utf8');
     const ref = head.startsWith('ref: ') ? fs.readFileSync(path.join(root, '.git', head.slice(5).trim()), 'utf8') : '';
@@ -307,7 +473,6 @@ export async function run(): Promise<void> {
 
   // --- 11. Toggling while watching. Off (with budget): baselines move to memory.
   // On (no budget): a file with no baseline gets one from git.
-  const settle = () => sleep(1500);
   await cfg().update('baselineBudgetMB', 256, WS);
   await settle();
   await cfg().update('gitBaselines', false, WS);
@@ -323,7 +488,6 @@ export async function run(): Promise<void> {
 
   // --- 12. Playback panel: locked-down HTML, seek keeps pause state, end of
   // the slider skips to latest, speed, and malformed messages do nothing.
-  const { player, scrubber } = api;
   await vscode.commands.executeCommand('agentTypewriter.scrubber.focus');
   await until('playback panel to resolve', () => scrubber.isResolved, 10000);
   assert.match(scrubber.html, /default-src 'none'; style-src 'nonce-[0-9a-f]+'; script-src 'nonce-[0-9a-f]+';/);
@@ -422,7 +586,6 @@ export async function run(): Promise<void> {
 
   // --- 13. Repository settings file: applies live, sits below workspace
   // settings, survives a broken save, and goes away with the file.
-  const repoFile = path.join(root, '.agent-typewriter.json');
   const skipped = vscode.Uri.file(path.join(root, 'src/skip/a.ts'));
   const watched = () => api.recorder.matches(skipped);
   await cfg().update('baselineBudgetMB', 256, WS);
@@ -475,8 +638,6 @@ export async function run(): Promise<void> {
 
   // --- 15. respectGitignore: ignored new files are skipped, tracked files are
   // not, .gitignore edits apply live, and turning it off records from a baseline.
-  const uriOf = (rel: string) => vscode.Uri.file(path.join(root, rel));
-  const eventsFor = (rel: string, from: number) => timeline.all().slice(from).filter((e) => e.relPath === rel);
   fs.mkdirSync(path.join(root, 'src/later'), { recursive: true });
   // Give the watcher time to pick up the new directory (Linux misses files created right away).
   await sleep(1000);
@@ -529,7 +690,12 @@ export async function run(): Promise<void> {
   const atProfile = timeline.all().length;
   write('src/profiled.ts', 'export const profiled = 1;\n');
   write('docs/guide.md', '# Guide\n');
-  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).length === 1, 20000);
+  // Linux can report a file in a just-created directory with only a change
+  // event, which takes a baseline instead of recording a create. An edit after
+  // either is recorded.
+  await until('docs/guide.md seen', () => api.recorder.hasBaseline(uriOf('docs/guide.md')), 20000);
+  write('docs/guide.md', '# Guide\n\nMore.\n');
+  await until('docs/guide.md recorded', () => eventsFor('docs/guide.md', atProfile).some((e) => e.kind === 'modify'), 20000);
   await sleep(1000);
   assert.equal(eventsFor('src/profiled.ts', atProfile).length, 0, 'a path outside the active profile was recorded');
 
@@ -559,15 +725,8 @@ export async function run(): Promise<void> {
   // sibling worktree is recorded under its label into its own mirror,
   // switching back keeps queued changes, a worktree added while recording is
   // skipped, and removing the chosen worktree falls back to the folder's own.
-  const folder = vscode.workspace.workspaceFolders![0];
-  const nestedDir = path.join(root, '.worktrees', 'nested');
   const siblingDir = `${root}-sibling`;
   const label = path.basename(siblingDir);
-  const gitIn = (cwd: string, ...args: string[]) =>
-    execFileSync('git', ['-c', 'user.name=it', '-c', 'user.email=it@example.invalid', ...args], { cwd, stdio: 'ignore' });
-  const own = () => api.recorder.checkoutOf(folder)?.own;
-  const choose = (p: string) => vscode.commands.executeCommand('agentTypewriter.chooseCheckout', folder.uri, p);
-  const since = (from: number) => timeline.all().slice(from);
   await until('nested worktree skipped', () => api.recorder.describeFilter().includes('other worktrees skipped'), 10000);
 
   const atNested = timeline.all().length;
@@ -664,6 +823,11 @@ export async function run(): Promise<void> {
   );
   await until('worktree playback', idle);
   console.log('[it] worktrees ok');
+}
+
+/** PLAY and settings layering: playback and mirror documents, with changes pushed straight onto the timeline. */
+async function playback(c: Context): Promise<void> {
+  const { api, timeline, root, write, mirrorText, idle, player, scrubber, reorderWindow, cfg, WS, mirrorDoc } = c;
 
   // --- PLAY. Playback and mirror documents. Changes go straight onto the
   // timeline with the recorder stopped, so only the player sets the timing.
@@ -933,7 +1097,7 @@ export async function run(): Promise<void> {
     // the scroll; finish current and skip to latest end it; smoothScroll off jumps.
     await setting('agentTypewriter', 'charsPerMinute', 240000);
     await setting('agentTypewriter', 'maxAnimatedChars', 6000);
-    await setting('agentTypewriter', 'scrollPauseMs', 0);
+    await setting('agentTypewriter', 'readPauseSeconds', 0);
     await setting('agentTypewriter', 'scrollLinesPerSecond', 60);
     const tallLines = Array.from({ length: 400 }, (_, i) => `const line${i} = ${i};`);
     /** The mirror's current text with `edits` applied, so each step's change holds only its own hunks. */
@@ -962,12 +1126,16 @@ export async function run(): Promise<void> {
       return {
         e,
         seen,
+        /** Waits for playback and the scroll to `line`; returns when playback ended. */
         done: async () => {
           await until(`${label} playback`, playedNow(e.seq));
-          seen.dispose();
+          const playedAt = Date.now();
           assert.equal(mirrorText('play/scroll.ts'), e.after, `${label}: the mirror does not hold the after text`);
-          assert.ok(inView('play/scroll.ts', line), `${label}: line ${line} is not in view`);
+          // visibleRanges updates only once the renderer reports the scroll, which can trail a quick finish.
+          await until(`${label}: line ${line} in view`, () => inView('play/scroll.ts', line), 2000);
+          seen.dispose();
           tallText = e.after;
+          return playedAt;
         },
       };
     };
@@ -1009,6 +1177,153 @@ export async function run(): Promise<void> {
     await jumped.done();
     assert.ok(new Set(jumped.seen.seen).size <= 2, `smoothScroll off still scrolled: ${jumped.seen.seen.join(',')}`);
     console.log('[it] smooth scroll to the next edit ok');
+
+    // The read pause: before the view leaves what was just typed (an off-screen
+    // edit or another file) it waits, counting time already passed. smoothScroll
+    // off still waits; finish current ends it; a seek skips it.
+    await setting('agentTypewriter', 'smoothScroll', true);
+    await setting('agentTypewriter', 'readPauseSeconds', 1);
+    /** When the mirror of `rel` changed, in order, until disposed. */
+    const editTimes = (rel: string) => {
+      const at: number[] = [];
+      const sub = vscode.workspace.onDidChangeTextDocument((ev) => {
+        if (isMirror(ev.document, rel) && ev.contentChanges.length > 0) at.push(Date.now());
+      });
+      return { at, dispose: () => sub.dispose() };
+    };
+    /** Plays a scrollStep and measures the ms from the last edit before the view first moved down to that move. */
+    const scrollWait = async (label: string, edits: Record<number, string>, line: number) => {
+      const changed = editTimes('play/scroll.ts');
+      let movedAt: number | undefined;
+      const sub = vscode.window.onDidChangeTextEditorVisibleRanges((ev) => {
+        if (movedAt === undefined && isMirror(ev.textEditor.document, 'play/scroll.ts') && (ev.visibleRanges[0]?.start.line ?? 0) > 0) movedAt = Date.now();
+      });
+      const step = await scrollStep(label, edits, line);
+      await step.done();
+      sub.dispose();
+      changed.dispose();
+      assert.ok(movedAt !== undefined, `${label}: the view never moved`);
+      const before = changed.at.filter((t) => t <= movedAt!);
+      assert.ok(before.length > 0, `${label}: the view moved before anything was typed`);
+      return { wait: movedAt - before[before.length - 1], tops: step.seen.seen };
+    };
+
+    const offScreen = await scrollWait('read pause before a scroll', { 4: 'const line4 = 40;', 345: 'const line345 = 3450;' }, 345);
+    assert.ok(offScreen.wait >= 850 && offScreen.wait < 2500, `the view left line 4 after ${offScreen.wait} ms, not about 1 s`);
+
+    await setting('agentTypewriter', 'smoothScroll', false);
+    const offScreenJump = await scrollWait('read pause before a jump', { 7: 'const line7 = 70;', 347: 'const line347 = 3470;' }, 347);
+    assert.ok(offScreenJump.wait >= 850 && offScreenJump.wait < 2500, `with smoothScroll off the view left line 7 after ${offScreenJump.wait} ms, not about 1 s`);
+    assert.ok(new Set(offScreenJump.tops).size <= 2, `smoothScroll off still scrolled: ${offScreenJump.tops.join(',')}`);
+    await setting('agentTypewriter', 'smoothScroll', true);
+
+    await setting('agentTypewriter', 'readPauseSeconds', 3);
+    const cutPause = await scrollStep('finish during the read pause', { 8: 'const line8 = 80;', 349: 'const line349 = 3490;' }, 349);
+    await until('the first hunk of the cut change', () => mirrorText('play/scroll.ts').includes('const line8 = 80;'));
+    const finishAt = Date.now();
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    const cutAt = await cutPause.done();
+    assert.ok(cutAt - finishAt < 1500, `finish current took ${cutAt - finishAt} ms to end a 3 s read pause`);
+    await setting('agentTypewriter', 'readPauseSeconds', 1);
+
+    // Switching files: the last file stays in view for the read pause first.
+    const a1 = await play('play/read-a.ts', '', 'export const a = 1;\n');
+    const aEdits = editTimes('play/read-a.ts');
+    let bShownAt: number | undefined;
+    const bShown = vscode.window.onDidChangeVisibleTextEditors((eds) => {
+      if (bShownAt === undefined && eds.some((ed) => isMirror(ed.document, 'play/read-b.ts'))) bShownAt = Date.now();
+    });
+    const a2 = push('play/read-a.ts', a1.after, 'export const a = 2;\n');
+    const b1 = push('play/read-b.ts', '', 'export const b = 1;\n');
+    await until('read-b playback', playedNow(b1.seq));
+    aEdits.dispose();
+    bShown.dispose();
+    assert.equal(timeline.stateOf(a2.seq), 'played');
+    assert.ok(bShownAt !== undefined && aEdits.at.length > 0, 'read-b was never shown after read-a was typed');
+    const switchWait = bShownAt - aEdits.at[aEdits.at.length - 1];
+    assert.ok(switchWait >= 850 && switchWait < 2500, `read-b was shown ${switchWait} ms after read-a's last edit, not about 1 s`);
+
+    // A change that arrives after the read pause has passed switches with no added wait.
+    await sleep(1500);
+    const lateEdits = editTimes('play/read-a.ts');
+    const pushedAt = Date.now();
+    const a3 = push('play/read-a.ts', a2.after, 'export const a = 3;\n');
+    await until('late read-a playback', playedNow(a3.seq));
+    lateEdits.dispose();
+    assert.ok(lateEdits.at.length > 0 && lateEdits.at[0] - pushedAt < 1100, `a late change waited ${lateEdits.at[0] - pushedAt} ms, though the read pause had passed`);
+    assert.equal(mirrorText('play/read-a.ts'), a3.after);
+
+    // A seek right after typing shows the other file with no read pause.
+    const seekEdits = editTimes('play/read-b.ts');
+    const seekAt = Date.now();
+    await vscode.commands.executeCommand('agentTypewriter.seek', b1.seq);
+    await until('read-b replayed after the seek', () => seekEdits.at.length > 0);
+    seekEdits.dispose();
+    assert.ok(seekEdits.at[0] - seekAt < 900, `after a seek read-b waited ${seekEdits.at[0] - seekAt} ms`);
+    await until('idle after the seek', idle);
+    assert.equal(mirrorText('play/read-b.ts'), b1.after);
+    assert.equal(mirrorText('play/read-a.ts'), a3.after);
+
+    // Pausing during the read pause keeps the old file in view until resumed.
+    const bVisible = () => vscode.window.visibleTextEditors.some((ed) => isMirror(ed.document, 'play/read-b.ts'));
+    const p1 = push('play/read-a.ts', a3.after, 'export const a = 4;\n');
+    const p2 = push('play/read-b.ts', b1.after, 'export const b = 2;\n');
+    await until('read-a typed before the pause', () => timeline.stateOf(p1.seq) === 'played');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await sleep(1500);
+    assert.ok(!bVisible(), 'read-b was shown while playback was paused');
+    assert.notEqual(timeline.stateOf(p2.seq), 'played', 'read-b played while paused');
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('read-b after resuming', playedNow(p2.seq));
+    assert.equal(mirrorText('play/read-b.ts'), p2.after);
+
+    // A faster speed chosen during the read pause shortens what is left of it.
+    await setting('agentTypewriter', 'readPauseSeconds', 6);
+    const s1 = push('play/read-b.ts', p2.after, 'export const b = 3;\n');
+    const s2 = push('play/read-a.ts', p1.after, 'export const a = 5;\n');
+    await until('read-b typed before the speed change', () => timeline.stateOf(s1.seq) === 'played');
+    const fasterAt = Date.now();
+    await vscode.commands.executeCommand('agentTypewriter.setSpeed', 6);
+    await until('read-a after the speed change', playedNow(s2.seq));
+    const fasterWait = Date.now() - fasterAt;
+    await vscode.commands.executeCommand('agentTypewriter.setSpeed', 1);
+    assert.ok(fasterWait < 3000, `a 6 s read pause at 6x took ${fasterWait} ms more after the speed change`);
+    assert.equal(mirrorText('play/read-a.ts'), s2.after);
+
+    // A rename that also edits far down jumps to that edit on the new name, with no read pause there.
+    await setting('agentTypewriter', 'readPauseSeconds', 3);
+    const moveText = tallLines.join('\n') + '\n';
+    await play('play/read-move.ts', '', moveText);
+    const movedTops = tops('play/read-moved.ts');
+    const movedEdits = editTimes('play/read-moved.ts');
+    let movedShownAt: number | undefined;
+    const movedShown = vscode.window.onDidChangeVisibleTextEditors((eds) => {
+      if (movedShownAt === undefined && eds.some((ed) => isMirror(ed.document, 'play/read-moved.ts'))) movedShownAt = Date.now();
+    });
+    const moved = timeline.push({
+      uri: vscode.Uri.file(path.join(root, 'play/read-moved.ts')).toString(),
+      relPath: 'play/read-moved.ts',
+      fromUri: vscode.Uri.file(path.join(root, 'play/read-move.ts')).toString(),
+      fromRelPath: 'play/read-move.ts',
+      time: Date.now(),
+      kind: 'rename',
+      before: moveText,
+      after: tallLines.map((l, i) => (i === 300 ? 'const line300 = 3000;' : l)).join('\n') + '\n',
+      eol: '\n',
+      linesAdded: 1,
+      linesRemoved: 1,
+    });
+    await until('rename with an edit playback', playedNow(moved.seq));
+    movedTops.dispose();
+    movedEdits.dispose();
+    movedShown.dispose();
+    assert.equal(mirrorText('play/read-moved.ts'), moved.after);
+    assert.ok(new Set(movedTops.seen).size <= 2, `the first edit after a rename was scrolled to: ${movedTops.seen.join(',')}`);
+    const firstMovedEdit = movedEdits.at.find((t) => t >= (movedShownAt ?? 0));
+    assert.ok(movedShownAt !== undefined && firstMovedEdit !== undefined, 'the renamed mirror was never shown and edited');
+    assert.ok(firstMovedEdit - movedShownAt < 1500, `the first edit after a rename waited ${firstMovedEdit - movedShownAt} ms on the new name`);
+    await setting('agentTypewriter', 'readPauseSeconds', 0);
+    console.log('[it] read pause ok');
 
     // A nearby edit in view is reached with arrow keys, a line at a time.
     // Pause holds the walk; arrowNavigation off puts the caret there at once.
@@ -1083,6 +1398,76 @@ export async function run(): Promise<void> {
     await clicked.done();
     assert.deepEqual(visited(clicked.seen.seen, 16, 22), [17, 18, 19, 20, 21], `arrowNavigation off still walked: ${clicked.seen.seen.join(',')}`);
     console.log('[it] arrow keys to nearby edits ok');
+
+    // A new block is typed outside in: its closing line appears before its body (at-mfk.3).
+    await setting('agentTypewriter', 'naturalOrder', true);
+    const orderBlock = (name: string) => `function ${name}(a: number, b: number) {\n  const sum = a + b;\n  return sum;\n}\n`;
+    const natural = record('play/order.ts');
+    const ordered = await play('play/order.ts', '', orderBlock('total'));
+    natural.dispose();
+    assert.equal(mirrorText('play/order.ts'), ordered.after);
+    assert.ok(
+      natural.texts.some((t) => t.includes('{\n}') && !t.includes('return')),
+      `the closing brace was not typed before the body: ${JSON.stringify(natural.texts.slice(0, 6))}`,
+    );
+
+    // The caret walks back into the block with arrow keys, and moving past its
+    // closing line skips the read pause and the scroll, even off-screen.
+    const navRel = 'play/order-nav.ts';
+    const navBase = Array.from({ length: 120 }, (_, i) => `const n${i} = ${i};`).join('\n') + '\n';
+    await play(navRel, '', navBase);
+    await setting('agentTypewriter', 'arrowNavigation', true);
+    await setting('agentTypewriter', 'readPauseSeconds', 6);
+    // Slow enough that the pause below lands while the body's last line is still being typed.
+    await setting('agentTypewriter', 'charsPerMinute', 1200);
+    const navCarets = caretLines(navRel);
+    const navEdits: Array<{ at: number; text: string }> = [];
+    let pausedMidBody = false;
+    const navSub = vscode.workspace.onDidChangeTextDocument((ev) => {
+      if (!isMirror(ev.document, navRel) || ev.contentChanges.length === 0) return;
+      const text = ev.document.getText();
+      navEdits.push({ at: Date.now(), text });
+      if (!pausedMidBody && text.includes('\n  r') && !text.includes('return a;')) {
+        pausedMidBody = true;
+        void vscode.commands.executeCommand('agentTypewriter.togglePause');
+      }
+    });
+    const navChange = push(navRel, navBase, navBase + 'function f() {\n  const a = 1;\n  return a;\n}\nconst after = 1;\n');
+    await until('the block body to be part typed', () => pausedMidBody);
+    await sleep(300);
+    assert.ok(!mirrorText(navRel)!.includes('return a;'), 'the block body finished before the pause landed');
+    // With the view at the top, the text after the closing line is off-screen.
+    await toTop(navRel);
+    const navTops = tops(navRel);
+    await vscode.commands.executeCommand('agentTypewriter.togglePause');
+    await until('the block playback', playedNow(navChange.seq));
+    navSub.dispose();
+    navCarets.dispose();
+    navTops.dispose();
+    assert.equal(mirrorText(navRel), navChange.after);
+    const bodyDone = navEdits.find((x) => x.text.includes('return a;'))!.at;
+    const pastClose = navEdits.find((x) => x.text.includes('}\nc'))!.at;
+    assert.ok(pastClose - bodyDone < 3000, `moving past the closing line waited ${pastClose - bodyDone} ms`);
+    assert.ok(new Set(navTops.seen).size <= 2, `moving past the closing line scrolled: ${navTops.seen.join(',')}`);
+    // After typing `function f() {` and `}` on lines 120 and 121, the caret is on line 122.
+    const walkedBack = navCarets.seen.some((l, i) => l === 122 && navCarets.seen[i + 1] === 121 && navCarets.seen[i + 2] === 120);
+    assert.ok(walkedBack, `the caret did not walk back into the block line by line: ${navCarets.seen.join(',')}`);
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
+    await setting('agentTypewriter', 'readPauseSeconds', 0);
+    await setting('agentTypewriter', 'arrowNavigation', false);
+    await setting('agentTypewriter', 'naturalOrder', false);
+    const topDown = record('play/order.ts');
+    const unordered = await play('play/order.ts', ordered.after, ordered.after + '\n' + orderBlock('other'));
+    topDown.dispose();
+    assert.equal(mirrorText('play/order.ts'), unordered.after);
+    assert.ok(
+      topDown.texts.every((t) => {
+        const added = t.indexOf('function other');
+        return added === -1 || !t.slice(added).includes('\n}') || t.slice(added).includes('return sum');
+      }),
+      'naturalOrder off typed the closing brace before the body',
+    );
+    console.log('[it] natural authoring order ok');
 
     // A rename shows the old name, moves the mirror, then types the edit (at-kbn.2).
     await setting('agentTypewriter', 'charsPerMinute', 3600);
@@ -1293,8 +1678,39 @@ export async function run(): Promise<void> {
     await setting('agentTypewriter', 'highlightAdditions', true);
     await setting('agentTypewriter', 'markDeletions', true);
     await until('highlights back after turning them on', drawnIs('play/hl-f.ts', { lines: [1], chars: [], removals: [] }), 5000);
+    // With both settings off nothing is diffed. Turning one back on while a file
+    // that is slow to diff is typed still brings up a later file's clear buttons.
+    const bigPool = Array.from({ length: 8 }, (_, i) => `r,0,${i},0\n`);
+    const big1 = Array.from({ length: 8000 }, (_, i) => bigPool[(i * 5 + (i >> 3)) % 8]).join('');
+    const big2 = big1.split(/(?<=\n)/).map((l, i) => (i % 8 === 3 ? 'changed\n' : l)).join('');
+    await play('play/hl-big.ts', '', big1);
+    await vscode.commands.executeCommand('agentTypewriter.clearHighlightsInFile', hlUri('play/hl-big.ts'));
+    await play('play/hl-big.ts', big1, big2);
+    await setting('agentTypewriter', 'markDeletions', false);
+    await setting('agentTypewriter', 'highlightAdditions', false);
+    await play('play/hl-late.ts', 'g\nx\n', 'g\ny\n');
+    await setting('agentTypewriter', 'charsPerMinute', 600);
+    const slowBig = push('play/hl-big.ts', big2, big2 + 'typed slowly at the end of a file that is slow to diff\n');
+    await until('big file typing', playing(slowBig.seq), 15000);
+    await setting('agentTypewriter', 'markDeletions', true);
+    await until('later file reported while the slow file is typed', () => api.highlights.highlightedPaths.includes('/play/hl-late.ts'), 4000);
+    assert.equal(timeline.stateOf(slowBig.seq), 'playing', 'the slow change finished before the check');
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('slow big change played', playedNow(slowBig.seq));
+    await setting('agentTypewriter', 'highlightAdditions', true);
+    // Each change of an uninterrupted run is its own live change: marks drawn during one are not kept into the next.
+    const run1 = push('play/hl-t.ts', 'a\n', 'a\nthe first change of a run\n');
+    const run2 = push('play/hl-t.ts', 'a\nthe first change of a run\n', 'a\nthe first change of a run\nand the second\n');
+    await until('first change of the run typing', () => playing(run1.seq)() && api.player.liveToken('play/hl-t.ts') !== undefined, 15000);
+    const firstToken = api.player.liveToken('play/hl-t.ts');
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('second change of the run typing', () => playing(run2.seq)() && api.player.liveToken('play/hl-t.ts') !== undefined, 15000);
+    assert.notEqual(api.player.liveToken('play/hl-t.ts'), firstToken, 'two changes of one run share a live token');
+    await vscode.commands.executeCommand('agentTypewriter.finishCurrent');
+    await until('run played', playedNow(run2.seq));
+    await setting('agentTypewriter', 'charsPerMinute', 240000);
     // A real file open beside the mirrors is never decorated.
-    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/a.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
+    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'src/existing.ts')), { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: true });
     await sleep(300);
     assert.ok([...api.highlights.drawn.keys()].every((k) => k.startsWith('agent-typewriter:')), 'a real file got highlights');
     console.log('[it] highlights ok');
@@ -1323,7 +1739,7 @@ export async function run(): Promise<void> {
     const savedPace = (['charsPerMinute', 'catchUpFactor'] as const).map((k) => [k, cfg().inspect(k)?.workspaceValue] as const);
     await cfg().update('charsPerMinute', 'fast', WS);
     await cfg().update('catchUpFactor', 'auto', WS);
-    assert.equal(readSettings().charsPerMinute, 350);
+    assert.equal(readSettings().charsPerMinute, 1000);
     assert.equal(readSettings().catchUpFactor, 0.5);
     const atPace = timeline.all().length;
     write('src/setPace.ts', 'export const pace = 1;\n');
@@ -1392,6 +1808,32 @@ export async function run(): Promise<void> {
     await until('SET playback', idle);
     console.log('[it] settings layering ok');
   }
+}
+
+/** ACT: commands and settings that change what is recorded, including the history settings restore.ts checks. */
+async function reload(c: Context): Promise<void> {
+  const {
+    api,
+    timeline,
+    root,
+    write,
+    disk,
+    mirrorText,
+    idle,
+    player,
+    reorderWindow,
+    cfg,
+    WS,
+    repoFile,
+    settle,
+    uriOf,
+    eventsFor,
+    folder,
+    gitIn,
+    own,
+    choose,
+    since,
+  } = c;
 
   // ACT a. Watch Only This and Add to Watch on the workspace root write a
   // folder-relative glob, and a folder named like a route ("[id]") matches itself.
@@ -1471,6 +1913,10 @@ export async function run(): Promise<void> {
   assert.equal(player.playbackRelPath, undefined, 'Load Session kept the previous playback mirror');
   if (player.isPaused) await vscode.commands.executeCommand('agentTypewriter.togglePause');
   await until('loaded session playback', idle);
+  // Loading stops watching, so live edits do not mix into the loaded changes; start again for what follows.
+  assert.equal(api.recorder.isRunning, false, 'Load Session kept watching');
+  await vscode.commands.executeCommand('agentTypewriter.start');
+  await sleep(500);
   console.log('[it] ACT: Clear Buffer and Load Session drain held changes ok');
 
   // ACT d. A .git file is git metadata: never recorded, unlike a file next to it.
@@ -1532,6 +1978,11 @@ export async function run(): Promise<void> {
   assert.ok(timeline.all().length > 12, 'the user historyLimit cut the buffer though the repository file sets one');
   assert.ok(api.store?.isRunning, 'the user persistHistory stopped saving though the repository file turns it on');
   console.log(`[it] ACT: repository file history settings ok (${timeline.all().length} changes)`);
+}
+
+/** Edge cases of recording edits, then REC2 (baselines) and REC3 (worktree lifecycle). */
+async function edits(c: Context): Promise<void> {
+  const { api, timeline, root, write, disk, mirrorText, idle, reorderWindow, lf, cfg, WS, uriOf, eventsFor, gitIn, own, choose, since } = c;
 
   {
     // Settings these sections change; restored at the end for the sections below.
@@ -2266,6 +2717,11 @@ export async function run(): Promise<void> {
     await cfg().update('reorderWindowMs', restoreReorder, WS);
     await sleep(500);
   }
+}
+
+/** Section 18: queued changes and open mirror tabs for restore.ts, and the checkout it expects. */
+async function leaveForReload(c: Context): Promise<void> {
+  const { api, timeline, write, disk, mirrorText, idle, nestedDir, choose } = c;
 
   // --- 18. Leave three queued changes behind for the reload check in restore.ts,
   // which runs in a second VS Code launch on the same workspace. Two mirror
@@ -2273,6 +2729,9 @@ export async function run(): Promise<void> {
   // played once with a second change queued behind it.
   await until('idle before reload setup', idle);
   // restore.ts checks the clear survives: only files changed after it are highlighted.
+  write('src/beforeClear.ts', 'export const beforeClear = 1;\n');
+  await until('beforeClear.ts to play', () => idle() && mirrorText('src/beforeClear.ts') === disk('src/beforeClear.ts'));
+  assert.ok(highlightedFiles(timeline).includes('src/beforeClear.ts'), 'a file changed before the clear is not highlighted');
   await vscode.commands.executeCommand('agentTypewriter.clearHighlights');
   write('src/tabPlayed.ts', 'export const tabPlayed = 1;\n');
   await sleep(300);
@@ -2297,7 +2756,7 @@ export async function run(): Promise<void> {
   assert.deepEqual(mirrorTabs['src/tabQueued.ts'], { text: 'export const tabQueued = 1;\n', eol: '\r\n' }, 'the queued change was typed while paused');
   const highlighted = highlightedFiles(timeline);
   for (const rel of ['src/tabPlayed.ts', 'src/tabQueued.ts']) assert.ok(highlighted.includes(rel), `${rel} is not highlighted after the clear`);
-  assert.ok(!highlighted.includes('src/a.ts'), 'a file changed before the clear is still highlighted');
+  assert.ok(!highlighted.includes('src/beforeClear.ts'), 'a file changed before the clear is still highlighted');
   assert.ok(api.store, 'no timeline store');
   await api.store.flush();
   fs.writeFileSync(
@@ -2309,6 +2768,7 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('agentTypewriter.stop');
   await choose(nestedDir);
 }
+
 
 /** Files whose mirror text differs from their highlight baseline, sorted. */
 export function highlightedFiles(t: Timeline): string[] {

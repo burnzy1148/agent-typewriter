@@ -4,8 +4,33 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { runTests } from '@vscode/test-electron';
 
+const extensionDevelopmentPath = path.resolve(__dirname, '..');
+/** VS Code flags every launch shares, after its workspace and user-data dir. */
+const flags = ['--disable-extensions', '--disable-gpu', '--no-sandbox', '--disable-workspace-trust'];
+
+// IT_GROUP picks launches to run, as a comma-separated list: a part of
+// suite.ts (recording, playback, reload or edits, see PARTS there), each in a
+// fresh main workspace; suite, for every part in one launch; or workspaces,
+// for the launches with workspaces of their own. CI runs them as parallel
+// jobs. Unset, suite and workspaces run.
+const PARTS = ['recording', 'playback', 'reload', 'edits'];
+
 async function main() {
-  const extensionDevelopmentPath = path.resolve(__dirname, '..');
+  // Launches get IT_PART only from suiteLaunches; one left in the shell would reach them all.
+  delete process.env.IT_PART;
+  for (const group of process.env.IT_GROUP?.split(',') ?? ['suite', 'workspaces']) {
+    if (group === 'workspaces') await workspaceLaunches();
+    else if (group === 'suite') await suiteLaunches();
+    else if (PARTS.includes(group)) await suiteLaunches(group);
+    else throw new Error(`unknown IT_GROUP ${group}`);
+  }
+}
+
+/**
+ * The main workspace: suite.ts, or one part of it, then, unless the part
+ * leaves nothing for them, reloads of it that check what it left.
+ */
+async function suiteLaunches(part?: string) {
   const extensionTestsPath = path.resolve(__dirname, 'suite.js');
 
   const workspace = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-ws-'));
@@ -17,9 +42,11 @@ async function main() {
     JSON.stringify(
       {
         'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.charsPerMinute': 36000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.arrowNavigation': false,
+        'agentTypewriter.naturalOrder': false,
         'agentTypewriter.fileSwitchDelayMs': 30,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.catchUpFactor': 0,
@@ -64,17 +91,11 @@ async function main() {
   // checkouts such as worktrees, so keep it short.
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
 
-  const launchArgs = [
-    workspace,
-    `--user-data-dir=${userData}`,
-    '--disable-extensions',
-    '--disable-gpu',
-    '--no-sandbox',
-    '--disable-workspace-trust',
-  ];
+  const launchArgs = [workspace, `--user-data-dir=${userData}`, ...flags];
   // The first launch leaves the expected timeline here; the second checks it was restored.
   const extensionTestsEnv = { IT_EXPECT: path.join(userData, 'expected-timeline.json') };
-  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv });
+  await runTests({ extensionDevelopmentPath, extensionTestsPath, launchArgs, extensionTestsEnv: part ? { ...extensionTestsEnv, IT_PART: part } : extensionTestsEnv });
+  if (part && part !== 'reload') return;
   await runTests({ extensionDevelopmentPath, extensionTestsPath: path.resolve(__dirname, 'restore.js'), launchArgs, extensionTestsEnv });
 
   // The repository file's autoStart applies at activation: true there starts
@@ -113,7 +134,10 @@ exports.run = async () => {
   const actUser = JSON.parse(fs.readFileSync(actUserFile, 'utf8'));
   delete actUser['agentTypewriter.autoStart'];
   fs.writeFileSync(actUserFile, JSON.stringify(actUser, null, 2));
+}
 
+/** Launches that each set up a workspace of their own. */
+async function workspaceLaunches() {
   // A saved multi-root workspace [a, b] where b has a sibling worktree, for
   // adding and removing folders while recording (folders.ts). Adding a folder
   // to a single-folder window restarts the extension host, so it needs its own
@@ -137,11 +161,13 @@ exports.run = async () => {
       folders: [{ path: 'a' }, { path: 'b' }],
       settings: {
         'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
         'agentTypewriter.charsPerMinute': 240000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.arrowNavigation': false,
+        'agentTypewriter.naturalOrder': false,
         'agentTypewriter.persistHistory': false,
       },
     }),
@@ -150,7 +176,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'folders.js'),
-    launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...launchArgs.slice(2)],
+    launchArgs: [multiFile, `--user-data-dir=${multiUserData}`, ...flags],
     extensionTestsEnv: { IT_MULTI: multi },
   });
 
@@ -171,6 +197,7 @@ exports.run = async () => {
       folders: [{ path: 'repo' }, { path: 'repo/pkg' }],
       settings: {
         'agentTypewriter.extensions': ['json'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
         'agentTypewriter.gitBaselines': true,
@@ -181,7 +208,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'nestedFolders.js'),
-    launchArgs: [nestFile, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [nestFile, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
     extensionTestsEnv: { IT_NEST: nestRepo },
   });
 
@@ -216,11 +243,13 @@ exports.run = async () => {
       folders: [{ path: 'client/app' }, { path: 'server/app' }, { path: 'proj' }, { path: 'repo' }],
       settings: {
         'agentTypewriter.extensions': ['ts'],
+        'agentTypewriter.readPauseSeconds': 0,
         'agentTypewriter.debounceMs': 100,
         'agentTypewriter.reorderWindowMs': 0,
         'agentTypewriter.charsPerMinute': 240000,
         'agentTypewriter.jitter': 0,
         'agentTypewriter.arrowNavigation': false,
+        'agentTypewriter.naturalOrder': false,
         'agentTypewriter.fileSwitchDelayMs': 0,
         'agentTypewriter.persistHistory': false,
       },
@@ -234,7 +263,7 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'folders.js'),
-    launchArgs: [path.join(rec4Open, 'rec4.code-workspace'), `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [path.join(rec4Open, 'rec4.code-workspace'), `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
     extensionTestsEnv: { IT_REC4: rec4Open },
   });
 
@@ -273,11 +302,13 @@ exports.run = async () => {
     path.join(replayRepo, '.vscode/settings.json'),
     JSON.stringify({
       'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
       'agentTypewriter.debounceMs': 100,
       'agentTypewriter.reorderWindowMs': 0,
       'agentTypewriter.charsPerMinute': 240000,
       'agentTypewriter.jitter': 0,
       'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
       'agentTypewriter.fileSwitchDelayMs': 0,
       'agentTypewriter.persistHistory': false,
     }),
@@ -285,7 +316,199 @@ exports.run = async () => {
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath: path.resolve(__dirname, 'gitReplay.js'),
-    launchArgs: [replayRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...launchArgs.slice(2)],
+    launchArgs: [replayRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
+  // Lanes (lanes.ts): a repository with a nested worktree, recorded together.
+  // The second launch checks the lanes were restored.
+  const lanesRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-lanes-'));
+  fs.mkdirSync(path.join(lanesRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(lanesRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(lanesRepo, '.gitignore'), '.vscode/\n');
+  gitAt(lanesRepo, 'init', '-q', '-b', 'main');
+  gitAt(lanesRepo, 'add', '-A');
+  gitAt(lanesRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(lanesRepo, 'worktree', 'add', '-q', '-b', 'feat', '.worktrees/feat');
+  fs.mkdirSync(path.join(lanesRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(lanesRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+    }),
+  );
+  const lanesUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'));
+  const lanesEnv = { IT_LANES_EXPECT: path.join(lanesUserData, 'expected-lanes.json') };
+  for (const phase of ['record', 'restore']) {
+    await runTests({
+      extensionDevelopmentPath,
+      extensionTestsPath: path.resolve(__dirname, 'lanes.js'),
+      launchArgs: [lanesRepo, `--user-data-dir=${lanesUserData}`, ...flags],
+      extensionTestsEnv: { ...lanesEnv, IT_LANES_PHASE: phase },
+    });
+  }
+
+  // Ignored worktrees (ignoreWorktrees.ts): review-style worktrees that
+  // autoIgnoreWorktrees names get no lane while a branch `pr` has a diff to
+  // apply into them.
+  const ignoreRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-ignore-'));
+  fs.mkdirSync(path.join(ignoreRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(ignoreRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(ignoreRepo, '.gitignore'), '.vscode/\n');
+  gitAt(ignoreRepo, 'init', '-q', '-b', 'main');
+  gitAt(ignoreRepo, 'add', '-A');
+  gitAt(ignoreRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(ignoreRepo, 'checkout', '-q', '-b', 'pr');
+  fs.writeFileSync(path.join(ignoreRepo, 'src/a.ts'), 'export const a = "pr";\n');
+  fs.writeFileSync(path.join(ignoreRepo, 'src/new.ts'), 'export const n = 1;\n');
+  gitAt(ignoreRepo, 'add', '-A');
+  gitAt(ignoreRepo, 'commit', '-q', '-m', 'pr');
+  gitAt(ignoreRepo, 'checkout', '-q', 'main');
+  // The worktree parents exist before VS Code starts, as in a repository agents already use.
+  // deepFolders.ts covers parents made while recording.
+  fs.mkdirSync(path.join(ignoreRepo, '.claude', 'worktrees'), { recursive: true });
+  fs.mkdirSync(path.join(ignoreRepo, '.worktrees'));
+  fs.mkdirSync(path.join(ignoreRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(ignoreRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.autoRecordWorktrees': 'fill',
+      'agentTypewriter.autoFollow': true,
+      'agentTypewriter.autoIgnoreWorktrees': ['**/.claude/worktrees/review-*', 'tmp.*', 'branch:review/*'],
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'ignoreWorktrees.js'),
+    launchArgs: [ignoreRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
+  // Deep folders (deepFolders.ts): a repository with no .claude folder, for
+  // folder trees made several levels deep at once while recording.
+  const deepRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-deep-'));
+  fs.mkdirSync(path.join(deepRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(deepRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(deepRepo, '.gitignore'), '.vscode/\n');
+  gitAt(deepRepo, 'init', '-q', '-b', 'main');
+  gitAt(deepRepo, 'add', '-A');
+  gitAt(deepRepo, 'commit', '-q', '-m', 'initial');
+  fs.mkdirSync(path.join(deepRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(deepRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.persistHistory': false,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'deepFolders.js'),
+    launchArgs: [deepRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
+  // Waiting worktrees (waitingWorktrees.ts): with auto-record on and no
+  // ignore patterns, new worktrees get no lane until they record a change,
+  // while a branch `pr` has other text for a checkout inside one.
+  const waitRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-wait-'));
+  fs.mkdirSync(path.join(waitRepo, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(waitRepo, 'src/a.ts'), 'export const a = 0;\n');
+  fs.writeFileSync(path.join(waitRepo, '.gitignore'), '.vscode/\n');
+  gitAt(waitRepo, 'init', '-q', '-b', 'main');
+  gitAt(waitRepo, 'add', '-A');
+  gitAt(waitRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(waitRepo, 'checkout', '-q', '-b', 'pr');
+  fs.writeFileSync(path.join(waitRepo, 'src/a.ts'), 'export const a = "pr";\n');
+  gitAt(waitRepo, 'commit', '-q', '-am', 'pr');
+  gitAt(waitRepo, 'checkout', '-q', 'main');
+  // As for ignoreWorktrees.ts, the worktree parents exist before VS Code starts.
+  fs.mkdirSync(path.join(waitRepo, '.claude', 'worktrees'), { recursive: true });
+  fs.mkdirSync(path.join(waitRepo, '.worktrees'));
+  fs.mkdirSync(path.join(waitRepo, '.vscode'));
+  fs.writeFileSync(
+    path.join(waitRepo, '.vscode/settings.json'),
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.readPauseSeconds': 0,
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.reorderWindowMs': 0,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.autoRecordWorktrees': 'fill',
+      'agentTypewriter.autoFollow': true,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'waitingWorktrees.js'),
+    launchArgs: [waitRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
+  });
+
+  // Git operations (gitOperations.ts): main is behind `feature`, which a
+  // fast-forward merge brings in, and `clash` changes the same line of
+  // src/a.ts as feature does.
+  const opsRepo = fs.mkdtempSync(path.join(process.env.IT_TMP ?? os.tmpdir(), 'typewriter-gitops-'));
+  const opsWrite = (rel: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(opsRepo, rel)), { recursive: true });
+    fs.writeFileSync(path.join(opsRepo, rel), text);
+  };
+  opsWrite('src/a.ts', 'export const a = 1;\n');
+  opsWrite('.gitignore', '.vscode/\n');
+  gitAt(opsRepo, 'init', '-q', '-b', 'main');
+  gitAt(opsRepo, 'add', '-A');
+  gitAt(opsRepo, 'commit', '-q', '-m', 'initial');
+  gitAt(opsRepo, 'checkout', '-q', '-b', 'clash');
+  opsWrite('src/a.ts', 'export const a = "clash";\n');
+  gitAt(opsRepo, 'commit', '-q', '-am', 'clash');
+  gitAt(opsRepo, 'checkout', '-q', '-b', 'feature', 'main');
+  opsWrite('src/a.ts', 'export const a = 2;\n');
+  opsWrite('src/c.ts', 'export const c = 1;\n');
+  gitAt(opsRepo, 'add', '-A');
+  gitAt(opsRepo, 'commit', '-q', '-m', 'feature');
+  gitAt(opsRepo, 'checkout', '-q', 'main');
+  opsWrite(
+    '.vscode/settings.json',
+    JSON.stringify({
+      'agentTypewriter.extensions': ['ts'],
+      'agentTypewriter.debounceMs': 100,
+      'agentTypewriter.charsPerMinute': 240000,
+      'agentTypewriter.jitter': 0,
+      'agentTypewriter.arrowNavigation': false,
+      'agentTypewriter.naturalOrder': false,
+      'agentTypewriter.fileSwitchDelayMs': 0,
+      'agentTypewriter.persistHistory': false,
+    }),
+  );
+  await runTests({
+    extensionDevelopmentPath,
+    extensionTestsPath: path.resolve(__dirname, 'gitOperations.js'),
+    launchArgs: [opsRepo, `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'atud-'))}`, ...flags],
   });
 }
 

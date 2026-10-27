@@ -10,6 +10,12 @@ export interface Hunk {
   offset: number;
   deleteText: string;
   insertText: string;
+  /**
+   * Set by authoringOrder on every piece of an edit after its first: it is
+   * typed within the text the edit is still typing, so the view does not
+   * leave what was just typed to reach it.
+   */
+  continues?: boolean;
 }
 
 /** Blocks bigger than this are not refined word-by-word; they are deleted and retyped. */
@@ -23,7 +29,7 @@ const FOLD_MAX_COMMON = 3;
  * with the square of this (about 100 ms at this bound), so past it the
  * changed region is retyped whole.
  */
-const LINE_DIFF_MAX_EDITS = 1500;
+export const LINE_DIFF_MAX_EDITS = 1500;
 /** Most added plus removed tokens a block's word diff may search for before it is retyped instead. */
 const WORD_DIFF_MAX_EDITS = 1000;
 
@@ -61,13 +67,14 @@ export function lfOffsetToLineCol(lfText: string, offset: number): { line: numbe
  * Turns a before/after pair into an ordered list of hunks that read like a
  * person editing top to bottom: whole new lines are typed as lines, and a
  * modified line only retypes the tokens that actually changed.
+ * `maxLineEdits` raises or lowers the line diff's search limit.
  */
-export function planHunks(before: string, after: string): Hunk[] {
+export function planHunks(before: string, after: string, maxLineEdits = LINE_DIFF_MAX_EDITS): Hunk[] {
   if (before === after) return [];
   if (before.length === 0) return [{ offset: 0, deleteText: '', insertText: after }];
   if (after.length === 0) return [{ offset: 0, deleteText: before, insertText: '' }];
 
-  const parts = diffLines(before, after, { maxEditLength: LINE_DIFF_MAX_EDITS });
+  const parts = diffLines(before, after, { maxEditLength: maxLineEdits });
   if (!parts) {
     const r = changedRegion(before, after);
     return [{ offset: r.start, deleteText: r.removed, insertText: r.added }];
@@ -165,6 +172,129 @@ function refineBlock(parts: Change[], start: number): Hunk[] {
       pos += seg.added.length;
     }
   }
+  return out;
+}
+
+/** Brackets that open a block when they end a line, and the bracket that closes each. */
+const BLOCK_CLOSERS: Readonly<Record<string, string>> = { '{': '}', '[': ']', '(': ')' };
+
+/**
+ * Re-cuts planHunks' hunks so each edit is typed the way a person writes it:
+ * a block (a bracket that ends a line, closed by its match at the start of a
+ * later line with the same indentation) gets its opening line, then its
+ * closing line, then the lines between. Blocks inside are typed the same way
+ * when reached, so a block's header is done before its body. Edits stay in
+ * document order and each one still leaves exactly its own text, so offsets
+ * stay relative to the text after earlier hunks. `after` is the text the
+ * hunks lead to; it supplies the indentation of a line an edit starts in.
+ */
+export function authoringOrder(hunks: Hunk[], after: string): Hunk[] {
+  return hunks.flatMap((h) => {
+    if (!h.insertText.includes('\n')) return [h];
+    const lineStart = h.offset === 0 ? 0 : after.lastIndexOf('\n', h.offset - 1) + 1;
+    const blocks = findBlocks(h.insertText, after.slice(lineStart, h.offset));
+    return blocks.length === 0 ? [h] : cutInPieces(h, blocks);
+  });
+}
+
+/** A block in an edit's inserted text, by index into that text. */
+interface Block {
+  /** The opening bracket. */
+  open: number;
+  /** The line break before the closing line. */
+  close: number;
+  /** End of the closing piece: the closer and the rest of its line, unless that rest opens a block. */
+  end: number;
+}
+
+/**
+ * The blocks in `text`, ordered by opening bracket; they nest properly.
+ * `prefix` is what precedes `text` on its first line.
+ */
+function findBlocks(text: string, prefix: string): Block[] {
+  const found: Array<{ open: number; close: number; closer: number }> = [];
+  /** Where a found block's opening line ends, to spot a closing line that opens the next block. */
+  const openLineEnds = new Set<number>();
+  const stack: Array<{ at: number; lineEnd: number; indent: string; closer: string; filled: boolean }> = [];
+  const isBlank = (c: string) => c === ' ' || c === '\t';
+  const prefixHasText = /[^ \t]/.test(prefix);
+  for (let start = 0; start <= text.length; ) {
+    const nl = text.indexOf('\n', start);
+    const lineEnd = nl === -1 ? text.length : nl;
+    let content = start;
+    while (content < lineEnd && isBlank(text[content])) content++;
+    const first = start === 0;
+    let indent = text.slice(start, content);
+    if (first) indent = prefixHasText ? /^[ \t]*/.exec(prefix)![0] : prefix + indent;
+    if (content < lineEnd || (first && prefixHasText)) {
+      // Blocks this line is not indented deeper than end here: closed by it, or not blocks at all.
+      while (stack.length > 0) {
+        const top = stack[stack.length - 1];
+        if (indent.length > top.indent.length && indent.startsWith(top.indent)) break;
+        stack.pop();
+        // A closer must start its own line inside the text, after a body that is not all blank.
+        if (!first && top.filled && indent === top.indent && text[content] === top.closer) {
+          found.push({ open: top.at, close: start - 1, closer: content });
+          openLineEnds.add(top.lineEnd);
+        }
+      }
+      // Every line inside the top block is inside the ones under it too, so marking the top is enough.
+      if (stack.length > 0) stack[stack.length - 1].filled = true;
+      let last = lineEnd;
+      while (last > start && isBlank(text[last - 1])) last--;
+      const bracket = text[last - 1];
+      if (nl !== -1 && last > start && bracket in BLOCK_CLOSERS) {
+        stack.push({ at: last - 1, lineEnd, indent, closer: BLOCK_CLOSERS[bracket], filled: false });
+      }
+    }
+    if (nl === -1) break;
+    start = nl + 1;
+  }
+  return found
+    .map(({ open, close, closer }) => {
+      const nl = text.indexOf('\n', closer);
+      const lineEnd = nl === -1 ? text.length : nl;
+      // `} else {` keeps its new block for later; anything else on the line is typed with the closer.
+      let end = nl === -1 ? text.length : nl + 1;
+      if (openLineEnds.has(lineEnd)) end = closer + 1;
+      return { open, close, end };
+    })
+    .sort((a, b) => a.open - b.open);
+}
+
+/** `h` as pieces in authoring order, each offset relative to the text after the pieces before it. */
+function cutInPieces(h: Hunk, blocks: Block[]): Hunk[] {
+  const text = h.insertText;
+  const out: Hunk[] = [];
+  // Characters of `text` typed so far, and how many of them come after the caret: open blocks' closing pieces.
+  let typed = 0;
+  let closersAhead = 0;
+  const piece = (from: number, to: number) => {
+    if (from >= to) return;
+    const offset = h.offset + typed - closersAhead;
+    const insertText = text.slice(from, to);
+    const last = out[out.length - 1];
+    if (last && last.offset + last.insertText.length === offset) last.insertText += insertText;
+    else if (out.length === 0) out.push({ offset, deleteText: h.deleteText, insertText });
+    else out.push({ offset, deleteText: '', insertText, continues: true });
+    typed += to - from;
+  };
+  let next = 0;
+  const typeRange = (from: number, to: number) => {
+    let at = from;
+    while (next < blocks.length && blocks[next].open < to) {
+      const b = blocks[next++];
+      const end = Math.min(b.end, to);
+      piece(at, b.open + 1);
+      piece(b.close, end);
+      closersAhead += end - b.close;
+      typeRange(b.open + 1, b.close);
+      closersAhead -= end - b.close;
+      at = end;
+    }
+    piece(at, to);
+  };
+  typeRange(0, text.length);
   return out;
 }
 

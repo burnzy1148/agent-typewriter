@@ -5,6 +5,7 @@ import {
   parseSession,
   toSession,
   sessionClears,
+  sessionLanes,
   SessionFormatError,
   SESSION_FORMAT,
   SESSION_VERSION,
@@ -193,4 +194,66 @@ test('loading a session file starts with no clears', () => {
   // Load Session restores at the first change with no clears.
   loaded.restore(s.events, s.events[0].seq);
   assert.deepEqual(loaded.highlightClears, []);
+});
+
+// ------------------------------------------------------------------ lanes
+
+function twoLanes(): Timeline {
+  const t = new Timeline(100);
+  t.defineLane({ id: 'main', label: 'main', root: '/w', color: 1, recording: true });
+  t.defineLane({ id: 'feat', label: 'feature', root: '/w/.claude/worktrees/feat', color: 2, recording: true });
+  t.push({ ...ev('a.ts', '', '1'), lane: 'main' });
+  t.push({ ...ev('feat/a.ts', '', '1'), lane: 'feat' });
+  t.push({ ...ev('a.ts', '1', '2'), lane: 'main' });
+  t.complete(1);
+  t.follow('feat');
+  return t;
+}
+
+test('a version 3 session keeps lanes, their cursors and the followed lane', () => {
+  const t = twoLanes();
+  const s = viaJson(t);
+  assert.deepEqual(s.lanes, [
+    { id: 'main', label: 'main', root: '/w', color: 1 },
+    { id: 'feat', label: 'feature', root: '/w/.claude/worktrees/feat', color: 2 },
+  ]);
+  assert.deepEqual(s.events.map((e) => e.lane), ['main', 'feat', 'main']);
+  assert.equal(s.followed, 'feat');
+  const r = new Timeline(100);
+  r.restore(s.events, s.cursor, sessionClears(s), sessionLanes(s));
+  assert.equal(r.followed, 'feat');
+  assert.equal(r.pendingCount('main'), 1);
+  assert.equal(r.pendingCount('feat'), 1);
+  assert.equal(r.laneInfo('feat')?.label, 'feature');
+  assert.equal(r.laneInfo('feat')?.color, 2);
+  assert.equal(r.laneInfo('feat')?.recording, false);
+});
+
+test('a single default-lane session has no lane fields', () => {
+  const s = toSession(filled(2)).session;
+  assert.equal(s.lanes, undefined);
+  assert.equal(s.cursors, undefined);
+  assert.equal(s.followed, undefined);
+});
+
+test('a version 2 session loads into one lane', () => {
+  const raw = JSON.parse(JSON.stringify({ ...toSession(twoLanes()).session, version: 2 }));
+  const s = parseSession(raw);
+  assert.ok(s.events.every((e) => e.lane === undefined));
+  assert.equal(s.lanes, undefined);
+  const r = new Timeline(100);
+  r.restore(s.events, s.cursor, sessionClears(s), sessionLanes(s));
+  assert.deepEqual(r.lanesInBuffer(), ['']);
+});
+
+test('a version 3 change naming an undeclared lane is refused', () => {
+  const raw = JSON.parse(JSON.stringify(toSession(twoLanes()).session));
+  raw.events[1].lane = 'ghost';
+  assert.throws(() => parseSession(raw), (e: Error) => e instanceof SessionFormatError && /undeclared lane/.test(e.message));
+});
+
+test('a malformed lane list is refused', () => {
+  const raw = JSON.parse(JSON.stringify(toSession(twoLanes()).session));
+  raw.lanes = [{ label: 'no id' }];
+  assert.throws(() => parseSession(raw), SessionFormatError);
 });

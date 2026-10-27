@@ -2,7 +2,7 @@
 # Creates or updates the rulesets that protect main and develop: no deletion,
 # no force pushes, changes only through PRs, and CI green before merge. main
 # takes merge commits only (release PRs); develop takes squash for feature PRs
-# and merge commits for the sync from main. Repository admins can bypass the
+# and merge commits for branch merges. Repository admins can bypass the
 # rules, for example to merge while CI is down.
 #
 # Rulesets need a public repository (or GitHub Pro). Run with a gh login that

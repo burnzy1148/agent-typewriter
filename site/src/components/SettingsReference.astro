@@ -1,0 +1,177 @@
+---
+// Lists every setting the extension contributes, read from its package.json at
+// build time, so the docs cannot miss a setting or show a stale default.
+import pkg from '../../../package.json';
+
+const PREFIX = 'agentTypewriter.';
+
+type Setting = {
+  type?: string | string[];
+  default?: unknown;
+  enum?: unknown[];
+  enumDescriptions?: string[];
+  markdownEnumDescriptions?: string[];
+  minimum?: number;
+  maximum?: number;
+  description?: string;
+  markdownDescription?: string;
+  deprecationMessage?: string;
+  markdownDeprecationMessage?: string;
+};
+
+const properties = pkg.contributes.configuration.properties as Record<string, Setting>;
+
+const escape = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const anchor = (name: string) => name.slice(PREFIX.length);
+
+const settingLink = (id: string) => `<a href="#${anchor(id)}"><code>${anchor(id)}</code></a>`;
+
+// The manifest's Markdown descriptions use only code spans, bold and VS Code's
+// #setting.id# links, so a full Markdown renderer is not needed. Bold is applied
+// after code spans are swapped for placeholders, so it can wrap one.
+function markdown(md: string): string {
+  const spans: string[] = [];
+  // NUL marks the code span placeholders below, so drop any in the source.
+  const text = escape(md.replace(/\u0000/g, '')).replace(/`([^`]+)`/g, (_, code: string) => {
+    const link = /^#(agentTypewriter(?:\.\w+)+)#$/.exec(code);
+    spans.push(link ? settingLink(link[1]) : `<code>${code}</code>`);
+    return `\u0000${spans.length - 1}\u0000`;
+  });
+  return text
+    .replace(/#(agentTypewriter(?:\.\w+)+)#/g, (_, id: string) => settingLink(id))
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\u0000(\d+)\u0000/g, (_, i: string) => spans[Number(i)]);
+}
+
+// Plain descriptions are shown literally, as VS Code does.
+const describe = (s: Setting) => (s.markdownDescription ? markdown(s.markdownDescription) : escape(s.description ?? ''));
+
+const show = (v: unknown) => JSON.stringify(v);
+
+const settings = Object.entries(properties).map(([name, s]) => {
+  const type = Array.isArray(s.type) ? s.type.join(' or ') : (s.type ?? '');
+  const range =
+    s.minimum !== undefined && s.maximum !== undefined
+      ? `${s.minimum} to ${s.maximum}`
+      : s.minimum !== undefined
+        ? `at least ${s.minimum}`
+        : s.maximum !== undefined
+          ? `at most ${s.maximum}`
+          : '';
+  const deprecated = s.markdownDeprecationMessage
+    ? markdown(s.markdownDeprecationMessage)
+    : s.deprecationMessage
+      ? escape(s.deprecationMessage)
+      : undefined;
+  return {
+    id: anchor(name),
+    name,
+    type,
+    default: 'default' in s ? show(s.default) : undefined,
+    values: s.enum?.map(show).join(', '),
+    // Per-value descriptions, when the manifest has them.
+    choices: s.enum
+      ?.map((v, i) => {
+        const md = s.markdownEnumDescriptions?.[i];
+        const text = md ? markdown(md) : s.enumDescriptions?.[i] ? escape(s.enumDescriptions[i]) : '';
+        return { value: show(v), text };
+      })
+      .filter((c) => c.text),
+    range,
+    // A deprecated setting shows its deprecation message instead of a
+    // description, which usually repeats it.
+    description: deprecated ?? describe(s),
+    deprecated: deprecated !== undefined,
+  };
+});
+---
+
+<p class="settings-count">{settings.length} settings in version {pkg.version}.</p>
+
+<dl class="settings-reference">
+  {
+    settings.map((s) => (
+      <div class="setting" id={s.id}>
+        <dt>
+          <a class="setting-name" href={`#${s.id}`}>
+            <code>{s.name}</code>
+          </a>
+          {s.deprecated && <span class="deprecated">Deprecated</span>}
+        </dt>
+        <dd>
+          <p class="setting-meta">
+            <span>Type: {s.type}</span>
+            {s.default !== undefined && (
+              <span>
+                Default: <code>{s.default}</code>
+              </span>
+            )}
+            {s.values && <span>Values: {s.values}</span>}
+            {s.range && <span>Range: {s.range}</span>}
+          </p>
+          <p set:html={s.description} />
+          {s.choices && s.choices.length > 0 && (
+            <ul class="setting-choices">
+              {s.choices.map((c) => (
+                <li>
+                  <code>{c.value}</code>: <span set:html={c.text} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </dd>
+      </div>
+    ))
+  }
+</dl>
+
+<style>
+  .settings-reference {
+    margin-top: 1.5rem;
+  }
+  .setting {
+    padding: 1rem 0;
+    border-top: 1px solid var(--sl-color-hairline);
+    scroll-margin-top: calc(var(--sl-nav-height) + 1rem);
+  }
+  .setting dt {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+  }
+  .setting-name {
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .setting dd {
+    margin: 0.5rem 0 0;
+  }
+  .setting dd p {
+    margin: 0.25rem 0 0;
+  }
+  .setting-choices {
+    margin: 0.25rem 0 0;
+  }
+  .setting-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.25rem;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-gray-3);
+  }
+  .setting-meta code {
+    overflow-wrap: anywhere;
+  }
+  .deprecated {
+    font-size: var(--sl-text-xs);
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.25rem;
+    background: var(--sl-color-orange-low);
+    color: var(--sl-color-orange-high);
+  }
+</style>

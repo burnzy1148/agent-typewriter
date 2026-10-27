@@ -73,3 +73,11 @@ test('statusPresentation: the checkout entry shows only when a folder has more t
     'Agent Typewriter will record checkout main. Click to choose another.',
   );
 });
+
+test('statusPresentation: with several checkouts recorded, the entry names the followed one and the count', () => {
+  const s = statusPresentation({ ...base, checkouts: [{ own: false, name: 'feature', worktrees: 3, lanes: 2 }] });
+  assert.equal(s.checkout?.text, '$(git-branch) feature · 2 checkouts');
+  assert.match(s.checkout!.tooltip, /records 2 checkouts, following feature/);
+  const one = statusPresentation({ ...base, checkouts: [{ own: false, name: 'feature', worktrees: 3, lanes: 1 }] });
+  assert.equal(one.checkout?.text, '$(git-branch) feature');
+});

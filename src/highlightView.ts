@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
+import { TextPasses, readSide, type ReadText } from './changeText';
 import type { Settings } from './config';
 import { baselines, diffMarks, highlightPair, lineMarks, removedPreview, renderAction, renderWait, type HighlightPair, type HighlightState, type LineMarks } from './highlights';
 import { MirrorFileSystem, MIRROR_SCHEME } from './mirrorFs';
 import { normalizeEol } from './planner';
 import type { Player } from './player';
-import type { Timeline } from './timeline';
+import { laneOf, type Timeline } from './timeline';
 
 /** Each mirror is drawn at most this often while it changes; a trailing run draws the last change. */
 const RENDER_INTERVAL_MS = 100;
@@ -32,12 +33,16 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   private readonly lastCost = new Map<string, number>();
   /** Each file's last marks, reused while its baseline and text stay the same. */
   private readonly cache = new Map<string, { baseline: string; text: string; marks: LineMarks }>();
+  /** The text the last highlight pass read, for the next one. */
+  private readonly passes = new TextPasses();
   /** Marks drawn per mirror URI, after the settings. For tests. */
   readonly drawn = new Map<string, LineMarks>();
   /** For marks drawn on the player's text mid-change: that change's token, so they are kept only during it. */
   private readonly drawnToken = new Map<string, number>();
   /** Mirror paths with any highlights shown, as the title bar's context key holds them. */
   private highlighted: string[] | undefined;
+  /** The file the last pass over every file ran out of time at, where the next pass starts. */
+  private resumeAt: string | undefined;
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires when whether any mirror has highlights changes. */
   readonly onDidChangeHighlighted = this.changed.event;
@@ -149,25 +154,8 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
   }
 
   private state(): HighlightState {
-    const playing = this.timeline.playing !== undefined ? this.timeline.get(this.timeline.playing) : undefined;
-    const clears = this.timeline.highlightClears;
-    const events = this.timeline.all();
-    // The change being typed counts, so its file's baseline is ready for its live text.
-    const through = playing ? playing.seq + 1 : this.timeline.cursor;
-    // With nothing playing, the change at the cursor has not played; a clear made
-    // while it was typed (before a reload) already holds for every other file.
-    const next = playing ? undefined : this.timeline.peek();
-    const heldBack = next && { seq: next.seq, paths: [next.relPath, ...(next.fromRelPath !== undefined ? [next.fromRelPath] : [])] };
-    const st: HighlightState = { bases: baselines(events, through, clears, heldBack), texts: this.timeline.mirrorStates(), clears };
-    if (next) st.next = { seq: next.seq, relPath: next.relPath, fromRelPath: next.fromRelPath };
-    if (playing) {
-      st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
-      if (playing.fromRelPath !== undefined && this.player.liveText(playing.fromRelPath) !== undefined) {
-        st.movingFrom = playing.fromRelPath;
-        st.basesBefore = baselines(events, playing.seq, clears);
-      }
-    }
-    return st;
+    // Each pass reuses the text the last one read, so saved text is not read from disk again and again.
+    return this.passes.run((read) => highlightState(this.timeline, (relPath) => this.player.liveText(relPath) !== undefined, read));
   }
 
   /** The file's marks for `pair`, worked out once per baseline and text. */
@@ -237,24 +225,29 @@ export class HighlightView implements vscode.HoverProvider, vscode.Disposable {
     const st = this.state();
     const s = this.settings();
     const deadline = Date.now() + PASS_BUDGET_MS;
-    let unfinished = false;
+    const all = [...st.bases.keys(), ...(st.movingFrom !== undefined ? [st.movingFrom] : [])];
+    // Start with the file the last pass ran out of time at, so a file that is slow to diff cannot starve the ones after it.
+    const from = this.resumeAt !== undefined ? Math.max(0, all.indexOf(this.resumeAt)) : 0;
+    this.resumeAt = undefined;
     const paths: string[] = [];
-    for (const relPath of [...st.bases.keys(), ...(st.movingFrom !== undefined ? [st.movingFrom] : [])]) {
+    for (const relPath of [...all.slice(from), ...all.slice(0, from)]) {
       const pair = highlightPair(st, relPath, this.player.liveText(relPath));
       if (!pair || (!s.highlightAdditions && !s.markDeletions) || pair.baseline === pair.text) continue;
-      const path = MirrorFileSystem.uriFor(relPath).path;
+      const uri = MirrorFileSystem.uriFor(relPath);
       const hit = this.cache.get(relPath);
+      // The mirror being typed into is diffed by render() as it changes; its latest marks there are close enough.
+      const rendered = pair.live && vscode.window.visibleTextEditors.some((ed) => ed.document.uri.toString() === uri.toString());
       let has: boolean;
-      if (hit && hit.baseline === pair.baseline && hit.text === pair.text) has = filterMarks(hit.marks, s) !== undefined;
+      if (hit && hit.baseline === pair.baseline && (hit.text === pair.text || rendered)) has = filterMarks(hit.marks, s) !== undefined;
       // A difference can still draw nothing (a newline added at the end), so diff, within the pass's budget.
       else if (Date.now() > deadline) {
-        has = this.highlighted?.includes(path) ?? false;
-        unfinished = true;
+        has = this.highlighted?.includes(uri.path) ?? false;
+        this.resumeAt ??= relPath;
       } else has = this.shown(relPath, pair, s) !== undefined;
-      if (has) paths.push(path);
+      if (has) paths.push(uri.path);
     }
     for (const relPath of this.cache.keys()) if (!st.bases.has(relPath) && relPath !== st.movingFrom) this.cache.delete(relPath);
-    if (unfinished) setTimeout(() => this.schedule(ALL), 0);
+    if (this.resumeAt !== undefined) setTimeout(() => this.schedule(ALL), 0);
     paths.sort();
     if (this.highlighted && paths.join('\n') === this.highlighted.join('\n')) return;
     const had = this.hasHighlights;
@@ -290,4 +283,53 @@ function removedHover(texts: readonly string[], language: string): vscode.Markdo
   md.appendCodeblock(code, language);
   if (more > 0) md.appendMarkdown(`… ${more} more line${more === 1 ? '' : 's'} removed`);
   return md;
+}
+
+/**
+ * What every mirror's highlights are worked out from. Each lane is taken on
+ * its own, at its own cursor and with its own clears; lanes never share a
+ * mirror path, so their baselines merge. `isLive` tells whether the player
+ * holds live text for a path, which a rename being typed moves.
+ */
+export function highlightState(timeline: Timeline, isLive: (relPath: string) => boolean, read: ReadText = readSide): HighlightState {
+  const playing = timeline.playing !== undefined ? timeline.get(timeline.playing) : undefined;
+  const all = timeline.all();
+  const clears = timeline.highlightClears;
+  // With nothing playing, the followed lane's next change has not played; a clear made
+  // while it was typed (before a reload) already holds for every other file.
+  const next = playing ? undefined : timeline.peek();
+  const active = playing ? laneOf(playing) : timeline.followed;
+  const bases = new Map<string, string>();
+  for (const lane of timeline.lanesInBuffer()) {
+    const events = all.filter((e) => laneOf(e) === lane);
+    const laneClears = clears.filter((c) => laneOf(c) === lane);
+    // The change being typed counts, so its file's baseline is ready for its live text.
+    if (playing && laneOf(playing) === lane) {
+      for (const [path, base] of baselines(events, playing.seq + 1, laneClears, undefined, read)) bases.set(path, base);
+      continue;
+    }
+    // Any lane's next change may have been typing when a clear was made, then
+    // overtaken by a reload or by following another lane: hold it back the same way.
+    const first = timeline.firstPending(lane);
+    const laneNext = first === undefined ? undefined : timeline.get(first);
+    const held = laneNext && { seq: laneNext.seq, paths: [laneNext.relPath, ...(laneNext.fromRelPath !== undefined ? [laneNext.fromRelPath] : [])] };
+    for (const [path, base] of baselines(events, laneNext ? laneNext.seq : timeline.cursorOf(lane), laneClears, held, read)) bases.set(path, base);
+  }
+  const activeClears = clears.filter((c) => laneOf(c) === active);
+  const st: HighlightState = { bases, texts: timeline.mirrorStates(read), clears: activeClears };
+  if (next) st.next = { seq: next.seq, relPath: next.relPath, fromRelPath: next.fromRelPath };
+  if (playing) {
+    st.playing = { seq: playing.seq, relPath: playing.relPath, fromRelPath: playing.fromRelPath };
+    if (playing.fromRelPath !== undefined && isLive(playing.fromRelPath)) {
+      st.movingFrom = playing.fromRelPath;
+      st.basesBefore = baselines(
+        all.filter((e) => laneOf(e) === active),
+        playing.seq,
+        activeClears,
+        undefined,
+        read,
+      );
+    }
+  }
+  return st;
 }

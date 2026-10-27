@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { MirrorFileSystem, mirrorBytes } from './mirrorFs';
 import { baseCharsPerMinute } from './pace';
-import { lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
+import { authoringOrder, lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
+import { readPauseLeft } from './readPause';
 import { SCROLL_FRAME_MS, centeredTop, scrollSteps } from './scroll';
 import { caretPath } from './caretPath';
 import type { ChangeEvent, Timeline } from './timeline';
@@ -12,6 +13,8 @@ const BACKSPACE_MAX = 24;
 /** More arrow presses than this to reach an edit, and the caret is clicked there instead. */
 const ARROW_MAX_KEYS = 24;
 const TICK_HZ = 60;
+/** How often a read pause looks again at what is left of it. */
+const READ_PAUSE_STEP_MS = 100;
 
 /**
  * Consumes the timeline in order and types each change into its mirror
@@ -28,6 +31,9 @@ export class Player implements vscode.Disposable {
   private manualSpeed = 1;
   private replayColumn: vscode.ViewColumn | undefined;
   private lastRelPath: string | undefined;
+  /** When the player last changed a mirror's text, and in which epoch; the read pause counts from there. */
+  private lastEditAt = 0;
+  private lastEditEpoch = -1;
   private playbackPath: string | undefined;
   private readonly mirrorChanged = new vscode.EventEmitter<void>();
   /** Fires when the playback mirror moves to another file. */
@@ -64,6 +70,9 @@ export class Player implements vscode.Disposable {
   private liveRelPath: string | undefined;
   /** The epoch that change started in; once interrupted, its text is no longer live. */
   private liveEpoch = -1;
+  /** Bumped by every play(), so each change gets its own liveToken. */
+  private changes = 0;
+  private liveChange = -1;
   private readonly edited = new vscode.EventEmitter<string>();
   /** Fires with a mirror's path after the player changed its text, once liveText has caught up. */
   readonly onDidEditMirror = this.edited.event;
@@ -94,7 +103,7 @@ export class Player implements vscode.Disposable {
 
   /** Identifies the change typing into `relPath`'s mirror right now, so marks drawn during it can be told from older ones. */
   liveToken(relPath: string): number | undefined {
-    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.liveEpoch : undefined;
+    return this.liveRelPath === relPath && this.live(this.liveEpoch) ? this.liveChange : undefined;
   }
 
   /** The text shown as about to be deleted right now, if any. For tests. */
@@ -166,11 +175,12 @@ export class Player implements vscode.Disposable {
       if (this.timeline.jumps !== jumps) return;
       // Move the cursor and read the states in one step: a change recorded
       // from here on stays queued and plays on top of the snapped text.
+      // Only the followed lane: other lanes' mirrors stay where their own cursors are.
       this.timeline.seekToEnd();
-      const states = this.timeline.latestStates();
-      const renamedAway = new Set(this.timeline.all().flatMap((e) => (e.fromRelPath !== undefined && !states.has(e.fromRelPath) ? [e.fromRelPath] : [])));
+      const { states, renamedAway } = this.timeline.snapTargets();
       for (const relPath of renamedAway) if (!this.disposed) await this.retireMirror(relPath);
-      const latest = [...states.values()];
+      // Their text, read before anything is awaited: as for playback, a change can leave the buffer meanwhile.
+      const latest: ChangeEvent[] = [...states.values()].map((e) => ({ ...e }));
       let newest: ChangeEvent | undefined;
       for (const e of latest) {
         if (this.disposed) return;
@@ -218,11 +228,13 @@ export class Player implements vscode.Disposable {
       const token = this.timeline.begin(next.seq);
       this.finishNow = false;
       const epoch = this.epoch;
-      this.inFlight = this.play(next, epoch).catch(async (err) => {
-        this.log.appendLine(`Playback of ${next.relPath} failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Its text, read once: the change can leave the buffer, and its saved copy with it, while it is typed.
+      const change: ChangeEvent = { ...next };
+      this.inFlight = this.play(change, epoch).catch(async (err) => {
+        this.log.appendLine(`Playback of ${change.relPath} failed: ${err instanceof Error ? err.message : String(err)}`);
         // The change is marked played either way, so its mirror must not keep older text.
-        if (this.live(epoch)) await this.settle(next).catch(() => undefined);
-        if (this.live(epoch) && next.fromRelPath !== undefined) await this.retireMirror(next.fromRelPath).catch(() => undefined);
+        if (this.live(epoch)) await this.settle(change).catch(() => undefined);
+        if (this.live(epoch) && change.fromRelPath !== undefined) await this.retireMirror(change.fromRelPath).catch(() => undefined);
       });
       await this.inFlight;
       this.liveRelPath = undefined;
@@ -232,8 +244,14 @@ export class Player implements vscode.Disposable {
 
   private async play(e: ChangeEvent, epoch: number): Promise<void> {
     const s = this.settings();
+    this.liveChange = ++this.changes;
     if (e.fromRelPath !== undefined && !(await this.moveMirror(e, e.fromRelPath, epoch))) return;
     const switching = this.lastRelPath !== e.relPath;
+    // The last file stays in view while it is read.
+    if (switching && this.lastRelPath !== undefined) {
+      await this.readPause(epoch);
+      if (!this.live(epoch)) return;
+    }
     // Before showing the tab: VS Code asks for its CodeLens row as it opens.
     this.setPlaybackPath(e.relPath);
     this.currentEol = e.eol;
@@ -265,7 +283,8 @@ export class Player implements vscode.Disposable {
       return;
     }
 
-    const hunks = planHunks(e.before, e.after);
+    const planned = planHunks(e.before, e.after);
+    const hunks = s.naturalOrder ? authoringOrder(planned, e.after) : planned;
     const inserted = hunks.reduce((n, h) => n + h.insertText.length, 0);
     if (inserted > s.maxAnimatedChars) {
       await this.edit(editor.document, 0, this.expected.length, e.after);
@@ -274,11 +293,17 @@ export class Player implements vscode.Disposable {
       return;
     }
 
-    // After a file switch the first edit is jumped to; later ones are scrolled to.
-    let smooth = !switching;
+    // After a file switch, or a rename's move to the new mirror, the first edit
+    // is jumped to; later ones are scrolled to.
+    let smooth = !switching && e.fromRelPath === undefined;
     for (const h of hunks) {
-      if (this.finishNow) break;
       if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
+      if (this.finishNow) {
+        // Pressed before this edit was reached: it is brought into view at
+        // once, as from the read pause, and the rest of the change put in after the loop.
+        if (!(editor = await this.navigate(e.relPath, editor, h.offset, false, false, epoch))) return;
+        break;
+      }
       await this.typeHunk(e.relPath, editor, h, smooth, epoch);
       if (!this.live(epoch)) return;
       smooth = true;
@@ -299,6 +324,10 @@ export class Player implements vscode.Disposable {
   private async moveMirror(e: ChangeEvent, from: string, epoch: number): Promise<boolean> {
     const s = this.settings();
     const switching = this.lastRelPath !== undefined && this.lastRelPath !== from;
+    if (switching) {
+      await this.readPause(epoch);
+      if (!this.live(epoch)) return false;
+    }
     this.setPlaybackPath(from);
     this.currentEol = e.eol;
     this.expected = e.before;
@@ -337,7 +366,7 @@ export class Player implements vscode.Disposable {
       ? h.offset + h.deleteText.length
       : h.offset;
 
-    const ed = await this.navigate(relPath, editor, caretOffset, smooth, epoch);
+    const ed = await this.navigate(relPath, editor, caretOffset, smooth, h.continues === true, epoch);
     if (!ed) return;
     editor = ed;
     // The text to delete shows as such from when the caret arrives until it is gone.
@@ -360,15 +389,17 @@ export class Player implements vscode.Disposable {
   /**
    * Moves the caret to LF offset `offset`. Close by and in view, it walks
    * there with arrow keys; otherwise the edit is brought into view and the
-   * caret clicked there. Undefined once the change was interrupted.
+   * caret clicked there. A move that `continues` within the text being typed
+   * is brought into view at once, without the read pause or a scroll.
+   * Undefined once the change was interrupted.
    */
-  private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
+  private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, continues: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
     const s = this.settings();
     const from = editor.document.validatePosition(editor.selection.active);
     const to = posAt(editor.document, offset);
     // One visible range holds the whole walk, so the caret never enters a folded region and unfolds it.
     const walk = smooth && s.arrowNavigation && !this.finishNow && inView(editor, Math.min(from.line, to.line), Math.max(from.line, to.line));
-    let ed = await this.scrollTo(relPath, editor, to.line, smooth, epoch);
+    let ed = await this.scrollTo(relPath, editor, to.line, smooth && !continues, epoch);
     if (!ed) return undefined;
     const doc = ed.document;
     const keys = walk ? caretPath((n) => doc.lineAt(n).text, from, to, ARROW_MAX_KEYS) : undefined;
@@ -388,28 +419,34 @@ export class Player implements vscode.Disposable {
   }
 
   /**
-   * Brings `line` into view. With `smooth` and smoothScroll on, a line outside
-   * the viewport is scrolled to after a pause to read what was just typed;
-   * otherwise the view jumps there. Undefined once the change was interrupted.
+   * Brings `line` into view. With `smooth`, a line outside the viewport waits
+   * for the read pause first, then is scrolled to (or jumped to with
+   * smoothScroll off); otherwise the view jumps there at once. Undefined once
+   * the change was interrupted.
    */
   private async scrollTo(relPath: string, editor: vscode.TextEditor, line: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
     const s = this.settings();
     const at = new vscode.Range(line, 0, line, 0);
     const view = editor.visibleRanges;
-    const jump = () => editor.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    if (!smooth || !s.smoothScroll || view.length === 0 || this.finishNow) {
-      jump();
+    if (!smooth || view.length === 0 || this.finishNow) {
+      editor.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       return editor;
     }
     if (inView(editor, line)) return editor;
-    const first = view[0].start.line;
-    const last = view[view.length - 1].end.line;
 
-    await this.sleep(this.humanize(s.scrollPauseMs, s) / this.speedMultiplier(s));
+    await this.readPause(epoch);
     let ed: vscode.TextEditor | undefined = editor;
     if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
-    const height = last - first + 1;
-    let shown = ed.visibleRanges[0]?.start.line ?? first;
+    // The user may have scrolled, or resized the editor, during a pause.
+    if (inView(ed, line)) return ed;
+    const now = ed.visibleRanges;
+    if (!s.smoothScroll || this.finishNow || now.length === 0) {
+      ed.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      return ed;
+    }
+    const first = now[0].start.line;
+    const height = now[now.length - 1].end.line - first + 1;
+    let shown = first;
     const steps = scrollSteps(shown, centeredTop(line, height, ed.document.lineCount), height, s.scrollLinesPerSecond, this.speedMultiplier(s));
     // Each frame shows the step for the time elapsed, so late timers skip
     // steps instead of stretching the scroll. Time spent paused doesn't count.
@@ -542,6 +579,23 @@ export class Player implements vscode.Disposable {
     return ms;
   }
 
+  /**
+   * Before the view leaves what was just typed: waits until readPauseSeconds
+   * (divided by the speed) have passed since the last edit, then holds while
+   * paused. Nothing to wait for when playback jumped since that edit.
+   */
+  private async readPause(epoch: number): Promise<void> {
+    if (this.lastEditEpoch !== epoch) return;
+    // Waited in short steps, so a speed, catch-up or setting change during the pause takes effect.
+    for (;;) {
+      const s = this.settings();
+      const left = readPauseLeft(this.lastEditAt, Date.now(), s.readPauseSeconds, this.speedMultiplier(s));
+      if (left <= 0 || this.finishNow || !this.live(epoch)) break;
+      await this.sleep(Math.min(left, READ_PAUSE_STEP_MS));
+    }
+    await this.whilePaused(epoch);
+  }
+
   private humanize(ms: number, s: Settings): number {
     const spread = s.jitter * 0.8;
     return Math.max(0, ms * (1 + spread * (Math.random() * 2 - 1)));
@@ -607,6 +661,8 @@ export class Player implements vscode.Disposable {
     }
     this.expected = this.expected.slice(0, from) + text + this.expected.slice(to);
     this.synced = { doc, version: doc.version };
+    this.lastEditAt = Date.now();
+    this.lastEditEpoch = this.liveEpoch;
     this.storeExpected(doc.uri);
     if (this.liveRelPath !== undefined) this.edited.fire(this.liveRelPath);
   }
@@ -686,7 +742,7 @@ export class Player implements vscode.Disposable {
     while (this.paused && this.epoch === epoch && !this.disposed && !this.finishNow) await this.nextPoke();
   }
 
-  /** Waits `ms` (at most 5 s), or less once finish now is pressed, the change is interrupted, or the player disposed. */
+  /** Waits `ms` (at most 15 s, the longest read pause or file-switch delay), or less once finish now is pressed, the change is interrupted, or the player disposed. */
   private sleep(ms: number): Promise<void> {
     if (ms <= 0 || this.finishNow) return Promise.resolve();
     const epoch = this.epoch;
@@ -701,7 +757,7 @@ export class Player implements vscode.Disposable {
         if (this.finishNow || this.epoch !== epoch || this.disposed) done();
         else this.waiters.push(wake);
       };
-      const timer = setTimeout(done, Math.min(ms, 5000));
+      const timer = setTimeout(done, Math.min(ms, 15000));
       this.waiters.push(wake);
     });
   }

@@ -1,8 +1,8 @@
 /**
  * A minimal 'vscode' module for unit tests that run the real Recorder against
  * real files (see test/recorder.test.ts). The test script aliases 'vscode' to
- * this file. Only what the recorder and the mirror filesystem use is here;
- * `mock` lets a test drive it.
+ * this file. Only what the recorder, the mirror filesystem and the highlight
+ * view use is here; `mock` lets a test drive it.
  */
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -120,6 +120,8 @@ export interface WorkspaceFolder {
 
 export interface MockWatcher {
   base: Uri;
+  /** The glob it was made with, relative to `base`; `fire` does not check it. */
+  pattern: string;
   disposed: boolean;
   create: EventEmitter<Uri>;
   change: EventEmitter<Uri>;
@@ -215,7 +217,8 @@ export const workspace = {
   fs: {
     async stat(uri: Uri) {
       const st = fs.statSync(uri.fsPath, { throwIfNoEntry: false }) ?? fs.lstatSync(uri.fsPath);
-      return { type: typeOf(uri.fsPath), size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs };
+      // VS Code's ctime is the birth time.
+      return { type: typeOf(uri.fsPath), size: st.size, mtime: st.mtimeMs, ctime: st.birthtimeMs };
     },
     async readFile(uri: Uri): Promise<Uint8Array> {
       mock.onReadFile?.(uri.fsPath);
@@ -230,6 +233,7 @@ export const workspace = {
   createFileSystemWatcher(pattern: RelativePattern) {
     const w: MockWatcher = {
       base: pattern.baseUri,
+      pattern: pattern.pattern,
       disposed: false,
       create: new EventEmitter<Uri>(),
       change: new EventEmitter<Uri>(),
@@ -247,4 +251,99 @@ export const workspace = {
   onDidSaveTextDocument: mock.didSave.event,
   onDidChangeWorkspaceFolders: noop.event,
   onDidChangeConfiguration: mock.configEmitter.event,
+  onDidChangeTextDocument: noop.event,
+};
+
+// Just enough of the window for HighlightView, with no editors open.
+export class ThemeColor {
+  constructor(readonly id: string) {}
+}
+
+export enum OverviewRulerLane {
+  Left = 1,
+  Center = 2,
+  Right = 4,
+  Full = 7,
+}
+
+export class Range {
+  constructor(
+    readonly startLine: number,
+    readonly startCharacter: number,
+    readonly endLine: number,
+    readonly endCharacter: number,
+  ) {}
+}
+
+export class MarkdownString {
+  constructor(public value = '') {}
+  appendMarkdown(text: string): this {
+    this.value += text;
+    return this;
+  }
+  appendCodeblock(code: string, language = ''): this {
+    this.value += '\n```' + language + '\n' + code + '\n```\n';
+    return this;
+  }
+}
+
+// Just enough of the tree view API for the Changes and Checkouts views.
+export class ThemeIcon {
+  constructor(
+    readonly id: string,
+    readonly color?: ThemeColor,
+  ) {}
+}
+
+export enum TreeItemCollapsibleState {
+  None = 0,
+  Collapsed = 1,
+  Expanded = 2,
+}
+
+export enum TreeItemCheckboxState {
+  Unchecked = 0,
+  Checked = 1,
+}
+
+export class TreeItem {
+  id?: string;
+  description?: string | boolean;
+  tooltip?: string | MarkdownString;
+  iconPath?: ThemeIcon;
+  contextValue?: string;
+  command?: { command: string; title: string; arguments?: unknown[] };
+  checkboxState?: TreeItemCheckboxState;
+  resourceUri?: Uri;
+  constructor(
+    public label: string,
+    public collapsibleState: TreeItemCollapsibleState = TreeItemCollapsibleState.None,
+  ) {}
+}
+
+export class FileDecoration {
+  constructor(
+    readonly badge?: string,
+    readonly tooltip?: string,
+    readonly color?: ThemeColor,
+  ) {}
+}
+
+export class Hover {
+  constructor(
+    readonly contents: MarkdownString,
+    readonly range?: Range,
+  ) {}
+}
+
+export const window = {
+  visibleTextEditors: [] as unknown[],
+  createTextEditorDecorationType: () => ({ dispose() {} }),
+  onDidChangeVisibleTextEditors: noop.event,
+};
+
+export const commands = {
+  async executeCommand(): Promise<undefined> {
+    return undefined;
+  },
 };

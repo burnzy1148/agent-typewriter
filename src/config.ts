@@ -5,6 +5,7 @@ import { mergeProfiles, parseProfiles, type FilterProfile, type Profiles } from 
 import { pickLayer, REPO_SETTING_KINDS, type RepoValues } from './repoSettings';
 import { isFiniteNumber, numberSetting } from './numberSetting';
 import { resolveCharsPerMinute } from './pace';
+import { resolveReadPauseSeconds } from './readPause';
 
 export const SECTION = 'agentTypewriter';
 
@@ -25,14 +26,20 @@ export interface Settings extends FilterSettings {
   catchUpFactor: number;
   maxSpeedup: number;
   maxAnimatedChars: number;
+  /** Beat on the new file's mirror before its first edit. */
   fileSwitchDelayMs: number;
   /** Scroll to the next edit in the same file instead of jumping. */
   smoothScroll: boolean;
-  scrollPauseMs: number;
+  /** Least time since the last edit before the view leaves it: an off-screen edit or another file. */
+  readPauseSeconds: number;
+  /** The read pause came from the deprecated `scrollPauseMs` setting. */
+  readPauseFromDeprecatedSetting: boolean;
   scrollLinesPerSecond: number;
   /** Walk the caret to nearby edits with arrow keys instead of clicking there. */
   arrowNavigation: boolean;
   arrowKeysPerSecond: number;
+  /** Type blocks outside in (closing line before the body) instead of top to bottom. */
+  naturalOrder: boolean;
   debounceMs: number;
   /** Resolved reorder window in ms ("auto" already mapped to the platform default). */
   reorderWindowMs: number;
@@ -42,9 +49,13 @@ export interface Settings extends FilterSettings {
   /** Size budget for in-memory baselines. */
   baselineBudgetMB: number;
   historyLimit: number;
+  /** Megabytes of change text the buffer keeps, a character counted as a byte. */
+  historySizeMB: number;
   /** Keep the timeline in workspace storage across reloads. */
   persistHistory: boolean;
   ignoreOwnSaves: boolean;
+  /** Skip writes git operations make (merge, pull, checkout, rebase, stash push and pop). */
+  ignoreGitOperations: boolean;
   viewColumn: 'beside' | 'active';
   /** Show the CodeLens status row on the playback mirror. */
   mirrorStatusRow: boolean;
@@ -52,6 +63,12 @@ export interface Settings extends FilterSettings {
   highlightAdditions: boolean;
   /** Preview deletions in red and mark where text was removed. */
   markDeletions: boolean;
+  /** Give worktrees added while recording their own lane: never, while there is room, or by stopping the idlest lane. */
+  autoRecordWorktrees: 'off' | 'fill' | 'rotate';
+  /** Globs for worktrees auto-record and auto-follow leave alone: a path or directory name, or `branch:` and a branch. */
+  autoIgnoreWorktrees: string[];
+  /** Move playback to the lane with the oldest queued change once the followed lane is caught up and idle. */
+  autoFollow: boolean;
 }
 
 /** Values from the repository settings file; they sit between user and workspace settings. */
@@ -82,6 +99,7 @@ export function readSettings(): Settings {
   const num = (key: string, fallback: number, min?: number, max?: number) =>
     numberSetting(c.get(key, fallback, isFiniteNumber), fallback, min, max);
   const speed = resolveSpeed(cfg);
+  const readPause = resolveReadPause(cfg);
   return {
     autoStart: c.get('autoStart', false),
     include: f.get('include', ['**/*'], isStringArray),
@@ -97,24 +115,36 @@ export function readSettings(): Settings {
     catchUpFactor: num('catchUpFactor', 0.5, 0),
     maxSpeedup: num('maxSpeedup', 8, 1),
     maxAnimatedChars: num('maxAnimatedChars', 6000),
-    fileSwitchDelayMs: num('fileSwitchDelayMs', 600, 0),
+    fileSwitchDelayMs: num('fileSwitchDelayMs', 1000, 0, 15000),
     smoothScroll: c.get('smoothScroll', true),
-    scrollPauseMs: num('scrollPauseMs', 400, 0, 5000),
+    readPauseSeconds: readPause.readPauseSeconds,
+    readPauseFromDeprecatedSetting: readPause.fromDeprecated,
     scrollLinesPerSecond: num('scrollLinesPerSecond', 60, 1),
     arrowNavigation: c.get('arrowNavigation', true),
     arrowKeysPerSecond: num('arrowKeysPerSecond', 15, 1),
+    naturalOrder: c.get('naturalOrder', true),
     debounceMs: num('debounceMs', 200, 0),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
     maxFileSizeKB: num('maxFileSizeKB', 512, 1),
     gitBaselines: c.get('gitBaselines', true),
     baselineBudgetMB: num('baselineBudgetMB', 256, 0),
     historyLimit: num('historyLimit', 500, 10),
+    historySizeMB: num('historySizeMB', 64, 1),
     persistHistory: c.get('persistHistory', true),
     ignoreOwnSaves: c.get('ignoreOwnSaves', true),
+    ignoreGitOperations: c.get('ignoreGitOperations', true),
     viewColumn: c.get('viewColumn', 'beside'),
     mirrorStatusRow: c.get('mirrorStatusRow', true),
+    autoRecordWorktrees: oneOf(c.get<unknown>('autoRecordWorktrees', 'off'), ['off', 'fill', 'rotate'] as const, 'off'),
+    autoIgnoreWorktrees: c.get('autoIgnoreWorktrees', [], isStringArray),
+    autoFollow: c.get<unknown>('autoFollow', false) === true,
     ...readHighlightSettings(),
   };
+}
+
+/** `value` when it is one of `allowed`, else `fallback`. */
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
 /** Only the highlight settings; the highlight view reads them on every render. */
@@ -181,6 +211,20 @@ function resolveSpeed(cfg: vscode.WorkspaceConfiguration) {
     { charsPerMinute: perMinute?.workspaceValue, charsPerSecond: perSecond?.workspaceValue },
     { charsPerMinute: repoValues.charsPerMinute, charsPerSecond: repoValues.charsPerSecond },
     { charsPerMinute: perMinute?.globalValue, charsPerSecond: perSecond?.globalValue },
+  ]);
+}
+
+/**
+ * readPauseSeconds, with the deprecated scrollPauseMs (divided by 1000)
+ * standing in for it in any layer that sets only the old key.
+ */
+function resolveReadPause(cfg: vscode.WorkspaceConfiguration) {
+  const seconds = cfg.inspect<unknown>('readPauseSeconds');
+  const ms = cfg.inspect<unknown>('scrollPauseMs');
+  return resolveReadPauseSeconds([
+    { readPauseSeconds: seconds?.workspaceValue, scrollPauseMs: ms?.workspaceValue },
+    { readPauseSeconds: repoValues.readPauseSeconds, scrollPauseMs: repoValues.scrollPauseMs },
+    { readPauseSeconds: seconds?.globalValue, scrollPauseMs: ms?.globalValue },
   ]);
 }
 

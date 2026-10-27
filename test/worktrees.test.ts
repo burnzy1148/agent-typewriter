@@ -20,6 +20,10 @@ import {
   nestedUnder,
   ownCheckout,
   parseWorktreeList,
+  initializing,
+  pathKey,
+  realPathAsync,
+  realPathKey,
   relativeInside,
   rootIn,
   uniqueLabels,
@@ -212,6 +216,40 @@ test('listWorktrees: a nested worktree whose .git file is deleted is still liste
   assert.equal(feature?.prunable, true);
   assert.deepEqual(nestedUnder(repo, r.worktrees), ['.claude/worktrees/feature/']);
   assert.deepEqual(liveWorktrees(r.worktrees).length, 1);
+});
+
+// --- at-dd6: a workspace folder opened through a symlink, worktrees listed by their real paths.
+
+test('at-dd6 a folder opened through a symlink: own checkout, nested worktrees and relative paths still match', { skip: noGit }, async (ctx) => {
+  const repo = tempRepo('at-wt-');
+  write(repo, 'packages/app/a.ts', 'a\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'initial');
+  git(repo, 'worktree', 'add', '-q', '-b', 'coupons', path.join('.claude', 'worktrees', 'coupons'));
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', `${repo}-side`);
+  const link = path.join(tempDir('at-wt-link-'), 'repo');
+  try {
+    fs.symlinkSync(repo, link, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    return ctx.skip('cannot create a symlink here');
+  }
+  const r = await listWorktrees(link);
+  assert.ok(r.kind === 'ok');
+  const main = r.worktrees.find((w) => pathKey(w.path) === pathKey(repo));
+  assert.ok(main, 'git lists the main checkout');
+  assert.equal(ownCheckout(link, r.worktrees), main);
+  assert.equal(ownCheckout(path.join(link, '.claude', 'worktrees', 'coupons'), r.worktrees)?.branch, 'coupons');
+  assert.deepEqual(nestedUnder(link, r.worktrees), ['.claude/worktrees/coupons/']);
+  assert.deepEqual(
+    Object.fromEntries(r.worktrees.map((w) => [w.branch, relativeInside(link, w.path)])),
+    { main: '', coupons: '.claude/worktrees/coupons', side: undefined },
+  );
+  // Read without blocking, a path gets the same key.
+  for (const p of [link, path.join(link, '.claude', 'worktrees', 'coupons'), path.join(link, 'no-such-dir'), 'relative/dir']) {
+    assert.equal(realPathKey(await realPathAsync(p)), pathKey(p), p);
+  }
+  const side = r.worktrees.find((w) => w.branch === 'side')!;
+  assert.equal(rootIn(side, main, path.join(link, 'packages', 'app')), path.join(side.path, 'packages', 'app'));
 });
 
 // --- at-l3q.10.7: a .git file hides its directory only when it is a worktree of the folder's repository.
@@ -463,4 +501,49 @@ test('at-l3q.11.7 CheckoutChoiceFile: labels survive a reload; an old file witho
   assert.equal(b.get('file:///ws'), undefined, 'clearing the choice keeps its labels');
   assert.equal(b.get('labels'), undefined, 'the labels entry is no folder');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CheckoutChoiceFile: an old single-path entry reads as that one checkout', () => {
+  const dir = tempDir('choices-');
+  const file = path.join(dir, 'checkouts.json');
+  fs.writeFileSync(file, JSON.stringify({ 'file:///ws': P('repo-sibling') }));
+  const a = new CheckoutChoiceFile(file);
+  assert.deepEqual(a.getSet('file:///ws'), [P('repo-sibling')]);
+  assert.equal(a.getSet('file:///other'), undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CheckoutChoiceFile: sets, the followed lane and colors survive a reload', () => {
+  const dir = tempDir('choices-');
+  const file = path.join(dir, 'checkouts.json');
+  const a = new CheckoutChoiceFile(file);
+  assert.equal(a.setSet('file:///ws', [P('repo'), P('repo-feature')]), undefined);
+  a.setSet('file:///other', [P('x')]);
+  a.setSet('file:///other', undefined);
+  a.setFollowed('lane-1');
+  a.setColor('key-a', 3);
+  a.setLabel('file:///ws', 'key-a', 'feature');
+  const b = new CheckoutChoiceFile(file);
+  assert.deepEqual(b.getSet('file:///ws'), [P('repo'), P('repo-feature')]);
+  assert.equal(b.get('file:///ws'), undefined, 'a set is not a single choice');
+  assert.equal(b.getSet('file:///other'), undefined);
+  assert.equal(b.followed, 'lane-1');
+  assert.equal(b.colorOf('key-a'), 3);
+  assert.equal(b.colorOf('key-b'), undefined);
+  assert.deepEqual([...b.labelsOf('file:///ws')], [['key-a', 'feature']]);
+  assert.equal(b.getSet('followed'), undefined, 'the followed entry is no folder');
+  assert.equal(b.getSet('colors'), undefined, 'the colors entry is no folder');
+  fs.writeFileSync(file, '{ broken');
+  const c = new CheckoutChoiceFile(file);
+  assert.equal(c.getSet('file:///ws'), undefined);
+  assert.equal(c.followed, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('parseWorktreeList: a locked worktree keeps its reason; initializing means git worktree add is not done', () => {
+  const out = ['worktree /r', 'HEAD abc', 'branch refs/heads/main', '', 'worktree /r-new', 'HEAD def', 'branch refs/heads/new', 'locked initializing', '', 'worktree /r-kept', 'HEAD fed', 'locked', ''].join('\n');
+  const list = parseWorktreeList(out, '\n');
+  assert.deepEqual(list.map((w) => w.locked), [undefined, 'initializing', '']);
+  // The reason is translated, so any lock may be git worktree add at work.
+  assert.deepEqual(list.map(initializing), [false, true, true]);
 });

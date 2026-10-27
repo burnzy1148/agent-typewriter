@@ -12,7 +12,7 @@ import { promises as fsp } from 'node:fs';
 import * as nodePath from 'node:path';
 import { execGitWith, limitGit, readBlob, type GitRunner } from './gitBaseline';
 import { decodeBytes, isBinaryText, looksBinary } from './textDecode';
-import type { ChangeKind, NewChangeEvent } from './timeline';
+import type { ChangeKind, NewChangeEvent, SavedLane } from './timeline';
 
 /** A git failure worth showing as is: git's own reason, without the command line. */
 export class GitReplayError extends Error {}
@@ -99,6 +99,11 @@ const LFS_POINTER = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha2
  * commit. Throws GitReplayError for empty input or a token git would read as
  * an option.
  */
+/** The one lane a replay of `range` fills: labeled with the range, in the first lane color. */
+export function replayLane(range: string): SavedLane {
+  return { id: `git-replay:${range}`, label: range, root: '', color: 1 };
+}
+
 export function resolveRange(input: string): string[] {
   const tokens = input.trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) throw new GitReplayError('Enter a commit or a range such as main..feature.');
