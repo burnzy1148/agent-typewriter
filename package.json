@@ -892,6 +892,7 @@
     "@types/vscode": "1.85.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
+    "azure-devops-node-api": "^12.5.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   },

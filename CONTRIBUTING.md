@@ -71,7 +71,7 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 
 ## Releasing (maintainers)
 
-1. Run the **Release** workflow from the Actions tab, or `gh workflow run release.yml -f bump=patch` (or `minor`, `major`). It cuts `bump/v<version>` from `develop`, bumps the version in `package.json` and `package-lock.json`, dates the CHANGELOG's `## Unreleased` heading, and opens a PR into `develop`.
+1. Run the **Release** workflow from the Actions tab, or `gh workflow run release.yml -f bump=patch` (or `minor`, `major`). It cuts `bump/v<version>` from `develop`, bumps the version in `package.json` and `package-lock.json`, dates the CHANGELOG's `## Unreleased` heading, and opens a PR into `develop`. Stable versions keep even minors, because pre-releases use the odd minor above them, so `minor` goes to the next even minor above the pre-release stream: 0.3.0 becomes 0.6.0, and 0.6.2 becomes 0.8.0. `patch` and `major` work as npm's do.
 2. When CI is green, merge that PR. The merge tags the resulting `develop` commit `v<version>`, points `release/v<version>` at it, and opens a PR into `main`.
 3. When CI is green, merge the release PR with **Create a merge commit**. Don't squash, and don't push to `release/v<version>`: the tag must stay on its head. The merge runs CI on the tag, which checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release.
 
@@ -89,9 +89,53 @@ gh pr create --base main --head release/v<version> --title "Release v<version>"
 
 If a workflow run fails partway, rerun it: each job skips the tag, branch, or PR it already created.
 
-Without the workflow, do the same by hand: a PR into `develop` with the version bump, `git tag v<version>` on its merge and `git push origin v<version>`, a `release/v<version>` PR from that commit into `main` merged with a merge commit, then `gh workflow run ci.yml --ref v<version>` to publish.
+Without the workflow, do the same by hand: a PR into `develop` with the version bump (`node scripts/version-cli.mjs next-stable minor` prints the version a bump gives), `git tag v<version>` on its merge and `git push origin v<version>`, a `release/v<version>` PR from that commit into `main` merged with a merge commit, then `gh workflow run ci.yml --ref v<version>` to publish.
 
 `scripts/apply-branch-rules.sh` sets the rulesets on `main` and `develop`: PRs only, CI green before merge, no force pushes or deletion, merge commits only on `main`. Repository admins can bypass them.
+
+## Pre-releases (maintainers)
+
+Testers who choose "Switch to Pre-Release Version" on the Marketplace get builds of `develop`. Stable users never do.
+
+**Tags are automatic.** When a push to `develop` that changes the extension passes CI, the `prerelease-tag` job tags it `pre-v<version>`. The version is the stable version's major, the first odd minor above its minor, and a count that goes up by one per tag. After 0.3.0, that's 0.5.0, 0.5.1, and so on, and after a release of 0.6.0 it's 0.7.0. `package.json` keeps the stable version. These get no tag:
+- the version-bump merge
+- a site-only push
+- a failed run
+- a commit older than the newest tag
+
+A merge whose run is cancelled by a newer push gets no tag of its own; the next tag includes it. Tags are never deleted.
+
+**Publishing is manual.** Run the **Pre-release** workflow from the Actions tab, or:
+
+```
+gh workflow run prerelease.yml                      # the newest pre-v tag on develop
+gh workflow run prerelease.yml -f tag=pre-v0.5.3    # a chosen one
+```
+
+It builds the tagged commit with that version and the pre-release flag, publishes it, and creates a GitHub release marked pre-release with the `.vsix`. Then it removes all but the newest 2 pre-releases from the Marketplace and from GitHub releases. It never removes stable versions or tags.
+
+It refuses, without publishing:
+- a tag that isn't `pre-v*`
+- a tag whose commit isn't on `develop`
+- a version that isn't higher than everything on the Marketplace, because testers would never be offered it (for example, after a stable release has overtaken it)
+
+If a run fails partway, rerun it. A rerun picks the same tag, even if CI has tagged newer merges since. It finishes the steps that didn't complete and doesn't publish the version twice.
+
+To see what's on the Marketplace, or what pruning would remove:
+
+```
+node scripts/marketplace.mjs versions
+node scripts/marketplace.mjs prune --keep 2 --dry-run
+```
+
+To remove every pre-release, for example to stop offering them, remove them from both places. The tags stay.
+
+```
+VSCE_PAT=<token> node scripts/marketplace.mjs prune --keep 0
+gh release list --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease and (.tagName | startswith("pre-v"))) | .tagName' | while read -r tag; do gh release delete "$tag" --yes; done
+```
+
+The first command removes them from the Marketplace and needs a Marketplace token that can publish. The second deletes the GitHub pre-releases. Keep the even-minor rule afterwards, so the next stable release still sorts above the pre-releases testers have installed.
 
 ## License
 

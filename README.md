@@ -18,6 +18,8 @@ From the Visual Studio Code Marketplace: search for **Agent Typewriter** in the 
 code --install-extension burnzy1148.agent-typewriter
 ```
 
+To try builds of the next release before it ships, click **Switch to Pre-Release Version** on the extension's page in VS Code. Pre-releases are tested builds of the `develop` branch, published from time to time. Switch back the same way.
+
 To install a build from a [GitHub release](https://github.com/burnzy1148/agent-typewriter/releases) or a CI artifact instead, download the `.vsix` and run `code --install-extension agent-typewriter-<version>.vsix`, or use the Extensions view, `...` menu, **Install from VSIX...**.
 
 ## Use
