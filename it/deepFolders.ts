@@ -3,7 +3,8 @@
 // its top folder alone and reports nothing written below it later (at-net.15),
 // so the recorder watches those folders itself. Writes there, a while after the
 // tree was made, are recorded: in the folder's own checkout, in a folder deleted
-// and made again, and in a lane on a worktree added the way agent tools add theirs.
+// and made again or only chmod-ed, and in a lane on a worktree added the way
+// agent tools add theirs.
 import * as vscode from 'vscode';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -81,6 +82,17 @@ export async function run(): Promise<void> {
   write('gen/api/v1/two.ts', 'export const two = 3;\n');
   await until('two.ts modified', () => events().includes('modify gen/api/v1/two.ts'));
   console.log('[it] DEEP: a write in a folder deleted and made again is recorded ok');
+
+  // --- G6. The same folder's attributes changed (chmod), which reads like it was made again: nothing is recorded, and a later write is.
+  const before = events().length;
+  fs.chmodSync(path.join(root, 'gen', 'api', 'v1'), 0o700);
+  fs.chmodSync(path.join(root, 'gen', 'api'), 0o700);
+  await sleep(1000);
+  write('gen/api/v1/two.ts', 'export const two = 4;\n');
+  await until('two.ts modified again', () => events().length > before);
+  await sleep(500);
+  assert.deepEqual(events().slice(before), ['modify gen/api/v1/two.ts']);
+  console.log('[it] DEEP: a chmod of a watched folder records nothing, and a write after it is recorded ok');
 
   // --- G4. git worktree add .claude/worktrees/x with no .claude yet, recorded by hand, then a write in it.
   // The lane starts once the checkout's own events have come: one late on Windows reads as a new file.

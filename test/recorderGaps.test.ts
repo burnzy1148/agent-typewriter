@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { dirIdNow, GAP_WATCH_LIMIT, nodeWatchDir, shareOfSystemWatches, type WatchDir } from '../src/watchGaps';
+import { GAP_WATCH_LIMIT, nodeWatchDir, shareOfSystemWatches, type WatchDir } from '../src/watchGaps';
 import { committedRepo, laneOf, recorderOn, rm, settings, until } from './recorderScopeFixture';
 import { git, noGit, tempDir, write } from './gitFixture';
 import { mock, workspace } from './vscode-mock';
@@ -22,7 +22,7 @@ function fakeWatches() {
   const watchDir: WatchDir = (fsPath, onEntry) => {
     open.set(fsPath, onEntry);
     opens.set(fsPath, (opens.get(fsPath) ?? 0) + 1);
-    return { close: () => open.get(fsPath) === onEntry && open.delete(fsPath), id: dirIdNow(fsPath) };
+    return { close: () => open.get(fsPath) === onEntry && open.delete(fsPath) };
   };
   const kill = (dir: string) => open.delete(dir);
   const watched = (root: string) => [...open.keys()].map((d) => path.relative(root, d).split(path.sep).join('/')).sort();
@@ -282,7 +282,7 @@ test('a change the watcher reports for a folder nothing is known of is left alon
   assert.deepEqual(t.events(), []);
 });
 
-test('a change the watcher reports for a watched folder whose attributes changed leaves it watched (chmod)', async () => {
+test('a change the watcher reports for a watched folder whose attributes changed records nothing and leaves it watched (chmod)', async () => {
   const { dir, w, t, at } = await started();
   write(dir, 'scripts/bin/run.ts', 'run\n');
   t.fire('create', at('scripts'));
@@ -291,7 +291,7 @@ test('a change the watcher reports for a watched folder whose attributes changed
   fs.chmodSync(at('scripts/bin'), 0o700);
   t.fire('change', at('scripts/bin'));
   await t.settle();
-  assert.doesNotMatch(t.recorder.describeActivity(), /made again/);
+  assert.match(t.recorder.describeActivity(), /checking again scripts\/bin/);
   assert.deepEqual(w.watched(dir), ['scripts/bin']);
   write(dir, 'scripts/bin/new.ts', 'new\n');
   w.entry(at('scripts/bin/new.ts'), 'rename');
@@ -299,7 +299,7 @@ test('a change the watcher reports for a watched folder whose attributes changed
   assert.deepEqual(t.events(), ['create scripts/bin/run.ts', 'create scripts/bin/new.ts']);
 });
 
-test('a folder whose attributes change under a folder watch records nothing and keeps its watches, even just after baselines are taken', async () => {
+test('a folder whose attributes change under a folder watch records nothing and is watched again, even just after baselines are taken', async () => {
   const { dir, w, t, at } = await started();
   write(dir, 'a/b/c/one.ts', 'one\n');
   t.fire('create', at('a'));
@@ -314,8 +314,12 @@ test('a folder whose attributes change under a folder watch records nothing and 
   w.entry(at('a/b/c'), 'rename');
   await t.settle();
   assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
-  assert.equal(w.opens.get(at('a/b/c')), 1, 'its watch was kept');
-  assert.doesNotMatch(t.recorder.describeActivity().split('\n').slice(before - 1).join('\n'), /in directory/);
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c'], 'watched again');
+  assert.doesNotMatch(t.recorder.describeActivity().split('\n').slice(before - 1).join('\n'), /in directory create/, 'its file is no new one');
+  write(dir, 'a/b/c/one.ts', 'one 2\n');
+  w.entry(at('a/b/c/one.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts', 'modify a/b/c/one.ts']);
 });
 
 test('with real folder watches, a chmod of a watched folder records nothing and writes in it are still recorded', { skip: process.platform !== 'linux' && 'fs.watch reports folders this way on Linux' }, async () => {
@@ -431,11 +435,11 @@ test('a lane keeps watching its checkout when a folder watch reports its root ma
   await until('.claude/worktrees watched', () => w.watched(repo).includes('.claude/worktrees'));
   await t.settle();
   await t.recorder.addCheckout(t.folder, x);
-  // The watch of .claude/worktrees reports x late, after the lane walked it: the same x, so its watches stay.
+  // The watch of .claude/worktrees reports x late, after the lane walked it: checked again, and still watched.
   w.entry(x, 'rename');
   await t.settle();
-  assert.equal(w.opens.get(path.join(x, 'src')), 1);
   assert.ok(w.watched(repo).includes('.claude/worktrees/x/src'));
+  assert.deepEqual(t.events(), []);
   write(x, 'src/a.ts', 'a 2\n');
   w.entry(path.join(x, 'src/a.ts'), 'change');
   await t.settle();
@@ -455,4 +459,173 @@ test('a file written in many chunks in a watched folder is passed on once per sh
   const passed = t.recorder.describeActivity().split('\n').filter((l) => l.includes('folder watch change a/b/one.ts'));
   assert.equal(passed.length, 1);
   assert.deepEqual(t.events(), ['create a/b/one.ts', 'modify a/b/one.ts']);
+});
+
+test('a watched folder made again is watched again when the watcher reports it changed before its old watches say it went', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'gen/api/v1/one.ts', 'one\n');
+  t.fire('create', at('gen'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['gen/api', 'gen/api/v1']);
+  // rm -rf gen/api && mkdir -p gen/api/v1: the kernel drops the old watches. On ext4 the new folders mostly get
+  // the old inode numbers, and before Linux 6.13 the same birth times, so nothing about them looks new.
+  await rm(at('gen/api'));
+  write(dir, 'gen/api/v1/two.ts', 'two\n');
+  w.kill(at('gen/api'));
+  w.kill(at('gen/api/v1'));
+  t.fire('change', at('gen/api'));
+  await until('gen/api/v1 watched again', () => w.watched(dir).includes('gen/api/v1'));
+  await t.settle();
+  assert.deepEqual(t.events().slice(1).sort(), ['create gen/api/v1/two.ts', 'delete gen/api/v1/one.ts']);
+  write(dir, 'gen/api/v1/two.ts', 'two 2\n');
+  w.entry(at('gen/api/v1/two.ts'), 'change');
+  await t.settle();
+  assert.equal(t.events()[3], 'modify gen/api/v1/two.ts');
+});
+
+test('a watched folder moved away and back at once is watched again', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c']);
+  // mv a/b a/b.tmp: the watch of a/b names itself while b is away, and the watches in it stop.
+  fs.renameSync(at('a/b'), at('a/b.tmp'));
+  w.entry(at('a/b/b'), 'rename');
+  await until('the watches stopped', () => w.watched(dir).length === 0);
+  // mv a/b.tmp a/b in the same batch: VS Code's watcher reports a/b changed.
+  fs.renameSync(at('a/b.tmp'), at('a/b'));
+  t.fire('change', at('a/b'));
+  await until('a/b/c watched again', () => w.watched(dir).includes('a/b/c'));
+  write(dir, 'a/b/c/one.ts', 'one 2\n');
+  w.entry(at('a/b/c/one.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts', 'modify a/b/c/one.ts']);
+});
+
+test('deletes are swept without waiting for folder watch events that came after them', async () => {
+  const { w, t, at } = await started();
+  fs.mkdirSync(at('a/b'), { recursive: true });
+  t.fire('create', at('a'));
+  await t.settle();
+  // The stats of two temp files wait until let go, and the events behind them wait too.
+  const stat = workspace.fs.stat;
+  const release = new Map<string, () => void>();
+  const gates = new Map(['tmp1', 'tmp2'].map((name) => [name, new Promise<void>((r) => release.set(name, r))]));
+  workspace.fs.stat = async (uri) => {
+    await gates.get(path.basename(uri.fsPath));
+    return stat(uri);
+  };
+  try {
+    w.entry(at('a/b/tmp1'), 'rename');
+    // src is deleted elsewhere while that event waits, and another event comes after.
+    await rm(at('src'));
+    t.fire('delete', at('src'));
+    w.entry(at('a/b/tmp2'), 'rename');
+    release.get('tmp1')!();
+    await until('src/a.ts deleted', () => t.events().includes('delete src/a.ts'));
+  } finally {
+    release.get('tmp2')!();
+    workspace.fs.stat = stat;
+  }
+  await t.settle();
+});
+
+test('a watched folder replaced by a file is forgotten and what was recorded in it is deleted', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  write(dir, 'gen/api/v1/two.ts', 'two\n');
+  t.fire('create', at('a'));
+  t.fire('create', at('gen'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c', 'gen/api', 'gen/api/v1']);
+  // Seen by the watch of a/b, with the events of c's own watch lost.
+  await rm(at('a/b/c'));
+  fs.writeFileSync(at('a/b/c'), 'a file\n');
+  w.entry(at('a/b/c'), 'rename');
+  // Seen by VS Code's watcher, which merges the delete and create into a change.
+  await rm(at('gen/api'));
+  fs.writeFileSync(at('gen/api'), 'a file\n');
+  t.fire('change', at('gen/api'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['a/b']);
+  assert.deepEqual(t.events().slice(2).sort(), ['delete a/b/c/one.ts', 'delete gen/api/v1/two.ts']);
+});
+
+test('a new folder whose event waits while a walk of the baselines watches it first still has its files recorded as created', async () => {
+  const { dir, w, t, at } = await started();
+  fs.mkdirSync(at('a/b'), { recursive: true });
+  t.fire('create', at('a'));
+  await t.settle();
+  const stat = workspace.fs.stat;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  workspace.fs.stat = async (uri) => {
+    if (path.basename(uri.fsPath) === 'slow') await gate;
+    return stat(uri);
+  };
+  try {
+    // An event waiting on a slow stat holds the ones behind it.
+    w.entry(at('a/b/slow'), 'rename');
+    write(dir, 'a/b/d/f.ts', 'f\n');
+    w.entry(at('a/b/d'), 'rename');
+    // Baselines taken meanwhile: the walk watches d and reads f.ts as a file that was there.
+    await t.recorder.refreshBaselines();
+    assert.ok(w.watched(dir).includes('a/b/d'));
+    release();
+    await t.settle();
+  } finally {
+    workspace.fs.stat = stat;
+  }
+  assert.deepEqual(t.events(), ['create a/b/d/f.ts']);
+});
+
+test('a new folder a folder watch reports takes no pass over the baselines', async () => {
+  const { dir, w, t, at } = await started();
+  fs.mkdirSync(at('a/b'), { recursive: true });
+  t.fire('create', at('a'));
+  await t.settle();
+  const recorder = t.recorder as unknown as { keysUnder(dirs: Set<string>): string[] };
+  const keysUnder = recorder.keysUnder.bind(recorder);
+  let passes = 0;
+  recorder.keysUnder = (dirs) => {
+    passes++;
+    return keysUnder(dirs);
+  };
+  write(dir, 'a/b/n/x.ts', 'x\n');
+  w.entry(at('a/b/n'), 'rename');
+  await t.settle();
+  assert.equal(passes, 0);
+  assert.deepEqual(t.events(), ['create a/b/n/x.ts']);
+});
+
+test('a file only a folder watch saw replaced by a folder leaves that folder watched', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/x.ts', 'x\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // A write is reported, and by the time it is read x.ts is a folder; the renames of it went unseen.
+  fs.rmSync(at('a/b/x.ts'));
+  write(dir, 'a/b/x.ts/y.ts', 'y\n');
+  w.entry(at('a/b/x.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/x.ts']);
+  assert.deepEqual(t.events(), ['create a/b/x.ts', 'delete a/b/x.ts', 'create a/b/x.ts/y.ts']);
+});
+
+test('folders reported changed together are checked once, from the outermost', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'a/b/c/one.ts', 'one\n');
+  t.fire('create', at('a'));
+  await t.settle();
+  // tar sets the times of the folders it made once their files are in: VS Code's watcher reports a and a/b, the watch of a/b reports c.
+  for (const d of ['a/b/c', 'a/b', 'a']) fs.utimesSync(at(d), new Date(), new Date());
+  w.entry(at('a/b/c'), 'rename');
+  t.fire('change', at('a/b'));
+  t.fire('change', at('a'));
+  await t.settle();
+  const checked = [...t.recorder.describeActivity().matchAll(/checking again (\S+)/g)].map((m) => m[1]);
+  assert.deepEqual(checked, ['a']);
+  assert.deepEqual(w.watched(dir), ['a/b', 'a/b/c']);
+  assert.deepEqual(t.events(), ['create a/b/c/one.ts']);
 });

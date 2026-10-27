@@ -5,22 +5,18 @@ import * as path from 'node:path';
 import { GAP_WATCH_LIMIT, nodeWatchDir, shareOfSystemWatches, WatchGaps, type WatchDir } from '../src/watchGaps';
 import { tempDir } from './gitFixture';
 
-/**
- * WatchGaps on a fake WatchDir, watching at most `total` at once: `open` lists the watched paths,
- * `fail` makes watches throw, and each watch reads its directory's id from `ids` (`id:<path>` if not there).
- */
+/** WatchGaps on a fake WatchDir, watching at most `total` at once: `open` lists the watched paths, and `fail` makes watches throw. */
 function gaps(total = Infinity) {
   const open = new Set<string>();
   const logs: string[] = [];
   const entries: string[] = [];
-  const ids = new Map<string, string>();
   const state = { fail: undefined as NodeJS.ErrnoException | undefined };
   const onEntry = new Map<string, (name: string, kind: 'rename' | 'change') => void>();
   const watchDir: WatchDir = (fsPath, entry) => {
     if (state.fail) throw state.fail;
     open.add(fsPath);
     onEntry.set(fsPath, entry);
-    return { close: () => open.delete(fsPath), id: ids.get(fsPath) ?? `id:${fsPath}` };
+    return { close: () => open.delete(fsPath) };
   };
   const g = new WatchGaps(
     watchDir,
@@ -31,7 +27,7 @@ function gaps(total = Infinity) {
   );
   /** Watches `dir` for `owner`, with its path as its file system path. */
   const watch = (dir: string, owner = 'L') => g.watch(dir, dir, owner);
-  return { g, watch, open, logs, entries, state, onEntry, ids };
+  return { g, watch, open, logs, entries, state, onEntry };
 }
 
 test('a directory is blind under a reported one until reported itself, and anything under a blind one is too', () => {
@@ -46,10 +42,10 @@ test('a directory is blind under a reported one until reported itself, and anyth
   assert.equal(g.isBlind('/ws/a/b'), false);
   assert.equal(g.isBlind('/ws/a/b/c'), true);
   // One found in a walk goes by its parent.
-  assert.equal(g.isBlindIn('/ws/a/b', false, '/ws/a/b/c'), true, 'under a reported parent');
-  assert.equal(g.isBlindIn('/ws/x', true, '/ws/x/y'), true, 'under a blind parent');
-  assert.equal(g.isBlindIn('/ws/x', false, '/ws/x/y'), false, 'under a parent the watcher saw from the start');
-  assert.equal(g.isBlindIn('/ws/a', false, '/ws/a/b'), false, 'reported itself');
+  assert.equal(g.isBlindIn('/ws/a/b', false, 'c'), true, 'under a reported parent');
+  assert.equal(g.isBlindIn('/ws/x', true, 'y'), true, 'under a blind parent');
+  assert.equal(g.isBlindIn('/ws/x', false, 'y'), false, 'under a parent the watcher saw from the start');
+  assert.equal(g.isBlindIn('/ws/a', false, 'b'), false, 'reported itself');
 });
 
 test('a watched directory is blind, and a report of it stops the watch', () => {
@@ -68,7 +64,7 @@ test('a directory once found blind stays blind after every watch is closed, even
   watch('/ws/.claude/worktrees');
   g.closeAll();
   // A walk after a restart reaches it from a parent it has no report of.
-  assert.equal(g.isBlindIn('/ws/.claude', false, '/ws/.claude/worktrees'), true);
+  assert.equal(g.isBlindIn('/ws/.claude', false, 'worktrees'), true);
   assert.equal(g.isBlind('/ws/.claude/worktrees/x'), true);
 });
 
@@ -136,8 +132,8 @@ test('watches across lanes stop at the total, logged once, and a refused directo
   assert.equal(open.size, 3);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /^Over 3 new folders are hidden/);
-  assert.equal(g.isBlindIn('/ws', false, '/ws/d'), false, 'refused, so nothing is kept of it');
-  assert.equal(g.isBlindIn('/ws', false, '/ws/a'), true);
+  assert.equal(g.isBlindIn('/ws', false, 'd'), false, 'refused, so nothing is kept of it');
+  assert.equal(g.isBlindIn('/ws', false, 'a'), true);
   // A watch a lane shares is no new one.
   watch('/ws/a', 'B');
   assert.equal(open.size, 3);
@@ -166,30 +162,78 @@ test('the total is a quarter of the inotify watches the system allows a user, up
   assert.equal(shareOfSystemWatches(path.join(dir, 'missing')), 5 * GAP_WATCH_LIMIT);
 });
 
-test('which directory was reported or watched at a path is kept, through it going, until it is deleted', () => {
+test('a directory reported or watched, or a watched one that went, is known until it is deleted', () => {
   const { g, watch, open } = gaps();
-  g.noteReported('/ws/a', 'ino-a');
+  g.noteReported('/ws/a');
   watch('/ws/a/b');
   watch('/ws/a/b/c');
-  assert.equal(g.idOf('/ws/a'), 'ino-a');
-  assert.equal(g.idOf('/ws/a/b'), 'id:/ws/a/b', 'read when the watch started');
-  assert.equal(g.idOf('/ws'), undefined);
-  assert.equal(g.idOf('/ws/a/x'), undefined);
-  // The watched directory itself went: its watches stop and what was in it is forgotten, but which one it was stays.
+  assert.equal(g.known('/ws/a'), true);
+  assert.equal(g.known('/ws/a/b'), true);
+  assert.equal(g.known('/ws'), false, 'only a step on the way');
+  assert.equal(g.known('/ws/a/x'), false);
+  // The watched directory itself went: its watches stop and what was in it is forgotten, but it stays known.
   g.gone('/ws/a/b');
   assert.deepEqual([...open], []);
-  assert.equal(g.idOf('/ws/a/b'), 'id:/ws/a/b');
-  assert.equal(g.idOf('/ws/a/b/c'), undefined);
-  assert.equal(g.isBlindIn('/ws/a', false, '/ws/a/b'), true, 'one made there again is blind as before, being in a reported one');
+  assert.equal(g.known('/ws/a/b'), true);
+  assert.equal(g.known('/ws/a/b/c'), false);
+  assert.equal(g.isBlindIn('/ws/a', false, 'b'), true, 'one made there again is blind as before, being in a reported one');
   g.deleted('/ws/a/b');
-  assert.equal(g.idOf('/ws/a/b'), undefined);
+  assert.equal(g.known('/ws/a/b'), false);
+  // Known after every watch is closed: the watcher stays blind there.
+  watch('/ws/a/d');
+  g.closeAll();
+  assert.equal(g.known('/ws/a/d'), true);
+});
+
+test('a directory that may have been made again loses its watches and what was known in it, and keeps what it is', () => {
+  const { g, watch, open } = gaps();
+  g.noteReported('/ws/a');
+  g.noteReported('/ws/a/r');
+  watch('/ws/a/r/s');
+  watch('/ws/a/b');
+  watch('/ws/a/b/c');
+  // Under a folder watch, or reported changed by VS Code's watcher while found blind: still blind.
+  g.remade('/ws/a/b', false);
+  g.remade('/ws/a/b', true);
+  assert.deepEqual([...open], ['/ws/a/r/s']);
+  assert.equal(g.known('/ws/a/b'), true);
+  assert.equal(g.known('/ws/a/b/c'), false);
+  assert.equal(g.isBlind('/ws/a/b'), true, 'to be watched again');
+  assert.equal(g.isBlind('/ws/a/b/c'), true);
+  // A reported one stays reported, and the ones in it are judged afresh: a/r/s may be a new one, made before the watcher watched a/r.
+  g.remade('/ws/a/r', true);
+  assert.deepEqual([...open], []);
+  assert.equal(g.isBlind('/ws/a/r'), false);
+  assert.equal(g.isBlindIn('/ws/a/r', false, 's'), true);
+  // One that went from a folder watch and was reported changed by VS Code's watcher was made again where it watches.
+  watch('/ws/a/g');
+  g.gone('/ws/a/g');
+  g.remade('/ws/a/g', true);
+  assert.equal(g.isBlind('/ws/a/g'), false);
+  // Of one nothing is known, nothing is kept.
+  g.remade('/ws/elsewhere', true);
+  assert.equal(g.known('/ws/elsewhere'), false);
+});
+
+test('a directory named with a trailing slash is the same directory', () => {
+  const { g, watch, open } = gaps();
+  g.noteReported('/ws/a');
+  assert.equal(watch('/ws/a/b/'), true);
+  assert.equal(watch('/ws/a/b'), false);
+  g.noteReported('/ws/a/b');
+  assert.deepEqual([...open], []);
+  watch('/ws/a/c/');
+  g.keepOnly('L', new Set(['/ws/a/c']), g.mark());
+  g.release('L');
+  g.closeAll();
+  assert.deepEqual([...open], []);
 });
 
 test('a refused watch leaves nothing known of its directory', () => {
   const { g, watch } = gaps(1);
   watch('/ws/a');
   assert.equal(watch('/ws/x/y/z'), false);
-  assert.equal(g.idOf('/ws/x/y/z'), undefined);
+  assert.equal(g.known('/ws/x/y/z'), false);
   assert.equal(g.isBlind('/ws/x/y/z'), false);
 });
 
@@ -202,7 +246,7 @@ test('past 20000 directories, older ones known only as reported are forgotten, a
   assert.equal(g.isBlind('/ws/many/d18997/x'), true, 'among the latest 1000 reports when the trim ran, so kept');
   assert.equal(g.isBlind('/ws/many/d19999/x'), true, 'reported after the trim, so still known');
   assert.equal(g.isBlind('/ws/keep/b/c'), true);
-  assert.equal(g.isBlindIn('/ws/keep', false, '/ws/keep/c'), true, 'the parent of a blind one is kept as reported');
+  assert.equal(g.isBlindIn('/ws/keep', false, 'c'), true, 'the parent of a blind one is kept as reported');
 });
 
 test('a directory reported a moment before a trim still makes the ones in it blind while it is walked', () => {
@@ -211,7 +255,7 @@ test('a directory reported a moment before a trim still makes the ones in it bli
   // mkdir -p a/b/c: a is reported just as the limit is crossed, then other reports come before its walk.
   g.noteReported('/ws/a');
   for (let i = 0; i < 500; i++) g.noteReported(`/ws/more/d${i}`);
-  assert.equal(g.isBlindIn('/ws/a', false, '/ws/a/b'), true);
+  assert.equal(g.isBlindIn('/ws/a', false, 'b'), true);
   assert.equal(g.isBlind('/ws/a/b/c'), true);
 });
 
@@ -221,7 +265,7 @@ test('ones forgotten by a trim in a reported directory that is kept are not take
   g.noteReported('/ws/.claude/commands');
   watch('/ws/.claude/worktrees');
   for (let i = 0; i < 20_000; i++) g.noteReported(`/ws/many/d${i}`);
-  assert.equal(g.isBlindIn('/ws/.claude', false, '/ws/.claude/commands'), false, 'VS Code watches it: no second watch');
+  assert.equal(g.isBlindIn('/ws/.claude', false, 'commands'), false, 'VS Code watches it: no second watch');
   assert.equal(g.isBlind('/ws/.claude/commands/x'), false);
   assert.equal(g.isBlind('/ws/.claude/worktrees/x'), true);
 });

@@ -1,10 +1,9 @@
 import * as fs from 'node:fs';
 import { MAX_LANES } from './lanes';
 
-/** A watch of one directory; `close` stops it. `id` is the directory's `dirId` when the watch started. */
+/** A watch of one directory; `close` stops it. */
 export interface DirWatch {
   close(): void;
-  readonly id?: string;
 }
 
 /**
@@ -16,36 +15,12 @@ export type WatchDir = (fsPath: string, onEntry: (name: string, kind: 'rename' |
 
 /** A WatchDir on Node's fs.watch, which is one inotify watch on Linux. */
 export const nodeWatchDir: WatchDir = (fsPath, onEntry, onError) => {
-  const id = dirIdNow(fsPath);
   const watcher = fs.watch(fsPath, { persistent: false }, (kind, name) => {
     if (name) onEntry(name, kind);
   });
   watcher.on('error', onError);
-  return { close: () => watcher.close(), id };
+  return { close: () => watcher.close() };
 };
-
-/**
- * Which directory is at a path: its inode and when it was made. A directory
- * whose attributes change (chmod, touch) keeps it; one deleted and made again
- * does not, even where the new one gets the old inode number. Undefined when
- * nothing is there.
- */
-export async function dirId(fsPath: string): Promise<string | undefined> {
-  try {
-    return idOf(await fs.promises.stat(fsPath, { bigint: true }));
-  } catch {
-    return undefined;
-  }
-}
-
-/** `dirId`, read at once; throws when nothing is there. */
-export function dirIdNow(fsPath: string): string {
-  return idOf(fs.statSync(fsPath, { bigint: true }));
-}
-
-function idOf(st: fs.BigIntStats): string {
-  return `${st.ino}:${st.birthtimeNs}`;
-}
 
 /** Most directories one lane has watched, so a lane's large tree never takes watches from another lane. */
 export const GAP_WATCH_LIMIT = 2000;
@@ -79,8 +54,8 @@ interface Entry {
   reportedAt?: number;
   /** VS Code's watcher cannot see into it. */
   blind?: boolean;
-  /** The `dirId` of the directory reported or watched here, to tell one made again from one merely changed. */
-  id?: string;
+  /** The watched directory here went; one made here again is still known here. */
+  gone?: boolean;
   /** Some of the ones inside it were forgotten by a trim: one not known in it is not blind for being in it. */
   pruned?: boolean;
   /** Our watch of it, with each lane relying on it and when that lane last asked for it. */
@@ -100,6 +75,12 @@ interface Entry {
  *
  * Directories are named by their Uri path. What is known of them outlives
  * closeAll, since the watcher stays blind where it was.
+ *
+ * A directory made again reads like the same one with its attributes changed
+ * (chmod, touch), to both watchers, and nothing tells them apart for sure: on
+ * ext4 one made again quickly mostly gets the inode number it had, and before
+ * Linux 6.13 its birth time is only as fine as the clock tick. `remade` treats
+ * them alike, and the recorder compares what is in it with what it recorded.
  */
 export class WatchGaps {
   private readonly root: Entry = {};
@@ -134,13 +115,11 @@ export class WatchGaps {
     private readonly total = shareOfSystemWatches(),
   ) {}
 
-  /** VS Code's watcher reported this directory, `id`, created, so it watches it now: ours is no longer needed. */
-  noteReported(dir: string, id?: string): void {
+  /** VS Code's watcher reported this directory created, so it watches it now: ours is no longer needed. */
+  noteReported(dir: string): void {
     const e = this.make(dir);
-    e.reported = true;
-    e.reportedAt = ++this.reports;
+    this.report(e);
     e.blind = false;
-    e.id = id;
     this.close(dir, e);
     this.trim();
   }
@@ -162,17 +141,18 @@ export class WatchGaps {
     return false;
   }
 
-  /** `isBlind` for a directory found in `parent`, whose own answer is `parentBlind`. */
-  isBlindIn(parent: string, parentBlind: boolean, dir: string): boolean {
+  /** `isBlind` for the directory `name` found in `parent`, whose own answer is `parentBlind`. */
+  isBlindIn(parent: string, parentBlind: boolean, name: string): boolean {
     const p = this.find(parent);
-    const e = p?.children?.get(dir.slice(dir.lastIndexOf('/') + 1));
+    const e = p?.children?.get(name);
     if (!e) return parentBlind || (!!p?.reported && !p.pruned);
     return !e.reported && (parentBlind || !!e.blind || !!p!.reported);
   }
 
-  /** The `dirId` of the directory last reported or watched here, if any is known. */
-  idOf(dir: string): string | undefined {
-    return this.find(dir)?.id;
+  /** True for a directory reported or found blind while recording, or a watched one that went from here. */
+  known(dir: string): boolean {
+    const e = this.find(dir);
+    return !!e && (!!e.reported || !!e.blind || !!e.gone);
   }
 
   /**
@@ -181,6 +161,7 @@ export class WatchGaps {
    * a limit is not remembered, so refusals take no memory.
    */
   watch(dir: string, fsPath: string, owner: string): boolean {
+    dir = keyOf(dir);
     const found = this.find(dir);
     if (found?.reported) return false;
     const stamp = ++this.clock;
@@ -224,7 +205,7 @@ export class WatchGaps {
     }
     const e = found ?? this.make(dir);
     e.blind = true;
-    e.id = handle.id;
+    e.gone = undefined;
     e.watch = { handle, owners: new Map([[owner, stamp]]) };
     this.watched.set(dir, e);
     this.trim();
@@ -242,9 +223,10 @@ export class WatchGaps {
    * for again since.
    */
   keepOnly(owner: string, seen: ReadonlySet<string>, mark: number): void {
+    const keep = new Set([...seen].map(keyOf));
     for (const [dir, e] of [...this.watched]) {
       const stamp = e.watch!.owners.get(owner);
-      if (stamp !== undefined && stamp <= mark && !seen.has(dir)) this.drop(dir, e, owner);
+      if (stamp !== undefined && stamp <= mark && !keep.has(dir)) this.drop(dir, e, owner);
     }
   }
 
@@ -268,22 +250,36 @@ export class WatchGaps {
     for (const name of names) parent = parent?.children?.get(name);
     const e = last === undefined ? undefined : parent?.children?.get(last);
     if (!e) return;
-    this.forget(path, e);
+    this.forget(keyOf(path), e);
     parent!.children!.delete(last!);
   }
 
   /**
    * A watched directory itself went, its parent may report nothing of it, and
-   * one may be made there again: like `deleted`, but which directory was there
-   * is kept, so a change reported there later can be told to be a new one.
+   * one may be made there again: like `deleted`, but it stays known, so a
+   * change reported there later is checked.
    */
   gone(path: string): void {
     const e = this.find(path);
     if (!e) return;
-    for (const [name, child] of e.children ?? []) this.forget(`${path}/${name}`, child);
-    e.children = undefined;
-    this.close(path, e);
+    this.clear(keyOf(path), e);
     e.blind = false;
+    e.gone = true;
+  }
+
+  /**
+   * The directory here may have been made again, so the watches of it and of
+   * the ones in it may see nothing: they stop, and what was known of the ones
+   * in it is forgotten, since in one made again they are new. What it is
+   * itself stays, except that one VS Code's watcher `reported` changed, and
+   * not found blind, is one it watches.
+   */
+  remade(path: string, reported: boolean): void {
+    const e = this.find(path);
+    if (!e) return;
+    this.clear(keyOf(path), e);
+    if (reported && !e.blind) this.report(e);
+    e.gone = undefined;
   }
 
   /** Stops every watch. What is known of the directories stays: the watcher stays blind where it was. */
@@ -307,6 +303,12 @@ export class WatchGaps {
       if (!e) return undefined;
     }
     return e;
+  }
+
+  private report(e: Entry): void {
+    e.reported = true;
+    e.reportedAt = ++this.reports;
+    e.gone = undefined;
   }
 
   private make(dir: string): Entry {
@@ -358,7 +360,15 @@ export class WatchGaps {
     e.watch.handle.close();
     for (const owner of e.watch.owners.keys()) this.give(owner);
     e.watch = undefined;
-    this.watched.delete(dir);
+    this.watched.delete(keyOf(dir));
+  }
+
+  /** Stops the watch of the directory at `path` and of the ones in it, and forgets the ones in it. */
+  private clear(path: string, e: Entry): void {
+    for (const [name, child] of e.children ?? []) this.forget(`${path}/${name}`, child);
+    e.children = undefined;
+    e.pruned = undefined;
+    this.close(path, e);
   }
 
   private forget(path: string, e: Entry): void {
@@ -397,4 +407,9 @@ export class WatchGaps {
 
 function split(dir: string): string[] {
   return dir.split('/').filter((name) => name !== '');
+}
+
+/** A directory's path as `watched` keys it, without empty names (a trailing slash). */
+function keyOf(dir: string): string {
+  return '/' + split(dir).join('/');
 }
