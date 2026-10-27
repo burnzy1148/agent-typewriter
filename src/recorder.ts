@@ -1474,6 +1474,10 @@ export class Recorder implements vscode.Disposable {
       // of dir, and it does not see into what was made in it at once. Of a directory nothing is known about, there since
       // before recording, a change of attributes (chmod, touch) is far likelier, so it is left alone.
       if (event === 'change' && this.gaps.known(uri.path)) this.queueRecheck(uri, watches);
+      // Its delete of a known directory can come after the directory was made again and our watches of it started
+      // again, which the delete forgets with the old one: one there again by then is checked again, as made again.
+      // That it watches the new one is not known, so it is checked as not reported.
+      else if (event === 'delete' && this.gaps.known(uri.path)) this.queueRecheck(uri, false);
     }
     const current = key === undefined ? undefined : this.scopes.get(key);
     if (event === 'delete' && current && !current.own) {

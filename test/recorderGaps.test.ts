@@ -553,6 +553,36 @@ test('a watched folder made again is watched again when the watcher reports it c
   assert.equal(t.events()[3], 'modify gen/api/v1/two.ts');
 });
 
+test('a watched folder made again is still watched when the watcher reports the old one deleted after it was watched again', async () => {
+  const { dir, w, t, at } = await started();
+  write(dir, 'gen/api/v1/one.ts', 'one\n');
+  t.fire('create', at('gen'));
+  await t.settle();
+  assert.deepEqual(w.watched(dir), ['gen/api', 'gen/api/v1']);
+  // rm -rf gen/api && mkdir -p gen/api/v1 and a write. The old watches hear one.ts, v1 and themselves go,
+  // read once the folders are back, and the kernel drops them; v1 there again is checked and watched again.
+  await rm(at('gen/api'));
+  write(dir, 'gen/api/v1/two.ts', 'two\n');
+  w.entry(at('gen/api/v1/one.ts'), 'rename');
+  w.entry(at('gen/api/v1/v1'), 'rename');
+  w.entry(at('gen/api/v1'), 'rename');
+  w.entry(at('gen/api/api'), 'rename');
+  w.kill(at('gen/api/v1'));
+  w.kill(at('gen/api'));
+  await until('the new gen/api/v1 watched', () => w.watched(dir).includes('gen/api/v1'));
+  await t.settle();
+  assert.deepEqual(t.events().slice(1).sort(), ['create gen/api/v1/two.ts', 'delete gen/api/v1/one.ts']);
+  // Only now does VS Code's watcher report the old gen/api deleted: what was known of it goes, and the new one is watched.
+  t.fire('delete', at('gen/api'));
+  await t.settle();
+  assert.match(t.recorder.describeActivity(), /checking again gen\/api\n/);
+  assert.deepEqual(w.watched(dir), ['gen/api', 'gen/api/v1']);
+  write(dir, 'gen/api/v1/two.ts', 'two 2\n');
+  w.entry(at('gen/api/v1/two.ts'), 'change');
+  await t.settle();
+  assert.deepEqual(t.events().slice(3), ['modify gen/api/v1/two.ts']);
+});
+
 test('a watched folder moved away and back at once is watched again', async () => {
   const { dir, w, t, at } = await started();
   write(dir, 'a/b/c/one.ts', 'one\n');
