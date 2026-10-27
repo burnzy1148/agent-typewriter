@@ -1105,7 +1105,8 @@ export class Recorder implements vscode.Disposable {
       const known = this.knownWorktrees.get(key);
       // One `git worktree add` is still checking out stays new until it is done, so it is decided then.
       // Everything in the first listing after start was there before: locked ones too (`git worktree lock`).
-      const settled = known ? listed.filter((w) => !stillInitializing(w) || known.has(pathKey(w.path))) : listed;
+      // One being removed, or whose directory is gone (prunable), is not: made again at its path, it is new.
+      const settled = (known ? listed.filter((w) => !stillInitializing(w) || known.has(pathKey(w.path))) : listed).filter((w) => !w.prunable);
       this.knownWorktrees.set(key, new Set(settled.map((w) => pathKey(w.path))));
       if (!known || mode === 'off') continue;
       for (const w of listed) {
@@ -1130,9 +1131,11 @@ export class Recorder implements vscode.Disposable {
     if (creating.length > 0) this.scheduleWorktreeRefresh(INIT_RETRY_MS);
     let waitingChanged = false;
     // A waiting worktree stops waiting once auto-record is off, once it got no waiting scope (it is gone, or
-    // the user ticked it), or once it matches a pattern. Only the last says so: it is the one worth a line.
+    // the user ticked it), once a lane records it (ticked in another folder), or once it matches a pattern.
+    // Only the last says so: it is the one worth a line.
     for (const [lane, w] of this.waiting) {
-      const scope = mode === 'off' ? undefined : scopes.find((s) => s.key === lane && s.waiting);
+      const found = mode === 'off' ? undefined : scopes.find((s) => s.key === lane && s.waiting);
+      const scope = found && !scopes.some((s) => !s.waiting && s.root.toString() === found.root.toString()) ? found : undefined;
       const pattern = scope && ignoringPattern(patterns, scope.checkout.fsPath, scope.branch);
       if (scope && pattern === undefined) continue;
       this.waiting.delete(lane);
@@ -2331,13 +2334,11 @@ export class Recorder implements vscode.Disposable {
         if (!isDir && previous !== undefined) {
           this.snapshots.delete(key);
           const at = await removedAt(uri, scope.root);
-          if (this.beforeWaiting(scope, burst, at)) {
-            this.note(`before its worktree waited, dropped ${relPath}`);
-            return;
-          }
           const git = await this.gitVerdict(scope, uri, burst.deletedAt ?? burst.lastArrival, false, at);
           try {
             if (dropped()) return;
+            // After the verdict: the worktree may have been found made again while git was asked.
+            if (this.beforeWaiting(scope, burst, at)) return this.note(`before its worktree waited, dropped ${relPath}`);
             if (git.op) return this.skipGitWrite(git.op, scope, uri, relPath, false);
             // Unless it is half of a rename whose create in this checkout is
             // already held: that shows the checkout is not being removed.
@@ -2451,13 +2452,14 @@ export class Recorder implements vscode.Disposable {
       before = previous.text;
     }
     this.snapshots.set(key, snap);
-    if (this.beforeWaiting(scope, burst, exists.mtime)) {
-      this.note(`before its worktree waited, baseline ${relPath}`);
-      return;
-    }
     const git = await this.gitVerdict(scope, uri, writtenAt, true, exists.mtime);
     try {
       if (dropped()) return;
+      // After the verdict: the worktree may have been found made again, and its baselines forgotten, while git was asked.
+      if (this.beforeWaiting(scope, burst, exists.mtime)) {
+        this.snapshots.set(key, snap);
+        return this.note(`before its worktree waited, baseline ${relPath}`);
+      }
       if (scope && git.op) return this.skipGitWrite(git.op, scope, uri, relPath, true);
       this.record(uri, relPath, kind, before, snap.text, snap.eol, git.key(), reportedAt);
     } finally {

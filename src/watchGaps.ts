@@ -45,8 +45,8 @@ export const GAP_WATCH_LIMIT = 2000;
  * Most directories watched at once across lanes: a quarter of the inotify
  * watches the system allows a user, which VS Code's own watcher and other
  * programs share, and no more than the limits of every lane and every new
- * worktree waiting for its first change together, so waiting ones don't take
- * recording lanes' watches.
+ * worktree waiting for its first change together. Only where the system
+ * allows that many can every one of them have all it may.
  */
 export function shareOfSystemWatches(file = '/proc/sys/fs/inotify/max_user_watches'): number {
   const most = (MAX_LANES + MAX_WAITING) * GAP_WATCH_LIMIT;

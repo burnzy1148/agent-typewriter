@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { GitOperationWatch } from '../src/gitOperations';
 import { Recorder } from '../src/recorder';
 import { Timeline } from '../src/timeline';
 import { CheckoutChoiceFile, laneKey, listWorktrees, pathKey } from '../src/worktrees';
@@ -209,6 +210,101 @@ test('a waiting worktree made again within one listing from a commit without one
   t.change(a, 'reviewed\n');
   await t.settle();
   assert.deepEqual(t.events(), ['modify review-1/src/a.ts']);
+});
+
+test('a waiting worktree listed while git removes it is new when made again at its path', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
+  await t.recorder.start();
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'HEAD');
+  fireCommon(t, repo, 'create', review);
+  await untilWatched(t, path.join(review, 'src', 'a.ts'));
+  // Mid-removal: its .git is gone and its admin directory not yet, so git lists it prunable.
+  const refreshes = () => t.logs.filter((l) => l.startsWith('Worktrees changed')).length;
+  const before = refreshes();
+  fs.rmSync(path.join(review, '.git'));
+  t.fire('delete', path.join(review, '.git'));
+  await until('listed while prunable', () => refreshes() > before);
+  // The removal finishes, and the tool adds it again before the next listing.
+  fs.rmSync(review, { recursive: true, force: true });
+  git(repo, 'worktree', 'prune');
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'HEAD');
+  fireCommon(t, repo, 'delete', review);
+  fireCommon(t, repo, 'create', review);
+  await until('waits again', () => t.logs.filter((l) => l.startsWith('Watching the new worktree')).length === 2);
+  await untilWatched(t, path.join(review, 'src', 'a.ts'));
+  t.change(path.join(review, 'src', 'a.ts'), 'reviewed\n');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify review-1/src/a.ts']);
+});
+
+test('a waiting worktree ticked in another folder of the workspace stops waiting, so clearing it there leaves it unrecorded', { skip: noGit }, async () => {
+  const repo = committedRepo({ 'src/a.ts': 'a\n' });
+  const side = `${repo}-side`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', side);
+  mock.open(repo, side);
+  const logs: string[] = [];
+  const timeline = new Timeline(1000);
+  const recorder = new Recorder(timeline, () => settings({ autoRecordWorktrees: 'fill' }), { appendLine: (l: string) => logs.push(l) } as unknown as vscode.OutputChannel);
+  track(recorder);
+  await recorder.start();
+  const [, b] = mock.folders as unknown as vscode.WorkspaceFolder[];
+  const fresh = `${repo}-fresh`;
+  git(repo, 'worktree', 'add', '-q', '-b', 'fresh', fresh);
+  mock.fire('create', path.join(fs.realpathSync.native(repo), '.git', 'worktrees', path.basename(fresh)));
+  const file = path.join(fresh, 'src', 'a.ts');
+  await until('waits in the first folder', () => recorder.hasBaseline(vscode.Uri.file(file)));
+  await recorder.addCheckout(b, fresh);
+  write(fresh, 'src/a.ts', 'one\n');
+  mock.fire('change', file);
+  await until('recorded in the lane ticked', () => timeline.all().length === 1);
+  assert.equal(timeline.all()[0].lane, laneKey(b.uri.toString(), false, fresh));
+  await recorder.removeCheckout(b, fresh);
+  write(fresh, 'src/a.ts', 'two\n');
+  mock.fire('change', file);
+  await sleep(800);
+  recorder.drainHeld();
+  assert.equal(timeline.all().length, 1, 'cleared by the user, it is not recorded');
+  assert.deepEqual(
+    recorder.recordedLanes().map((l) => l.checkout),
+    [repo, side],
+  );
+  assert.ok(!logs.some((l) => l.startsWith('Recording the new worktree')), logs.join('\n'));
+});
+
+test('a write in a waiting worktree whose git check outlasts the listing that finds it made again is no first change', { skip: noGit }, async (tc) => {
+  const repo = repoWithPr({ 'src/a.ts': 'a\n' });
+  const t = recorderOn(settings({ autoRecordWorktrees: 'fill' }), {}, repo);
+  await t.recorder.start();
+  const review = path.join(repo, '.claude', 'worktrees', 'review-1');
+  const file = path.join(review, 'src', 'a.ts');
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'main');
+  fireCommon(t, repo, 'create', review);
+  await untilWatched(t, file);
+  await sleep(400);
+  // Asking git whether a git operation made the write takes long enough for the next listing to finish meanwhile.
+  const classify = GitOperationWatch.prototype.classify;
+  let slow = true;
+  tc.mock.method(GitOperationWatch.prototype, 'classify', async function (this: GitOperationWatch, ...args: Parameters<typeof classify>) {
+    if (slow) await sleep(900);
+    return classify.apply(this, args);
+  });
+  git(repo, 'worktree', 'remove', '--force', review);
+  git(repo, 'worktree', 'add', '-q', '--detach', review, 'pr');
+  t.change(file, 'agent\n');
+  fireCommon(t, repo, 'delete', review);
+  fireCommon(t, repo, 'create', review);
+  await until('waits afresh', () => t.logs.filter((l) => l.startsWith('Watching the new worktree')).length === 2);
+  await sleep(1500);
+  slow = false;
+  await t.settle(500);
+  assert.deepEqual(t.events(), [], 'it may be the old checkout\'s or git\'s');
+  assert.equal(t.checkout()?.lanes, 1);
+  t.change(file, 'reviewed\n');
+  await t.settle();
+  assert.deepEqual(t.events(), ['modify review-1/src/a.ts']);
+  assert.equal(t.timeline.all()[0].before, 'agent\n');
 });
 
 test('a new worktree of a repository whose subdirectories are separate folders waits in each folder', { skip: noGit }, async () => {
