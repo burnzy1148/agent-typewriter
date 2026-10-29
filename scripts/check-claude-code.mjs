@@ -82,7 +82,9 @@ function install() {
   const listed = JSON.parse(list.stdout).find((p) => p.id === PLUGIN);
   const folder = realpathSync(join(root, 'claude-code'));
   const from = listed?.readFromFolder && existsSync(listed.readFromFolder) ? realpathSync(listed.readFromFolder) : listed?.readFromFolder;
-  if (!listed?.enabled || from !== folder) {
+  // Windows paths can differ in case alone.
+  const same = process.platform === 'win32' ? from?.toLowerCase() === folder.toLowerCase() : from === folder;
+  if (!listed?.enabled || !same) {
     throw new Error(`${PLUGIN} is not installed and enabled from ${folder}: ${JSON.stringify(listed)}`);
   }
   console.log(`✔ ${PLUGIN} installs from the checkout's marketplace`);
@@ -98,5 +100,10 @@ try {
   console.error(`✘ ${e.message}`);
   process.exitCode = 1;
 } finally {
-  rmSync(config, { recursive: true, force: true });
+  // Windows can hold a file open for a moment after the CLI exits.
+  try {
+    rmSync(config, { recursive: true, force: true, maxRetries: 5 });
+  } catch (e) {
+    console.warn(`could not remove ${config}: ${e.message}`);
+  }
 }

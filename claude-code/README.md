@@ -6,13 +6,19 @@ This is the Claude Code edition of [Agent Typewriter](https://agent-typewriter.c
 
 ## Install
 
+Until the plugin is merged into `develop`, it is only on the testers' branch, and the commands below fail with "Marketplace file not found". Use `burnzy1148/agent-typewriter#claude-code-extension` wherever this section says `burnzy1148/agent-typewriter`:
+
+```bash
+claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension
+```
+
 From a shell:
 
 ```bash
 claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
 ```
 
-That adds this repository as the `agent-typewriter` marketplace and installs the plugin for your user account. The desktop app, Claude Code's VS Code extension and the terminal share the plugins and marketplaces you add, so Agent Typewriter is on in all three from the next session you start.
+That adds this repository as the `agent-typewriter` marketplace and installs the plugin for your user account. The desktop app, Claude Code's VS Code extension and the terminal share the plugins and marketplaces you add, so it doesn't matter which one you install from.
 
 Without a shell:
 
@@ -20,9 +26,9 @@ Without a shell:
 - **Desktop app:** once the marketplace is added, Agent Typewriter is in the plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
 - **Terminal session:** `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` asks you to confirm the marketplace, then installs.
 
-Agent Typewriter is made for the desktop app and Claude Code's VS Code extension. If you run Claude Code in a terminal, replay with the [Agent Typewriter extension for VS Code](https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter) instead, which types out the same edits from disk.
+Agent Typewriter is made for the desktop app's local sessions and Claude Code's VS Code extension. A desktop app or phone attached to another session by Remote Control doesn't show its pane. If you run Claude Code in a terminal, replay with the [Agent Typewriter extension for VS Code](https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter) instead, which types out the same edits from disk.
 
-This works in local sessions only. Cloud sessions (claude.ai/code, the mobile app, and the desktop app's cloud sessions) don't load plugins installed on your machine or turned on in a repository's settings, so Agent Typewriter isn't available there yet.
+Use it in a local session. Cloud sessions (claude.ai/code, the mobile app, and the desktop app's cloud sessions) don't load plugins installed on your machine or turned on in a repository's settings. A cloud environment that loads it some other way, such as by naming its folder in `CLAUDE_CODE_PLUGIN_DIRS`, records the session's edits, but no client draws the pane for a cloud session yet.
 
 ### Which version you get
 
@@ -30,11 +36,7 @@ The repository's branches are the plugin's channels:
 
 - `burnzy1148/agent-typewriter` follows `develop`, the default branch: the plugin as it is merged, ahead of releases.
 - `burnzy1148/agent-typewriter#main` follows released versions only. It has the plugin from the first stable release that includes it.
-- `burnzy1148/agent-typewriter#claude-code-extension` is for testers until the plugin is merged into `develop`:
-
-  ```bash
-  claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension
-  ```
+- `burnzy1148/agent-typewriter#claude-code-extension` is for testers until the plugin is merged into `develop`, as above.
 
 Any branch that has the marketplace works the same way, such as a pull request's branch you want to try.
 
