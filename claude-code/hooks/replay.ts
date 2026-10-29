@@ -5,7 +5,7 @@
 // test/claudeCodeReplay.test.ts run it directly. viewOf() and savedOf() are
 // what the hooks write to $.state.
 
-import { Timeline, authoringOrder, backspaceStep, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
+import { Timeline, authoringOrder, backspaceStep, countChanges, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
 import type { Saved, SavedChange, View } from '../types';
 
 export type { Saved, SavedChange, View };
@@ -36,9 +36,17 @@ export type Change = { id: string; path: string; before: string; after: string; 
 /** A change as the timeline holds it; the timeline keeps every field of a change pushed to it. */
 type Event = ChangeEvent & Change;
 
-/** `change` with the fields every timeline event carries, which nothing in the plugin reads yet. */
-function eventOf(change: Change): Omit<Event, 'seq'> {
-  return { ...change, uri: change.path, relPath: change.path, time: 0, kind: 'modify', eol: '\n', linesAdded: 0, linesRemoved: 0 };
+/**
+ * `change` with the fields every timeline event carries. `uri` is the absolute
+ * path and `relPath` the path relative to `cwd`, as the pane names it; the line
+ * counts are real. `kind` and `time` are placeholders, always 'modify' and 0:
+ * the saved state does not keep them, so a reload could not restore them. Save
+ * them before anything reads them.
+ */
+function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
+  const { added, removed } = countChanges(change.before, change.after);
+  const relPath = relativePath(change.path, cwd);
+  return { ...change, uri: change.path, relPath, time: 0, kind: 'modify', eol: '\n', linesAdded: added, linesRemoved: removed };
 }
 
 function changeOf(e: ChangeEvent): Change {
@@ -99,13 +107,16 @@ export function isUnchanged(change: Change): boolean {
   return !change.isTooLarge && change.before === change.after;
 }
 
-/** Adds a recorded change, dropping the oldest ones past either limit. Returns false, adding nothing, for an unchanged file. */
-export function enqueue(deck: Deck, change: Change): boolean {
+/**
+ * Adds a recorded change, its path named relative to `cwd`, dropping the oldest
+ * ones past either limit. Returns false, adding nothing, for an unchanged file.
+ */
+export function enqueue(deck: Deck, change: Change, cwd?: string): boolean {
   if (isUnchanged(change)) return false;
   // A restored deck may hold more than the limits allow (see restore); a new change brings it back within them.
   deck.timeline.setLimit(MAX_WAITING);
   deck.timeline.setSizeLimit(MAX_WAITING_CHARS);
-  deck.timeline.push(eventOf(change));
+  deck.timeline.push(eventOf(change, cwd));
   deck.recorded++;
   return true;
 }
@@ -132,12 +143,12 @@ export function savedOf(deck: Deck): Saved {
 }
 
 /** The deck a reload starts from: every saved change waiting, the one that was being typed starting over. */
-export function restore(saved: Saved, changes: Change[]): Deck {
+export function restore(saved: Saved, changes: Change[], cwd?: string): Deck {
   // The change being typed sat outside the limits, so with it the saved changes
   // can be one over them. The timeline holds them all until the next is recorded.
   const chars = changes.reduce((n, c) => n + c.before.length + c.after.length, 0);
   const timeline = new Timeline(Math.max(MAX_WAITING, changes.length), Math.max(MAX_WAITING_CHARS, chars));
-  for (const change of changes) timeline.push(eventOf(change));
+  for (const change of changes) timeline.push(eventOf(change, cwd));
   return { ...newDeck(), timeline, recorded: saved.recorded, isPaused: saved.isPaused };
 }
 

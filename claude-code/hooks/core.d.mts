@@ -585,6 +585,6 @@ declare function typingChunkEnd(text: string, i: number, perTick: number): numbe
  */
 declare function backspaceStep(deleted: string, remaining: number, step: number): number;
 
-export { planHunks, authoringOrder, normalizeEol, type Hunk };
+export { planHunks, authoringOrder, normalizeEol, countChanges, type Hunk };
 export { typingChunkEnd, backspaceStep };
 export { Timeline, type ChangeEvent, type NewChangeEvent };

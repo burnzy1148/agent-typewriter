@@ -101,7 +101,7 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     if (before === undefined || after === undefined || before === after) continue;
     changes.push({ ...c, before, after });
   }
-  live.deck = restore(was, changes);
+  live.deck = restore(was, changes, live.cwd);
   sync($, live);
 }
 
@@ -148,7 +148,7 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   }
   // Read the deck after the writes: the timer and other hooks may have moved it.
   const isFirst = live.deck.recorded === 0;
-  enqueue(live.deck, change);
+  enqueue(live.deck, change, live.cwd);
   sync($, live);
   // Unasked, the engine places the pane only where it docks beside the
   // conversation; elsewhere it waits for /typewriter.

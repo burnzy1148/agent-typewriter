@@ -717,6 +717,25 @@ function changedRegion(before, after) {
 function atLineStart(text, offset) {
   return offset === 0 || text.charCodeAt(offset - 1) === 10;
 }
+function lineCount(text) {
+  let n = 0;
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) n++;
+  return text.length > 0 && !text.endsWith("\n") ? n + 1 : n;
+}
+function countChanges(before, after) {
+  const parts = diffLines(before, after, { maxEditLength: LINE_DIFF_MAX_EDITS });
+  if (!parts) {
+    const r = changedRegion(before, after);
+    return { added: lineCount(r.added), removed: lineCount(r.removed) };
+  }
+  let added = 0;
+  let removed = 0;
+  for (const p of parts) {
+    if (p.added) added += p.count ?? 0;
+    else if (p.removed) removed += p.count ?? 0;
+  }
+  return { added, removed };
+}
 
 // src/typingChunks.ts
 function isHigh(code) {
@@ -1336,6 +1355,7 @@ export {
   Timeline,
   authoringOrder,
   backspaceStep,
+  countChanges,
   normalizeEol,
   planHunks,
   typingChunkEnd

@@ -348,7 +348,58 @@ test('a reload at either limit keeps the change being typed, which starts over',
   tick(big, FAST);
   for (let i = 0; i < 20; i++) record(big, change(`b${i}`, half, half + i));
   assert.equal(playingId(big), 'typingBig');
-  assert.equal(queued(reload(big))[0]?.id, 'typingBig');
+  const bigBack = reload(big);
+  assert.equal(queued(bigBack)[0]?.id, 'typingBig');
+  enqueue(bigBack, change('newBig', half, half + '?'));
+  const waiting = queued(bigBack);
+  assert.ok(waiting.reduce((n, c) => n + c.before.length + c.after.length, 0) <= MAX_WAITING_CHARS);
+  assert.notEqual(waiting[0]?.id, 'typingBig');
+  assert.equal(waiting.at(-1)?.id, 'newBig');
+});
+
+/** A deck typing a change with MAX_WAITING more recorded behind it, so the timeline has dropped the one being typed. */
+function typingPastTheLimit() {
+  const d = deckOf(change('typing', '', 'typed\n'));
+  tick(d, FAST);
+  for (let i = 0; i < MAX_WAITING; i++) enqueue(d, change(`c${i}`, '', `${i}\n`));
+  assert.equal(d.timeline.get(d.playing!.seq), undefined, 'the timeline dropped the change being typed');
+  return d;
+}
+
+test('the change being typed still finishes, and is saved, once the timeline drops it', () => {
+  const d = typingPastTheLimit();
+  assert.deepEqual(liveIds(d).slice(0, 2), ['typing', 'c0']);
+  assert.equal(savedOf(d).changes[0]?.id, 'typing');
+  assert.equal(queued(d).length, MAX_WAITING);
+  const frames: string[] = [];
+  while (playingId(d) === 'typing') {
+    tick(d, FAST);
+    frames.push(d.shown!.text);
+  }
+  assert.ok(frames.includes('typed\n'));
+  while (!d.playing) tick(d, FAST);
+  assert.equal(playingId(d), 'c0');
+  assert.equal(queued(d).length, MAX_WAITING - 1);
+});
+
+test('skip to latest works once the timeline has dropped the change being typed', () => {
+  const d = typingPastTheLimit();
+  skipToLatest(d, FAST);
+  assert.equal(d.playing, undefined);
+  assert.equal(queued(d).length, 0);
+  assert.equal(d.shown?.text, `${MAX_WAITING - 1}\n`);
+  assert.deepEqual(savedOf(d).changes, []);
+  enqueue(d, change('next', '', 'n\n'));
+  assert.equal(playOut(d).deck.shown?.text, 'n\n');
+});
+
+test('timeline events name the path relative to the working directory and count lines', () => {
+  const edit = change('a', 'one\ntwo\n', 'one\n2\n3\n', '/w/src/a.ts');
+  const d = newDeck();
+  enqueue(d, edit, '/w');
+  const [e] = d.timeline.all();
+  assert.deepEqual([e?.uri, e?.relPath, e?.linesAdded, e?.linesRemoved], ['/w/src/a.ts', 'src/a.ts', 2, 1]);
+  assert.equal(restore(savedOf(d), [edit], '/w').timeline.all()[0]?.relPath, 'src/a.ts');
 });
 
 test('played changes are dropped before waiting ones', () => {
