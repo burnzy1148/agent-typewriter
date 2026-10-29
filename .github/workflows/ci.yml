@@ -97,10 +97,12 @@ jobs:
         run: |
           npm run build:claude-code
           for file in claude-code/hooks/core.mjs claude-code/hooks/core.d.mts; do
-            git diff --exit-code -- "$file" || {
-              echo "::error file=$file::Stale bundle. Run npm run build:claude-code and commit the result."
+            # status, not diff: it also catches a file that is not committed at all.
+            if [ -n "$(git status --porcelain -- "$file")" ]; then
+              git diff -- "$file"
+              echo "::error file=$file::Stale or missing bundle. Run npm run build:claude-code and commit the result."
               exit 1
-            }
+            fi
           done
 
       - name: Validate and test the plugin

@@ -318,6 +318,48 @@ test('saved state lists the playing change first and restores with it starting o
   assert.equal(back.isPaused, true);
 });
 
+test('a reload at either limit keeps the change being typed, which starts over', () => {
+  const recorded = new Map<string, Change>();
+  const record = (d: Deck, c: Change) => {
+    recorded.set(c.id, c);
+    enqueue(d, c);
+  };
+  const reload = (d: Deck) => {
+    const saved = savedOf(d);
+    return restore(saved, saved.changes.map((s) => recorded.get(s.id)!));
+  };
+
+  const d = newDeck();
+  record(d, change('typing', '', 'a\n'));
+  tick(d, FAST);
+  for (let i = 0; i < MAX_WAITING; i++) record(d, change(`c${i}`, '', `${i}\n`));
+  assert.equal(playingId(d), 'typing');
+  const back = reload(d);
+  assert.equal(queued(back).length, MAX_WAITING + 1);
+  assert.deepEqual(queued(back).map((c) => c.id), liveIds(d));
+  // Recording another brings the waiting changes back within the limit, oldest dropped.
+  enqueue(back, change('new', '', 'n\n'));
+  assert.equal(queued(back).length, MAX_WAITING);
+  assert.equal(queued(back)[0]?.id, 'c1');
+
+  const half = 'line\n'.repeat(100_000);
+  const big = newDeck();
+  record(big, change('typingBig', half, half + '!'));
+  tick(big, FAST);
+  for (let i = 0; i < 20; i++) record(big, change(`b${i}`, half, half + i));
+  assert.equal(playingId(big), 'typingBig');
+  assert.equal(queued(reload(big))[0]?.id, 'typingBig');
+});
+
+test('played changes are dropped before waiting ones', () => {
+  const d = deckOf(change('p', '', 'p\n'));
+  playOut(d);
+  for (let i = 0; i < MAX_WAITING; i++) enqueue(d, change(`c${i}`, '', `${i}\n`));
+  assert.equal(d.timeline.all().length, MAX_WAITING);
+  assert.equal(queued(d).length, MAX_WAITING);
+  assert.equal(queued(d)[0]?.id, 'c0');
+});
+
 test('the timeline keeps played changes and marks each one played, playing or pending', () => {
   const d = deckOf(change('a', '', 'alpha\n'), change('b', '', 'beta\n'), change('c', '', 'gamma\n'));
   const seqs = d.timeline.all().map((e) => e.seq);

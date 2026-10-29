@@ -102,6 +102,9 @@ export function isUnchanged(change: Change): boolean {
 /** Adds a recorded change, dropping the oldest ones past either limit. Returns false, adding nothing, for an unchanged file. */
 export function enqueue(deck: Deck, change: Change): boolean {
   if (isUnchanged(change)) return false;
+  // A restored deck may hold more than the limits allow (see restore); a new change brings it back within them.
+  deck.timeline.setLimit(MAX_WAITING);
+  deck.timeline.setSizeLimit(MAX_WAITING_CHARS);
   deck.timeline.push(eventOf(change));
   deck.recorded++;
   return true;
@@ -130,9 +133,12 @@ export function savedOf(deck: Deck): Saved {
 
 /** The deck a reload starts from: every saved change waiting, the one that was being typed starting over. */
 export function restore(saved: Saved, changes: Change[]): Deck {
-  const deck = newDeck();
-  for (const change of changes) deck.timeline.push(eventOf(change));
-  return { ...deck, recorded: saved.recorded, isPaused: saved.isPaused };
+  // The change being typed sat outside the limits, so with it the saved changes
+  // can be one over them. The timeline holds them all until the next is recorded.
+  const chars = changes.reduce((n, c) => n + c.before.length + c.after.length, 0);
+  const timeline = new Timeline(Math.max(MAX_WAITING, changes.length), Math.max(MAX_WAITING_CHARS, chars));
+  for (const change of changes) timeline.push(eventOf(change));
+  return { ...newDeck(), timeline, recorded: saved.recorded, isPaused: saved.isPaused };
 }
 
 function plan(change: Change, opts: PlayOptions): Hunk[] {
