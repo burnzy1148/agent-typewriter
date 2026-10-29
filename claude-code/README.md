@@ -6,7 +6,7 @@ This is the Claude Code edition of [Agent Typewriter](https://agent-typewriter.c
 
 ## Install
 
-In a Claude Code session, in a terminal or in the desktop app's Code tab:
+In a Claude Code session, in the desktop app's Code tab, in Claude Code's VS Code extension or in a terminal:
 
 ```
 /plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
@@ -19,6 +19,8 @@ claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
 ```
 
 The terminal, the desktop app and Claude Code's VS Code extension share the marketplaces you add. Once it is added, Agent Typewriter is also in the desktop app's plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
+
+Agent Typewriter is made for the desktop app and Claude Code's VS Code extension. If you run Claude Code in a terminal, replay with the [Agent Typewriter extension for VS Code](https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter) instead, which types out the same edits from disk.
 
 This works in local sessions only. Cloud sessions (claude.ai/code, the mobile app, and the desktop app's cloud sessions) don't load plugins installed on your machine or turned on in a repository's settings, so Agent Typewriter isn't available there yet.
 

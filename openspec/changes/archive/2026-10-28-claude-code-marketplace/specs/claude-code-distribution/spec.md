@@ -7,7 +7,7 @@ Defines how the Agent Typewriter plugin for Claude Code is published from this r
 ## ADDED Requirements
 
 ### Requirement: The repository is a plugin marketplace
-The repository SHALL be a Claude Code plugin marketplace named `agent-typewriter`, with its catalog at `.claude-plugin/marketplace.json` in the repository root. The catalog SHALL list one plugin, `agent-typewriter`, whose files are the `claude-code/` folder of the same commit. It SHALL serve local sessions: the terminal, the desktop app's local sessions and Claude Code's VS Code extension.
+The repository SHALL be a Claude Code plugin marketplace named `agent-typewriter`, with its catalog at `.claude-plugin/marketplace.json` in the repository root. The catalog SHALL list one plugin, `agent-typewriter`, whose files are the `claude-code/` folder of the same commit. It SHALL serve local Claude Code: the plugin SHALL install from it in the desktop app's local sessions, in Claude Code's VS Code extension, and with `/plugin` or `claude plugin` in a terminal.
 
 #### Scenario: Install in one step
 - **WHEN** a user of Claude Code 2.1.309 or later runs `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` in a session, or `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` in a shell
