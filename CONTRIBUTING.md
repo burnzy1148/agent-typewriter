@@ -62,6 +62,26 @@ The last line starts a Claude Code session with your working copy loaded. Ask Cl
 
 The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude-code/tests/`) run under `claude plugin test`, which `check:claude-code` calls. `check:claude-code` (`scripts/check-claude-code.mjs`) also validates the marketplace catalog, failing on any warning except the plugin's missing version (see below), and installs the plugin from your checkout's marketplace, which catches a catalog entry that points at a missing folder. It runs the CLI with a temporary `CLAUDE_CONFIG_DIR`, so your own Claude Code settings are left alone. Type-checking needs the engine's types in `claude-code/.claude-plugin/types/`, which Claude Code writes (and ignores in git) when a session loads the plugin from your folder, so run the plugin once with `--plugin-dir` first. CI cannot do that, so it runs the bundle check, validation, tests and install but not the type check.
 
+**The marketplace.** `.claude-plugin/marketplace.json` makes the repository a Claude Code plugin marketplace named `agent-typewriter`, listing `claude-code/` by relative path. Claude Code clones the branch or tag a user adds and installs the plugin from that same clone, so branches are the plugin's channels:
+
+| User adds | Gets | Moves when |
+| --- | --- | --- |
+| `burnzy1148/agent-typewriter` | `develop`, the default branch | a PR merges into `develop` |
+| `burnzy1148/agent-typewriter#main` | the latest stable release | a release PR merges into `main` |
+| `burnzy1148/agent-typewriter#<branch>` | that branch | a commit is pushed to it |
+
+`plugin.json` sets no `version`, so Claude Code versions the plugin by the commit it installed from, and users get each new commit on their branch when they update (any commit, even one outside `claude-code/`). Don't add a `version`: users would then stay on the commit they first installed until someone changed it. The validator warns about the missing version, and `check:claude-code` allows that one warning.
+
+**Testing a branch.** Push it, then in a Claude Code session:
+
+```
+/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#<branch>
+```
+
+If the `agent-typewriter` marketplace is already added from another branch, run `/plugin marketplace remove agent-typewriter` first. To pick up later pushes, update the marketplace (`/plugin`, **Marketplaces**, **Update marketplace**). Until `claude-code-extension` is merged into `develop`, testers install from `#claude-code-extension`. To keep a test install away from your own Claude Code setup, run the `claude plugin` commands from a shell with `CLAUDE_CONFIG_DIR` set to an empty folder, as `scripts/check-claude-code.mjs` does.
+
+**Releases.** The plugin has no release, version number or tag of its own. The Release workflow's promotion of `develop` to `main` is what releases it to `#main` users, and the CHANGELOG and the GitHub release cover its changes along with the extension's.
+
 ## How the code fits together
 
 [CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
@@ -89,6 +109,8 @@ Features and changes to specified behavior are written up first as an [OpenSpec]
 1. Run the **Release** workflow from the Actions tab, or `gh workflow run release.yml -f bump=patch` (or `minor`, `major`). It cuts `bump/v<version>` from `develop`, bumps the version in `package.json` and `package-lock.json`, dates the CHANGELOG's `## Unreleased` heading, and opens a PR into `develop`. Stable versions keep even minors, because pre-releases use the odd minor above them, so `minor` goes to the next even minor above the pre-release stream: 0.3.0 becomes 0.6.0, and 0.6.2 becomes 0.8.0. `patch` and `major` work as npm's do.
 2. When CI is green, merge that PR. The merge tags the resulting `develop` commit `v<version>`, points `release/v<version>` at it, and opens a PR into `main`.
 3. When CI is green, merge the release PR with **Create a merge commit**. Don't squash, and don't push to `release/v<version>`: the tag must stay on its head. The merge runs CI on the tag, which checks the tag against `package.json`, publishes the tested .vsix to the Marketplace, and creates the GitHub release.
+
+Merging the release PR also releases the Claude Code plugin to users who installed it from `#main` (see [The Claude Code plugin](#the-claude-code-plugin)).
 
 The tag lives in `develop`'s history, so nothing has to be synced back from `main`. Pushing a `v*` tag doesn't publish anything. Only a CI run dispatched on the tag does, which the workflow starts after step 3.
 

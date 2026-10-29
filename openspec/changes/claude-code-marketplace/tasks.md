@@ -13,13 +13,13 @@
 ## 3. Install from GitHub
 
 - [x] 3.1 Push the branch and, in a fresh temporary `CLAUDE_CONFIG_DIR`, run `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#<this branch>` with the pinned CLI. Verify it adds the `agent-typewriter` marketplace, installs `agent-typewriter@agent-typewriter`, and that `plugin list` shows a commit as its version.
-- [ ] 3.2 Push a commit that changes `claude-code/`, then run `plugin marketplace update agent-typewriter` and `plugin update agent-typewriter@agent-typewriter` in the same folder. Verify the plugin updates to the new commit, and note whether a commit outside `claude-code/` also counts as an update (design.md, Risks). Drop the test commit before review.
+- [x] 3.2 Push a commit that changes `claude-code/` (the README change in 4.1 serves), then run `plugin marketplace update agent-typewriter` and `plugin update agent-typewriter@agent-typewriter` in the same folder. Verify the plugin updates to the new commit, and note whether a commit outside `claude-code/` also counts as an update (design.md, Risks).
 
 ## 4. Docs
 
-- [ ] 4.1 In `claude-code/README.md`, replace the trying-it section with installing: the one-step command in a session and in a shell, the desktop app's plugin browser once the marketplace is added, `#main` for released versions only, the testers' branch `#claude-code-extension` until it reaches `develop`, updating (`/plugin marketplace update`, auto-update), and switching refs. Keep `--plugin-dir` for working on the plugin. Verify `plugin validate .` no longer prints the missing-install-line advice and every command in the section ran in 3.1 or 3.2.
-- [ ] 4.2 In `CONTRIBUTING.md`, document how the marketplace is served (the ref table from design.md), installing a PR's branch to test it, and that a stable release is what releases the plugin to `#main` users. Verify by reading the section against design.md.
-- [ ] 4.3 File a bead, `discovered-from:at-o3z.2`, for when `claude-code-extension` merges into `develop`: drop the testers' branch note from `claude-code/README.md` and add a CHANGELOG entry for the plugin. Verify with `bd show`.
+- [x] 4.1 In `claude-code/README.md`, replace the trying-it section with installing: the one-step command in a session and in a shell, the desktop app's plugin browser once the marketplace is added, `#main` for released versions only, the testers' branch `#claude-code-extension` until it reaches `develop`, updating (`/plugin marketplace update`, auto-update), and switching refs. Keep `--plugin-dir` for working on the plugin. Verify `plugin validate .` no longer prints the missing-install-line advice and every command in the section ran in 3.1 or 3.2.
+- [x] 4.2 In `CONTRIBUTING.md`, document how the marketplace is served (the ref table from design.md), installing a PR's branch to test it, and that a stable release is what releases the plugin to `#main` users. Verify by reading the section against design.md.
+- [x] 4.3 File a bead (at-o3z.11), `discovered-from:at-o3z.2`, for when `claude-code-extension` merges into `develop`: drop the testers' branch note from `claude-code/README.md` and add a CHANGELOG entry for the plugin. Verify with `bd show`.
 
 ## Workflow follow-up
 
