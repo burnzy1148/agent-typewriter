@@ -184,12 +184,12 @@ jobs:
         env:
           IT_GROUP: suite
 
-  # The required checks. Each passes when the unit and integration jobs passed,
-  # or were skipped because the PR changes only the site; a missing changes
-  # output fails it, so nothing passes untested.
+  # The required checks. Each passes when the unit, integration and Claude Code
+  # plugin jobs passed, or were skipped because the PR changes only the site; a
+  # missing changes output fails it, so nothing passes untested.
   test:
     name: Test (${{ matrix.os }})
-    needs: [changes, unit, integration]
+    needs: [changes, unit, integration, claude-code]
     if: always()
     runs-on: ubuntu-latest
     strategy:
@@ -201,9 +201,10 @@ jobs:
           EXTENSION: ${{ needs.changes.outputs.extension }}
           UNIT: ${{ needs.unit.result }}
           INTEGRATION: ${{ needs.integration.result }}
+          CLAUDE_CODE: ${{ needs.claude-code.result }}
         run: |
-          echo "unit: $UNIT, integration: $INTEGRATION, extension: $EXTENSION"
-          for result in "$UNIT" "$INTEGRATION"; do
+          echo "unit: $UNIT, integration: $INTEGRATION, claude-code: $CLAUDE_CODE, extension: $EXTENSION"
+          for result in "$UNIT" "$INTEGRATION" "$CLAUDE_CODE"; do
             [ "$result" = success ] && continue
             [ "$result" = skipped ] && [ "$EXTENSION" = false ] && continue
             exit 1
