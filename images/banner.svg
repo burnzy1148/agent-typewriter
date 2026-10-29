@@ -81,7 +81,7 @@
   </svg>
   <text x="96" y="388" font-family="-apple-system, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="60" font-weight="700" fill="#FFFDF7" letter-spacing="-1">Agent Typewriter</text>
   <text x="98" y="440" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#B9B4CF">Watch your agent's edits replayed</text>
-  <text x="98" y="476" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#B9B4CF">as if a person were typing them.</text>
+  <text x="98" y="476" font-family="-apple-system, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#B9B4CF">as if a human were typing them.</text>
 
   <!-- replay editor mock -->
   <g transform="translate(640 110)">

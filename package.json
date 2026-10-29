@@ -1,7 +1,7 @@
 {
   "name": "agent-typewriter",
   "displayName": "Agent Typewriter",
-  "description": "Watches files change on disk (from Claude Code or any agent) and replays each change as if a person were typing it, flipping between files in the order they changed.",
+  "description": "Watches files change on disk (from Claude Code or any agent) and replays each change as if a human were typing it, flipping between files in the order they changed.",
   "version": "0.6.0",
   "publisher": "burnzy1148",
   "license": "MIT",
@@ -719,7 +719,7 @@
           "default": 1000,
           "minimum": 0,
           "maximum": 15000,
-          "description": "Pause on the new file's mirror before its first edit, so the switch reads like a person changing tabs. Divided by the playback speed."
+          "description": "Pause on the new file's mirror before its first edit, so the switch reads like a human changing tabs. Divided by the playback speed."
         },
         "agentTypewriter.smoothScroll": {
           "type": "boolean",
@@ -759,7 +759,7 @@
         "agentTypewriter.naturalOrder": {
           "type": "boolean",
           "default": true,
-          "description": "Type each change the way a person writes it: a block's closing line right after its opening line, then the body between, and a signature before its body. Off types every change top to bottom."
+          "description": "Type each change the way a human writes it: a block's closing line right after its opening line, then the body between, and a signature before its body. Off types every change top to bottom."
         },
         "agentTypewriter.debounceMs": {
           "type": "number",

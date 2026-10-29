@@ -142,7 +142,7 @@
       "default": 1000,
       "minimum": 0,
       "maximum": 15000,
-      "description": "Pause on the new file's mirror before its first edit, so the switch reads like a person changing tabs. Divided by the playback speed."
+      "description": "Pause on the new file's mirror before its first edit, so the switch reads like a human changing tabs. Divided by the playback speed."
     },
     "smoothScroll": {
       "type": "boolean",
@@ -182,7 +182,7 @@
     "naturalOrder": {
       "type": "boolean",
       "default": true,
-      "description": "Type each change the way a person writes it: a block's closing line right after its opening line, then the body between, and a signature before its body. Off types every change top to bottom."
+      "description": "Type each change the way a human writes it: a block's closing line right after its opening line, then the body between, and a signature before its body. Off types every change top to bottom."
     },
     "debounceMs": {
       "type": "number",

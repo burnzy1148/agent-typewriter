@@ -1,8 +1,8 @@
 # Agent Typewriter
 
-![Agent Typewriter: watch your agent's edits replayed as if a person were typing them](images/banner.png)
+![Agent Typewriter: watch your agent's edits replayed as if a human were typing them](images/banner.png)
 
-Watch Claude Code (or any agent, script, or teammate) write code as if a person were typing it.
+Watch Claude Code (or any agent, script, or teammate) write code as if a human were typing it.
 
 ![Agent Typewriter replays an agent's edits as typing: new lines highlighted green, deleted words and lines shown red before they go, a red marker where lines were removed, and a smooth scroll to the next edit](images/demo.gif)
 
