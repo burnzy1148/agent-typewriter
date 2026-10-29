@@ -28,7 +28,7 @@
 
 ## 5. CI and docs
 
-- [ ] 5.1 Add a `claude-code` job to `ci.yml` on Ubuntu: `npm ci`, run `npm run build:claude-code` and fail on `git diff --exit-code claude-code/hooks/core.mjs`, then `npm run check:claude-code` (`claude plugin validate` and `claude plugin test` from a pinned `@anthropic-ai/claude-code` through `npx`, which need no login). Verify the job passes on the PR.
+- [x] 5.1 Add a `claude-code` job to `ci.yml` on Ubuntu: `npm ci`, run `npm run build:claude-code` and fail on `git diff --exit-code claude-code/hooks/core.mjs`, then `npm run check:claude-code` (`claude plugin validate` and `claude plugin test` from a pinned `@anthropic-ai/claude-code` through `npx`, which need no login). Verify the job passes on the PR.
 - [x] 5.2 Confirm `npm run package` still produces a `.vsix` without `claude-code/` (`.vscodeignore` is an allow-list). Verify with `unzip -l` on the built `.vsix`.
 - [x] 5.3 Add `claude-code/README.md`: what the plugin does, that it replays only the session's own `Edit` and `Write` calls, its options, and how to try it from a checkout (`claude --plugin-dir claude-code`). Add the plugin's commands to `CLAUDE.md` (Commands) and a short section to `CONTRIBUTING.md`.
 - [x] 5.4 Manually check the plugin in the Claude Code desktop app and a terminal: run a session with `--plugin-dir claude-code`, have Claude create and edit a file, and confirm the pane types both changes, the controls work, and changing `charsPerMinute` in `/config` takes effect. Note the Claude Code version in the PR.
