@@ -74,6 +74,9 @@ function validate(target) {
   console.log(`✔ ${target} is valid`);
 }
 
+// A directory marketplace reads the working tree, so on your machine an
+// untracked file under claude-code/ can hide one that git would leave out.
+// CI checks a clean clone.
 function install() {
   run(['plugin', 'marketplace', 'add', './']);
   run(['plugin', 'install', PLUGIN]);
