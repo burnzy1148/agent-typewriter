@@ -71,6 +71,35 @@ Playback SHALL type each change from its before text by deleting and typing text
 - **WHEN** a change replaces `return a + b;` with `return a + b + c;`
 - **THEN** the pane shows the line being edited in steps, and ends showing the after text
 
+### Requirement: Long deletions are removed at once
+As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be removed in one step.
+
+#### Scenario: Deleted function
+- **WHEN** a change deletes a 200-line function
+- **THEN** the function disappears in one step and typing carries on with the next edit
+
+#### Scenario: Renamed identifier
+- **WHEN** a change replaces `total` with `sum`
+- **THEN** `total` is backspaced a few characters at a time before `sum` is typed
+
+### Requirement: Large insertions are shown at once
+As in the VS Code extension with its default settings, a change whose edits insert more than 6,000 characters in all SHALL be shown at once, finished, instead of typed, and the next change SHALL start about a second later.
+
+#### Scenario: Generated file
+- **WHEN** Claude writes a new 20 KB file
+- **THEN** the pane shows the whole file at once instead of typing it
+
+#### Scenario: Minified line
+- **WHEN** a change edits a few characters in a 300,000-character line, which the planner retypes whole
+- **THEN** the pane shows the edited line at once
+
+### Requirement: Line endings
+The plugin SHALL replay a file with CRLF or CR line endings as if its line endings were LF, so natural order and line numbers work the same for every file.
+
+#### Scenario: CRLF file with natural order
+- **WHEN** `naturalOrder` is on and a change adds a function with a multi-line body to a CRLF file
+- **THEN** the function's opening and closing lines are typed before its body, as for an LF file
+
 ### Requirement: Typing speed setting
 The plugin SHALL provide a `charsPerMinute` option that sets the typing speed in characters per minute, defaulting to 1000. A value that is not a number greater than zero SHALL be treated as 1000. A change to the option SHALL apply from the next keystroke.
 
@@ -95,6 +124,14 @@ The plugin SHALL show an "Agent Typewriter" pane on the terminal, desktop and VS
 #### Scenario: Long file
 - **WHEN** a change edits line 400 of a 900-line file
 - **THEN** the pane shows the lines around the caret, numbered from their place in the file
+
+#### Scenario: Long line
+- **WHEN** a change edits column 5,000 of a 300,000-character minified line
+- **THEN** the pane shows the part of the line around the caret, and the caret stays in view
+
+#### Scenario: Control characters
+- **WHEN** the file shown holds a form feed, an escape or another control character other than tab and newline
+- **THEN** the pane shows each as a visible symbol and keeps drawing the file
 
 ### Requirement: Pane names the file
 The pane SHALL name the playing file by its path relative to the session's working directory, or by its absolute path when it is outside that directory. When nothing is playing, the pane SHALL keep showing the last change's file and after text.
@@ -141,14 +178,18 @@ The pane SHALL have controls to pause and resume playback, to finish the current
 - **THEN** no change is left queued and the pane shows the last recorded change's after text
 
 ### Requirement: Recorded changes last for the session
-Recorded and queued changes SHALL survive a reload of the plugin within the same session. They SHALL NOT carry over to a new session. At most 200 changes SHALL wait to play. When another is recorded, the oldest waiting change SHALL be dropped.
+Recorded and queued changes SHALL survive a reload of the plugin within the same session, such as the one a changed option causes; the change being typed then starts over. They SHALL NOT carry over to a new session. At most 200 changes, holding at most 20,000,000 characters of before and after text in all, SHALL wait to play. When another is recorded past either limit, the oldest waiting changes SHALL be dropped.
 
 #### Scenario: New session
 - **WHEN** a session ends with changes queued and the user starts a new session
 - **THEN** the new session's pane starts with no recorded changes
 
+#### Scenario: Many edits to a large file
+- **WHEN** Claude makes 100 edits to a 500 KB file faster than they can be typed
+- **THEN** every edit is recorded until the waiting text passes 20,000,000 characters, after which the oldest waiting edits are dropped, and playback keeps going
+
 ### Requirement: Large files are not typed
-A change to a file larger than 1,000,000 bytes, before or after the tool ran, SHALL NOT be typed, and the plugin SHALL NOT read its text. When it would play, the pane SHALL name its file, say it is too large to replay, and move on to the next change.
+A change to a file larger than 1,000,000 bytes, before or after the tool ran, SHALL NOT be typed, and the plugin SHALL NOT read the file's text at either point. When the file was that large both before and after and its size and modification time did not change, no change SHALL be recorded. When it would play, the pane SHALL name its file, say it is too large to replay, and move on to the next change.
 
 #### Scenario: Generated file
 - **WHEN** Claude writes a 2 MB generated file

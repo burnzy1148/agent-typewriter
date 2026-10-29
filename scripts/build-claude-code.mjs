@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-export const CORE_ENTRY = `export { planHunks, authoringOrder, type Hunk } from './src/planner';
+export const CORE_ENTRY = `export { planHunks, authoringOrder, normalizeEol, type Hunk } from './src/planner';
 export { typingChunkEnd, backspaceStep } from './src/typingChunks';
 `;
 

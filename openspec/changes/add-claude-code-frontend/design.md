@@ -64,17 +64,29 @@ For `Edit` and `Write`, the hook stats and reads the file (`''` when missing), r
 
 ### Playback is a pure reducer driven by a timer
 
-`replay.ts` holds the deck: `{ queue, playing?, shown?, isPaused, hold, recorded }`, its types declared in the state contract `types/index.d.ts`, which the engine requires to be self-contained. `tick(deck, options)` advances one keystroke, and `finish` and `skipToLatest` jump ahead. Being pure, it is unit tested without the engine. `register.tsx` keeps the deck in one `$.state` atom. A `$.clock.every(50)` timer reads the deck and writes it only when `tick` moves something. The write goes through `update($, deck, tick)` so a change recorded in the meantime is not lost.
+`replay.ts` holds the deck: `{ queue, playing?, shown?, isPaused, hold, recorded }`. `tick(deck, options)` advances by one tick's worth of keystrokes, and `finish` and `skipToLatest` jump ahead. Being pure, it is unit tested without the engine. A `$.clock.every(50)` timer calls it.
 
-Characters per tick follow from `charsPerMinute`: `cpm / 60 * 0.05`, at least 1. Fractional remainders carry over between ticks so low speeds are exact.
-
-A `shape` tag on the atom (`deck-2`) makes a reload after an incompatible change start fresh, not misread old state.
+Characters per tick follow from `charsPerMinute`: `cpm / 60 * 0.05`. A tick types chunks until that budget is spent, so a chunk that stops at a newline does not cap the speed. Fractional remainders carry over between ticks so low speeds are exact. As in the extension's player, a deletion of at most 24 characters within one line is backspaced in steps, and a longer or multi-line one goes in one step; and a change that inserts more than 6,000 characters (the extension's `maxAnimatedChars` default) is shown finished at once, for about a second, instead of typed. Before and after texts are normalized to LF when recorded, as the extension's recorder does, so `authoringOrder` finds blocks in CRLF files.
 
 - Alternative: animate inside a `Client` surface module with its own timers. That gives smoother frames on desktop, but a client module is per surface and harder to test. It stays open for later if redraw cost shows up.
 
+### The deck lives in module memory; `$.state` holds what must outlive it
+
+A first version kept the whole deck in one `$.state` value. Each queued change carries its file twice, and the engine refuses a value over 4,194,304 characters. So a few dozen edits to a mid-sized file made writes fail: changes were dropped silently, and a large change could stall playback for good. It also wrote the whole deck on every tick, and the timer, recording and button presses could interleave read-modify-write cycles.
+
+Now the deck is a module variable. Hooks, the timer and button handlers run in one module environment, one at a time, so they mutate it directly with no version checks. `$.state` keeps three things:
+
+- `text` (a family, member `<change id>:before` or `:after`): each waiting change's texts, written once when it is recorded and cleared when it finishes or is dropped. Each is at most 1,000,000 bytes, far under the per-value limit.
+- `saved` (`Shaped<Saved>`): the waiting changes' ids and paths in order, with the change being typed first, and the count recorded. It is small and written only when a change is recorded, starts, finishes or is dropped.
+- `view` (`Shaped<View>`): what the pane draws, cut to at most 120 lines around the caret and 400 columns around its column, with control characters replaced. It is written on ticks that change it.
+
+On load (`session.start` runs again after every reload, including the one a changed option causes), the plugin rebuilds the deck from `saved` and `text`. The change that was being typed starts over. The total text waiting is capped at 20,000,000 characters as well as at 200 changes, so the memory and state a session holds stay bounded.
+
+- Alternative: keep the deck in `$.state` but split its texts into a family. Every tick would still write the typed text, up to a megabyte, and the read-modify-write races remain.
+
 ### The pane draws a window around the caret
 
-The `ui.render` hook computes the visible rows from `props.scroll.bodyRows`, slices the current text around the caret line, splices `▍` in at the caret while typing, and draws `Code` with `path` (for highlighting) and `startLine` (for numbering). The window keeps every drawing well under the engine's 100,000-character limit.
+The `ui.render` hook reads only `view`. It keeps the rows that fit `props.scroll.bodyRows`, splices `▍` in at the caret while typing, and draws `Code` with `path` (for highlighting), `startLine` (for numbering) and `wrap="truncate-end"`. When the caret is past the pane's width, the lines are shifted left so it stays in view. The engine refuses a `Code` source holding control characters other than tab and newline, so `view` shows them as Unicode control pictures (U+2400 to U+241F, and U+2421 for DEL). The caret arithmetic uses the raw text. A view is at most 120 × 400 characters, under the engine's 100,000-character limit for a drawing.
 
 The plugin asks to open the pane on the session's first recorded change, and never again by itself. An unasked `$.ui.open` is placed by the engine only where a pane docks without taking over (the desktop app, or a terminal from about 144 columns); elsewhere it waits undrawn until `/typewriter` asks for it. The engine owns that rule, so the plugin does not read the viewport. The prototype opened the pane at session start, before anything was recorded.
 
@@ -92,9 +104,10 @@ The plugin asks to open the pane on the session's first recorded change, and nev
 ## Risks / Trade-offs
 
 - [The function-hooks API is early access and can change between Claude Code releases] → Pin the CLI version in CI, and bump it on purpose. Keep `$` use in `register.tsx` small so a change touches one file.
-- [Redrawing the pane 20 times a second sends a new tree each tick] → Only the visible window is drawn, and no write happens on idle ticks. If it proves heavy, lower the tick rate or move animation into a client module.
+- [Redrawing the pane 20 times a second sends a new tree each tick] → Only the view window is written, only when it changed, and the engine folds redraws to at most 10 a second on remote surfaces. If it proves heavy, lower the tick rate or move animation into a client module.
+- [`/clear` starts a new conversation without a `session.start`; whether `$.state` resets then is not documented] → Not handled. If the queue carries over, it only finishes playing what was recorded.
 - [`claude plugin validate` and `test` might need a signed-in CLI in CI] → Both ran locally without a network login prompt. If CI needs credentials, run them in a step that is skipped without a secret, and keep the build, `tsc` and unit tests unconditional.
-- [Concurrent edits to one file by parallel subagents could interleave before/after reads] → Accepted for now: each change is still internally consistent (before → after of one read pair), and playback shows the last after text at the end.
+- [Concurrent edits to one file by parallel subagents could interleave before/after reads] → Accepted for now: each change is still internally consistent (before → after of one read pair).
 - [`core.mjs` is a committed build artifact] → The CI freshness check catches a stale bundle. The file has a generated-file header.
 
 ## Open Questions

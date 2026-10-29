@@ -12,7 +12,7 @@ This is the Claude Code edition of [Agent Typewriter](https://agent-typewriter.c
 
 The plugin never writes a file. It reads the file before the tool runs and again after.
 
-Files larger than 1 MB are not typed. The pane names them and moves on.
+Files larger than 1 MB are not typed: the pane names them and moves on. A change that adds more than 6,000 characters, such as a generated file, is shown finished at once instead of typed, as in the VS Code extension. Long deletions go in one step; short ones are backspaced.
 
 ## The pane
 

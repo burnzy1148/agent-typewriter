@@ -1,17 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { normalizeEol } from '../claude-code/hooks/core.mjs';
 import {
   MAX_WAITING,
+  MAX_WAITING_CHARS,
   TICK_MS,
   emptyDeck,
   enqueue,
   finish,
+  frame,
+  liveIds,
   playOptions,
   relativePath,
+  restore,
+  savedOf,
+  showControls,
   skipToLatest,
   tick,
   togglePause,
-  windowAround,
+  viewOf,
   type Change,
   type Deck,
   type PlayOptions,
@@ -44,7 +51,7 @@ function playOut(deck: Deck, opts: PlayOptions = FAST, max = 1_000_000) {
 test('a change plays from its before text to its after text in steps', () => {
   const before = 'function add(a, b) {\n  return a + b;\n}\n';
   const after = 'function add(a, b, c = 0) {\n  // sum\n  return a + b + c;\n}\n';
-  const { deck, frames } = playOut(enqueue(emptyDeck, change('add', before, after)));
+  const { deck, frames } = playOut(enqueue(emptyDeck, change('add', before, after)), { charsPerMinute: 1000, naturalOrder: true });
   assert.equal(deck.shown?.text, after);
   assert.equal(deck.playing, undefined);
   assert.ok(new Set(frames).size > 5, 'typed in steps, not in one jump');
@@ -196,13 +203,100 @@ test('paths are named relative to the working directory', () => {
   assert.equal(relativePath('/w/a.ts', undefined), '/w/a.ts');
 });
 
-test('the window follows the caret deep in a long file', () => {
+test('the view follows the caret deep in a long file', () => {
   const text = Array.from({ length: 900 }, (_, i) => `line ${i + 1}`).join('\n');
   const caret = text.indexOf('line 400') + 4;
-  const w = windowAround(text, caret, 20, true);
-  assert.equal(w.startLine, 390);
-  assert.equal(w.source.split('\n').length, 20);
-  assert.ok(w.source.includes('line▍ 400'));
-  assert.ok(!windowAround(text, caret, 20, false).source.includes('▍'));
-  assert.equal(windowAround('a\nb', 0, 20, false).startLine, 1);
+  const view = viewOf({ ...emptyDeck, shown: { path: '/w/long.txt', text, caret } });
+  assert.equal(view.caretLine, 399);
+  assert.equal(view.caretColumn, 4);
+  assert.ok(view.lines.length <= 120);
+  const f = frame({ ...view, isTyping: true }, 20, 80);
+  assert.equal(f.startLine, 390);
+  assert.equal(f.source.split('\n').length, 20);
+  assert.ok(f.source.includes('line▍ 400'));
+  assert.ok(!frame(view, 20, 80).source.includes('▍'), 'no caret mark when not typing');
+});
+
+test('the view handles the caret at the very start, before a leading newline', () => {
+  const view = viewOf({ ...emptyDeck, shown: { path: '/w/a', text: '\nabc', caret: 0 } });
+  assert.deepEqual([view.caretLine, view.caretColumn, view.firstLine], [0, 0, 1]);
+  assert.deepEqual(view.lines, ['', 'abc']);
+});
+
+test('the view shows control characters as symbols, keeping tabs and columns', () => {
+  assert.equal(showControls('a\fb\x1b\x00\x7f\x85\tc'), 'a\u240cb\u241b\u2400\u2421\ufffd\tc');
+  const view = viewOf({ ...emptyDeck, shown: { path: '/w/a', text: 'x = 1\n\f\ny = 2\n', caret: 0 } });
+  assert.deepEqual(view.lines, ['x = 1', '\u240c', 'y = 2', '']);
+});
+
+test('the view cuts a long line around the caret and the frame keeps the caret on screen', () => {
+  const text = 'x'.repeat(150_000) + 'HERE' + 'y'.repeat(150_000);
+  const view = viewOf({ ...emptyDeck, playing: undefined, shown: { path: '/w/min.js', text, caret: 150_002 } });
+  assert.ok(view.lines[0]!.length <= 400);
+  assert.ok(view.lines[0]!.includes('HERE'));
+  const f = frame({ ...view, isTyping: true }, 10, 72);
+  assert.ok(f.source.length <= 73);
+  assert.ok(f.source.includes('HE▍RE'));
+});
+
+test('a long or multi-line deletion goes in one step', () => {
+  const before = Array.from({ length: 200 }, (_, i) => `  statement${i}();`).join('\n') + '\n';
+  let d = tick(enqueue(emptyDeck, change('del', before, '')), FAST);
+  assert.equal(d.shown?.caret, before.length, 'the caret waits after the text to delete');
+  d = tick(d, FAST);
+  assert.equal(d.playing, undefined);
+  assert.equal(d.shown?.text, '');
+});
+
+test('a short deletion within a line is backspaced in steps', () => {
+  const { frames } = playOut(enqueue(emptyDeck, change('ren', 'const total = 1;\n', 'const sum = 1;\n')), { charsPerMinute: 1000, naturalOrder: true });
+  assert.ok(frames.includes('const tota = 1;\n') || frames.includes('const tot = 1;\n'), 'total is backspaced a little at a time');
+});
+
+test('the caret starts at the end of the text a hunk deletes', () => {
+  const d = tick(enqueue(emptyDeck, change('c', 'abc xyz;\n', 'abc;\n')), FAST);
+  const h = d.playing!.hunks[0]!;
+  assert.equal(d.shown?.caret, h.offset + h.deleteText.length);
+});
+
+test('high speeds type several lines in one tick', () => {
+  const after = 'ab\n'.repeat(300);
+  const { ticks } = playOut(enqueue(emptyDeck, change('fast', '', after)), { charsPerMinute: 60_000, naturalOrder: false });
+  // 900 characters at 1000 a second: 0.9 s, 18 ticks, plus the tick that starts the change.
+  assert.ok(ticks <= 20, `took ${ticks} ticks`);
+});
+
+test('a change inserting more than 6,000 characters is shown at once', () => {
+  let d = tick(enqueue(emptyDeck, change('gen', '', 'x'.repeat(7_000) + '\n')), FAST);
+  assert.equal(d.playing, undefined);
+  assert.equal(d.shown?.text.length, 7_001);
+  assert.ok(d.hold > 0);
+  d = enqueue(d, change('next', '', 'n\n'));
+  assert.equal(playOut(d).deck.shown?.text, 'n\n');
+});
+
+test('waiting text is capped; the oldest waiting changes are dropped', () => {
+  let d = emptyDeck;
+  const half = 'x'.repeat(500_000);
+  for (let i = 0; i < 25; i++) d = enqueue(d, change(`c${i}`, half, half + i));
+  const total = d.queue.reduce((n, c) => n + c.before.length + c.after.length, 0);
+  assert.ok(total <= MAX_WAITING_CHARS);
+  assert.equal(d.queue[d.queue.length - 1]?.id, 'c24');
+  assert.equal(d.recorded, 25);
+});
+
+test('saved state lists the playing change first and restores with it starting over', () => {
+  let d = enqueue(enqueue(emptyDeck, change('a', '', 'alpha\n')), change('b', '', 'beta\n'));
+  d = tick(tick(d, FAST), FAST);
+  assert.deepEqual(liveIds(d), ['a', 'b']);
+  const saved = savedOf(togglePause(d));
+  assert.deepEqual(saved, { changes: [{ id: 'a', path: '/w/a.ts' }, { id: 'b', path: '/w/b.ts' }], recorded: 2, isPaused: true });
+  const back = restore(saved, [change('a', '', 'alpha\n'), change('b', '', 'beta\n')]);
+  assert.equal(back.playing, undefined);
+  assert.deepEqual(back.queue.map((c) => c.id), ['a', 'b']);
+  assert.equal(back.isPaused, true);
+});
+
+test('the shared bundle normalizes line endings', () => {
+  assert.equal(normalizeEol('a\r\nb\rc\n'), 'a\nb\nc\n');
 });

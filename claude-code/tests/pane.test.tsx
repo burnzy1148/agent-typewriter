@@ -1,6 +1,5 @@
 import { expect, test, type Engine } from 'claude-code/testing';
 
-import { emptyDeck, enqueue } from '../hooks/replay';
 import { PANE_ID, start, world } from './world';
 
 const SURFACES = ['terminal', 'desktop', 'vscode'] as const;
@@ -130,7 +129,9 @@ test('charsPerMinute sets the speed', { options: { charsPerMinute: 3000 } }, asy
   await w.clock.advance(1_000);
   const { status, code } = await look($, 'desktop');
   expect(status).toBe('idle');
-  expect(code?.source).toBe(LINE);
+  // The pane cuts the line at its width; the view holds all of it.
+  expect(LINE.startsWith(code!.source.split('\n')[0]!)).toBe(true);
+  expect(w.views[w.views.length - 1]!.lines.join('\n')).toBe(LINE);
 });
 
 test('pause stops typing where it is and resume carries on', async ($, on) => {
@@ -217,34 +218,113 @@ test('a file too large to replay is named and skipped', async ($, on) => {
   expect((await look($, 'terminal')).code?.source).toBe('n\n');
 });
 
-/** Answers the plugin's reads of its deck with `value` until it first writes, as a reload finds what an earlier load stored. */
-function seed(on: Parameters<typeof world>[0], value: unknown) {
-  let isWritten = false;
-  on('state.set', { plugin: 'agent-typewriter', key: 'deck' }, (_, e, next) => {
-    isWritten = true;
+/**
+ * Answers the plugin's reads of `saved` and of its `text` members with what an
+ * earlier load stored, until it writes them itself, as a reload finds them.
+ */
+function seed(on: Parameters<typeof world>[0], saved: unknown, texts: Record<string, string> = {}) {
+  let isSavedWritten = false;
+  const written = new Set<string>();
+  on('state.set', { plugin: 'agent-typewriter', key: 'saved' }, (_, e, next) => {
+    isSavedWritten = true;
     return next(e);
   });
-  on('state.get', { plugin: 'agent-typewriter', key: 'deck' }, async (_, e, next) => {
+  on('state.set', { plugin: 'agent-typewriter', key: 'text' }, (_, e, next) => {
+    written.add(String(e.id));
+    return next(e);
+  });
+  on('state.get', { plugin: 'agent-typewriter', key: 'saved' }, async (_, e, next) => {
     const stored = await next(e);
-    if (isWritten || stored.deny !== undefined) return stored;
-    return { value: { value, version: stored.value.version } };
+    if (isSavedWritten || stored.deny !== undefined) return stored;
+    return { value: { value: saved, version: stored.value.version } };
+  });
+  on('state.get', { plugin: 'agent-typewriter', key: 'text' }, async (_, e, next) => {
+    const stored = await next(e);
+    const id = String(e.id);
+    if (written.has(id) || stored.deny !== undefined || !(id in texts)) return stored;
+    return { value: { value: texts[id], version: stored.value.version } };
   });
 }
 
-test('after a reload, a deck stored in this shape carries on', async ($, on) => {
+test('after a reload, the saved changes play, the one that was being typed from its start', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'deck-2', value: enqueue(emptyDeck, { id: 'r', path: '/w/r.ts', before: '', after: 'kept\n' }) });
+  seed(
+    on,
+    { shape: 'saved-1', value: { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 's', path: '/w/s.ts' }], recorded: 2, isPaused: false } },
+    { 'r:before': '', 'r:after': 'kept\n', 's:before': 'old\n', 's:after': 'new\n' },
+  );
+  await start($);
+  await w.clock.advance(60);
+  expect((await look($, 'desktop')).name).toBe('r.ts');
+
+  await w.clock.advance(10_000);
+  const { name, code } = await look($, 'desktop');
+  expect(name).toBe('s.ts');
+  expect(code?.source).toBe('new\n');
+});
+
+test('after a reload, a pause is kept', async ($, on) => {
+  const w = world(on);
+  seed(on, { shape: 'saved-1', value: { changes: [{ id: 'r', path: '/w/r.ts' }], recorded: 1, isPaused: true } }, { 'r:before': '', 'r:after': 'x\n' });
   await start($);
   await w.clock.advance(5_000);
 
-  expect((await look($, 'desktop')).code?.source).toBe('kept\n');
+  expect((await look($, 'desktop')).status).toBe('paused · 1 queued');
 });
 
-test('after a reload, a deck stored in another shape is dropped', async ($, on) => {
+test('after a reload, saved changes in another shape are dropped', async ($, on) => {
   const w = world(on);
   seed(on, { queue: [{ id: 'r', path: '/w/r.ts', before: '', after: 'old\n' }] });
   await start($);
   await w.clock.advance(5_000);
 
   expect((await look($, 'desktop')).name).toBe('No changes yet');
+});
+
+test('natural order works in a CRLF file', async ($, on) => {
+  const w = world(on, { '/w/win.ts': 'top\r\n' });
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/win.ts', content: 'top\r\nfunction f() {\r\n  return 1;\r\n}\r\n' });
+  await w.clock.advance(10_000);
+
+  const frames = w.views.map((v) => v.lines.join('\n'));
+  expect(frames.some((t) => t.includes('}') && !t.includes('return'))).toBe(true);
+  expect(frames[frames.length - 1]).toBe('top\nfunction f() {\n  return 1;\n}\n');
+});
+
+test('a file with control characters still draws, each shown as a symbol', async ($, on) => {
+  const w = world(on);
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/ff.py', content: 'a = 1\n\f\nb = 2\x1b\n' });
+  await w.clock.advance(5_000);
+
+  for (const surface of SURFACES) {
+    const { code } = await look($, surface);
+    expect(code?.source).toBe('a = 1\n\u240c\nb = 2\u241b\n');
+  }
+});
+
+test('an edit far along a long line keeps the caret in view while typing', async ($, on) => {
+  const line = 'word '.repeat(1_400);
+  const w = world(on, { '/w/long.txt': line + '\n' });
+  await start($);
+  await $.tool.call({ tool: 'Edit', file_path: '/w/long.txt', old_string: line, new_string: line.slice(0, 5_000) + 'HEREISTHEEDIT ' + line.slice(5_000) });
+  await w.clock.advance(500);
+
+  const { status, code } = await look($, 'desktop');
+  expect(status).toBe('typing');
+  expect(code!.source.length < 1_000).toBe(true);
+  expect(code!.source).toMatch(/HE[A-Z]*▍/);
+});
+
+test('a change inserting more than 6,000 characters is shown at once', async ($, on) => {
+  const line = 'x'.repeat(300_000);
+  const w = world(on, { '/w/min.js': line + '\n' });
+  await start($);
+  await $.tool.call({ tool: 'Edit', file_path: '/w/min.js', old_string: 'xxxx', new_string: 'HERE' });
+  await w.clock.advance(100);
+
+  const { status, code } = await look($, 'desktop');
+  expect(status).toBe('idle');
+  expect(code!.source.length < 1_000).toBe(true);
 });

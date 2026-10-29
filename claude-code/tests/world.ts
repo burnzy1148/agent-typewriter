@@ -1,20 +1,27 @@
 // What sits beneath the plugin in its tests: an in-memory file system, the
 // file tools acting on it, and the engine calls the plugin makes at start.
+// It also watches what the plugin writes to $.state.
 
 import type { On, Shaped, ToolCallResult } from 'claude-code';
 import { mock, type Engine, type MockClock } from 'claude-code/testing';
 
-import { emptyDeck, type Deck } from '../hooks/replay';
+import type { Saved, View } from '../types';
 
 export const PANE_ID = 'agent-typewriter';
 
 export type World = {
   files: Map<string, string>;
   clock: MockClock;
-  /** The plugin's deck as it last wrote it. */
-  deck: Deck;
+  /** The plugin's `saved` as it last wrote it. */
+  saved: Saved;
+  /** The plugin's `text` members as it last wrote them, by member id. */
+  texts: Map<string, string>;
+  /** Every `view` the plugin wrote, in order. */
+  views: View[];
   /** Pane ids `$.ui.open` was called with, in order. */
   opens: string[];
+  /** Paths `$.fs.read` was called with, in order. */
+  reads: string[];
   /** Paths `$.fs.write` was called with; the plugin must never write. */
   writes: string[];
   /** Makes every later `$.fs.read` fail. */
@@ -28,29 +35,49 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
   const w: World = {
     files: new Map(Object.entries(files)),
     clock: mock.clock(on),
-    deck: emptyDeck,
+    saved: { changes: [], recorded: 0, isPaused: false },
+    texts: new Map(),
+    views: [],
     opens: [],
+    reads: [],
     writes: [],
     breakReads: () => (isBroken = true),
   };
   let isBroken = false;
+  // Each write to a file moves its modification time on.
+  const mtimes = new Map<string, number>();
+  let now = 1;
+  const put = (path: string, content: string) => {
+    w.files.set(path, content);
+    mtimes.set(path, now++);
+  };
 
   on('fs.stat', (_, e) => {
-    const text = w.files.get(e.path);
-    if (text === undefined) return { deny: `ENOENT: ${e.path}` };
-    return { value: { kind: 'file', size: new TextEncoder().encode(text).length, mtimeMs: 0, isLink: false } };
+    const content = w.files.get(e.path);
+    if (content === undefined) return { deny: `ENOENT: ${e.path}` };
+    const size = new TextEncoder().encode(content).length;
+    return { value: { kind: 'file', size, mtimeMs: mtimes.get(e.path) ?? 0, isLink: false } };
   });
   on('fs.read', (_, e) => {
-    const text = w.files.get(e.path);
-    if (isBroken || text === undefined) return { deny: `EACCES: ${e.path}` };
-    return { value: text };
+    w.reads.push(e.path);
+    const content = w.files.get(e.path);
+    if (isBroken || content === undefined) return { deny: `EACCES: ${e.path}` };
+    return { value: content };
   });
   on('fs.write', (_, e) => {
     w.writes.push(e.path);
     return { value: undefined };
   });
-  on('state.set', { plugin: 'agent-typewriter', key: 'deck' }, (_, e, next) => {
-    w.deck = (e.value as Shaped<Deck>).value;
+  on('state.set', { plugin: 'agent-typewriter', key: 'saved' }, (_, e, next) => {
+    w.saved = (e.value as Shaped<Saved>).value;
+    return next(e);
+  });
+  on('state.set', { plugin: 'agent-typewriter', key: 'text' }, (_, e, next) => {
+    w.texts.set(String(e.id), e.value as string);
+    return next(e);
+  });
+  on('state.set', { plugin: 'agent-typewriter', key: 'view' }, (_, e, next) => {
+    w.views.push((e.value as Shaped<View>).value);
     return next(e);
   });
   on('command.register', () => ({ value: { command: 'typewriter' } }));
@@ -62,20 +89,24 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
 
   // The file tools, acting on the in-memory files.
   on('tool.call', { tool: 'Edit' }, (_, e) => {
-    const text = w.files.get(e.file_path);
-    if (text === undefined || !text.includes(e.old_string)) return { result: {}, isError: true, text: 'old_string not found' };
-    const next = e.replace_all ? text.split(e.old_string).join(e.new_string) : text.replace(e.old_string, () => e.new_string);
-    w.files.set(e.file_path, next);
+    const content = w.files.get(e.file_path);
+    if (content === undefined || !content.includes(e.old_string)) return { result: {}, isError: true, text: 'old_string not found' };
+    put(e.file_path, e.replace_all ? content.split(e.old_string).join(e.new_string) : content.replace(e.old_string, () => e.new_string));
     return { result: {} };
   });
   on('tool.call', { tool: 'Write' }, (_, e) => {
     if (write) return write(e, w.files);
-    w.files.set(e.file_path, e.content);
+    put(e.file_path, e.content);
     return { result: {} };
   });
   on('tool.call', { tool: 'Bash' }, () => ({ result: {} }));
 
   return w;
+}
+
+/** The waiting changes the plugin saved, with the texts it saved for them. */
+export function waiting(w: World) {
+  return w.saved.changes.map((c) => ({ ...c, before: w.texts.get(`${c.id}:before`), after: w.texts.get(`${c.id}:after`) }));
 }
 
 export async function start($: Engine, surface: 'terminal' | 'desktop' | 'vscode' = 'desktop') {

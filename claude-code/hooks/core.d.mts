@@ -9,6 +9,8 @@ export interface Hunk {
   continues?: boolean;
 }
 
+/** `text` with CRLF and lone CR line breaks turned into LF. */
+export function normalizeEol(text: string): string;
 export function planHunks(before: string, after: string, maxLineEdits?: number): Hunk[];
 export function authoringOrder(hunks: Hunk[], after: string): Hunk[];
 export function typingChunkEnd(text: string, i: number, perTick: number): number;

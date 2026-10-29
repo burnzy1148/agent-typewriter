@@ -33,6 +33,19 @@
 - [x] 5.3 Add `claude-code/README.md`: what the plugin does, that it replays only the session's own `Edit` and `Write` calls, its options, and how to try it from a checkout (`claude --plugin-dir claude-code`). Add the plugin's commands to `CLAUDE.md` (Commands) and a short section to `CONTRIBUTING.md`.
 - [x] 5.4 Manually check the plugin in the Claude Code desktop app and a terminal: run a session with `--plugin-dir claude-code`, have Claude create and edit a file, and confirm the pane types both changes, the controls work, and changing `charsPerMinute` in `/config` takes effect. Note the Claude Code version in the PR.
 
+## 6. Review fixes
+
+- [x] 6.1 Keep the deck in module memory and persist only `saved` (waiting ids and paths, the playing change first, and the recorded count), the `text` family (each change's before and after) and `view` in `$.state`; rebuild the deck from them on load, restarting the change that was being typed. Verify in the plugin tests: 45 edits to a 50 KB file are all recorded and played, a reload with a seeded `saved` and `text` plays them, and an untagged `saved` starts fresh.
+- [x] 6.2 Cap the waiting text at 20,000,000 characters as well as 200 changes, dropping the oldest, and clear the `text` members of finished and dropped changes. Verify with unit tests on `enqueue` and a plugin test that a finished change's texts are cleared.
+- [x] 6.3 Delete in one step a hunk whose deleted text is over 24 characters or holds a newline; backspace shorter ones. Verify with unit tests: a 6,000-character deletion takes one tick, and `total` is backspaced in steps.
+- [x] 6.4 Type chunks within a tick until its budget is spent. Verify with a unit test: 300 short lines at 60,000 characters per minute take about the expected time, within 5%.
+- [x] 6.5 Normalize line endings to LF when recording (add `normalizeEol` to the shared bundle). Verify with a plugin test that natural order applies to a CRLF file, and a unit test of the bundle export.
+- [x] 6.6 When a change finishes, show the text playback typed rather than the recorded after text, and assert in the fuzz test that it equals the after text. Verify that the mutation from the review (one extra character per backspace) now fails the unit tests.
+- [x] 6.7 Put the caret at the end of the text a hunk deletes when that hunk starts. Verify with a unit test.
+- [x] 6.8 Build `view` with at most 120 lines and 400 columns around the caret, control characters shown as control pictures, and draw `Code` with `wrap="truncate-end"`, shifting lines so the caret stays in view. Verify with unit tests for control characters and a 300,000-character line, and a pane test that a file with a form feed draws.
+- [x] 6.9 Read neither text when the file was over the limit before or after; record no change when it was over the limit both times with the same size and modification time. Verify with plugin tests.
+- [x] 6.10 Show a change that inserts more than 6,000 characters at once, as the extension's `maxAnimatedChars` default does. Verify with a unit test and a pane test of an edit in a 300,000-character line.
+
 ## Workflow follow-up
 
 - Archive this change on the PR branch once CI is green, then close at-o3z.1 after the merge.

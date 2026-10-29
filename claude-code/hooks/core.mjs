@@ -523,6 +523,9 @@ var REFINE_MIN_SIMILARITY = 0.4;
 var FOLD_MAX_COMMON = 3;
 var LINE_DIFF_MAX_EDITS = 1500;
 var WORD_DIFF_MAX_EDITS = 1e3;
+function normalizeEol(text) {
+  return text.indexOf("\r") === -1 ? text : text.replace(/\r\n?/g, "\n");
+}
 function planHunks(before, after, maxLineEdits = LINE_DIFF_MAX_EDITS) {
   if (before === after) return [];
   if (before.length === 0) return [{ offset: 0, deleteText: "", insertText: after }];
@@ -741,6 +744,7 @@ function backspaceStep(deleted, remaining, step) {
 export {
   authoringOrder,
   backspaceStep,
+  normalizeEol,
   planHunks,
   typingChunkEnd
 };
