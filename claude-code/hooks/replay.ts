@@ -33,19 +33,23 @@ export const VIEW_COLUMNS = 400;
 /** One recorded change, texts normalized to LF. A too-large change keeps no text. */
 export type Change = { id: string; path: string; before: string; after: string; isTooLarge?: boolean };
 
+/** A Windows absolute path: a drive letter, or a UNC share. */
+const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+
 /** A change as the timeline holds it; the timeline keeps every field of a change pushed to it. */
 type Event = ChangeEvent & Change;
 
 /**
  * `change` with the fields every timeline event carries. `uri` is the absolute
- * path and `relPath` the path relative to `cwd`, as the pane names it; the line
- * counts are real. `kind` and `time` are placeholders, always 'modify' and 0:
- * the saved state does not keep them, so a reload could not restore them. Save
- * them before anything reads them.
+ * path and `relPath` the path relative to `cwd` with forward slashes, as the
+ * extension's events name it; the line counts are real. `kind` and `time` are
+ * placeholders, always 'modify' and 0: the saved state does not keep them, so a
+ * reload could not restore them. Save them before anything reads them.
  */
 function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
   const { added, removed } = countChanges(change.before, change.after);
-  const relPath = relativePath(change.path, cwd);
+  const relative = relativePath(change.path, cwd);
+  const relPath = WINDOWS_PATH.test(change.path) ? relative.replace(/\\/g, '/') : relative;
   return { ...change, uri: change.path, relPath, time: 0, kind: 'modify', eol: '\n', linesAdded: added, linesRemoved: removed };
 }
 

@@ -400,6 +400,9 @@ test('timeline events name the path relative to the working directory and count 
   const [e] = d.timeline.all();
   assert.deepEqual([e?.uri, e?.relPath, e?.linesAdded, e?.linesRemoved], ['/w/src/a.ts', 'src/a.ts', 2, 1]);
   assert.equal(restore(savedOf(d), [edit], '/w').timeline.all()[0]?.relPath, 'src/a.ts');
+  const win = newDeck();
+  enqueue(win, change('b', '', 'b\n', 'C:\\w\\src\\b.ts'), 'C:\\w');
+  assert.equal(win.timeline.all()[0]?.relPath, 'src/b.ts');
 });
 
 test('played changes are dropped before waiting ones', () => {
