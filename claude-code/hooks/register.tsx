@@ -14,11 +14,12 @@ import { normalizeEol } from './core.mjs';
 import {
   MAX_REPLAY_BYTES,
   TICK_MS,
-  emptyDeck,
   enqueue,
   finish,
   frame,
+  isUnchanged,
   liveIds,
+  newDeck,
   playOptions,
   relativePath,
   restore,
@@ -39,8 +40,8 @@ const GUTTER = 8;
 
 // Change a tag when its value's fields change: a reload then starts fresh
 // instead of reading what an earlier version stored.
-const saved = atom({ plugin: 'agent-typewriter', key: 'saved' } as const, savedOf(emptyDeck), { shape: 'saved-1' });
-const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(emptyDeck), { shape: 'view-1' });
+const saved = atom({ plugin: 'agent-typewriter', key: 'saved' } as const, savedOf(newDeck()), { shape: 'saved-1' });
+const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-1' });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -138,7 +139,7 @@ async function record<R extends { deny?: string; isError?: boolean }>(
     if (isSame) return ran;
     change = { id, path, before: '', after: '', isTooLarge: true };
   }
-  if (enqueue(live.deck, change) === live.deck) return ran;
+  if (isUnchanged(change)) return ran;
 
   if (!change.isTooLarge) {
     live.texts.add(id);
@@ -147,7 +148,7 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   }
   // Read the deck after the writes: the timer and other hooks may have moved it.
   const isFirst = live.deck.recorded === 0;
-  live.deck = enqueue(live.deck, change);
+  enqueue(live.deck, change);
   sync($, live);
   // Unasked, the engine places the pane only where it docks beside the
   // conversation; elsewhere it waits for /typewriter.
@@ -156,21 +157,19 @@ async function record<R extends { deny?: string; isError?: boolean }>(
 }
 
 /** Applies a control's action to the deck. */
-function act($: EngineInterface, live: Live, fn: (deck: Deck) => Deck): void {
-  live.deck = fn(live.deck);
+function act($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
+  fn(live.deck);
   sync($, live);
 }
 
 /** One timer tick: moves playback and writes what it changed. */
 function step($: EngineInterface, live: Live): void {
-  const was = live.deck;
-  live.deck = tick(was, live.opts);
-  if (live.deck !== was) sync($, live);
+  if (tick(live.deck, live.opts)) sync($, live);
 }
 
 export const register: Register = (on, options) => {
   const live: Live = {
-    deck: emptyDeck,
+    deck: newDeck(),
     opts: playOptions(options),
     texts: new Set(),
     savedJson: '',

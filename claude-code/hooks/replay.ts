@@ -1,18 +1,20 @@
-// Playback for the Claude Code plugin, as pure functions over a Deck the hooks
-// keep in module memory. A timer calls tick() every TICK_MS; nothing here
-// touches the engine, so the unit tests in test/claudeCodeReplay.test.ts run it
-// directly. viewOf() and savedOf() are what the hooks write to $.state.
+// Playback for the Claude Code plugin, as functions over a Deck the hooks keep
+// in module memory: the session's changes in the shared Timeline, on its
+// default lane, and the change being typed. A timer calls tick() every TICK_MS;
+// nothing here touches the engine, so the unit tests in
+// test/claudeCodeReplay.test.ts run it directly. viewOf() and savedOf() are
+// what the hooks write to $.state.
 
-import { authoringOrder, backspaceStep, planHunks, typingChunkEnd, type Hunk } from './core.mjs';
+import { Timeline, authoringOrder, backspaceStep, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
 import type { Saved, SavedChange, View } from '../types';
 
 export type { Saved, SavedChange, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
-/** Most recorded changes that wait to play; the oldest is dropped past this. */
+/** Most changes the timeline keeps; past this the oldest is dropped, played ones first, so at most this many wait. */
 export const MAX_WAITING = 200;
-/** Most before and after text, in characters, the waiting changes hold in all. */
+/** Most before and after text, in characters, the timeline's changes hold in all; past it the oldest go first. */
 export const MAX_WAITING_CHARS = 20_000_000;
 /** Files larger than this, before or after, are not typed. */
 export const MAX_REPLAY_BYTES = 1_000_000;
@@ -31,8 +33,24 @@ export const VIEW_COLUMNS = 400;
 /** One recorded change, texts normalized to LF. A too-large change keeps no text. */
 export type Change = { id: string; path: string; before: string; after: string; isTooLarge?: boolean };
 
+/** A change as the timeline holds it; the timeline keeps every field of a change pushed to it. */
+type Event = ChangeEvent & Change;
+
+/** `change` with the fields every timeline event carries, which nothing in the plugin reads yet. */
+function eventOf(change: Change): Omit<Event, 'seq'> {
+  return { ...change, uri: change.path, relPath: change.path, time: 0, kind: 'modify', eol: '\n', linesAdded: 0, linesRemoved: 0 };
+}
+
+function changeOf(e: ChangeEvent): Change {
+  const { id, path, before, after, isTooLarge } = e as Event;
+  return { id, path, before, after, ...(isTooLarge && { isTooLarge }) };
+}
+
 export type Playback = {
   change: Change;
+  /** The change's seq in the timeline, and the token begin() gave for it. */
+  seq: number;
+  token: number;
   hunks: Hunk[];
   hunk: number;
   /** Code units of the current hunk's deleteText already removed. */
@@ -48,8 +66,10 @@ export type Playback = {
 /** What the pane shows: the playing change, or the last one played. */
 export type Shown = { path: string; text: string; caret: number; isTooLarge?: boolean };
 
+/** Playback's state, which its functions change in place. */
 export type Deck = {
-  queue: Change[];
+  /** The changes still kept, played or waiting, and the cursor between them. */
+  timeline: Timeline;
   playing?: Playback;
   shown?: Shown;
   isPaused: boolean;
@@ -61,7 +81,9 @@ export type Deck = {
 
 export type PlayOptions = { charsPerMinute: number; naturalOrder: boolean };
 
-export const emptyDeck: Deck = { queue: [], isPaused: false, hold: 0, recorded: 0 };
+export function newDeck(): Deck {
+  return { timeline: new Timeline(MAX_WAITING, MAX_WAITING_CHARS), isPaused: false, hold: 0, recorded: 0 };
+}
 
 /** The plugin's options as playback reads them; a speed that is not a positive number is the default. */
 export function playOptions(options: Readonly<Record<string, unknown>>): PlayOptions {
@@ -72,31 +94,33 @@ export function playOptions(options: Readonly<Record<string, unknown>>): PlayOpt
   };
 }
 
-function chars(change: Change): number {
-  return change.before.length + change.after.length;
+/** A change that leaves the file as it was, which is not recorded. */
+export function isUnchanged(change: Change): boolean {
+  return !change.isTooLarge && change.before === change.after;
 }
 
-/** Adds a recorded change, dropping the oldest waiting ones past either limit. */
-export function enqueue(deck: Deck, change: Change): Deck {
-  if (!change.isTooLarge && change.before === change.after) return deck;
-  const queue = [...deck.queue, change];
-  let total = queue.reduce((n, c) => n + chars(c), 0);
-  let drop = 0;
-  while (queue.length - drop > 1 && (queue.length - drop > MAX_WAITING || total > MAX_WAITING_CHARS)) {
-    total -= chars(queue[drop]!);
-    drop++;
-  }
-  return { ...deck, queue: queue.slice(drop), recorded: deck.recorded + 1 };
+/** Adds a recorded change, dropping the oldest ones past either limit. Returns false, adding nothing, for an unchanged file. */
+export function enqueue(deck: Deck, change: Change): boolean {
+  if (isUnchanged(change)) return false;
+  deck.timeline.push(eventOf(change));
+  deck.recorded++;
+  return true;
+}
+
+/** The changes waiting to play, oldest first; the one being typed is not among them. */
+export function queued(deck: Deck): Change[] {
+  const { timeline } = deck;
+  return timeline.all().filter((e) => timeline.stateOf(e.seq) === 'pending').map(changeOf);
 }
 
 /** Ids of the changes still to play, the one being typed first. */
 export function liveIds(deck: Deck): string[] {
-  return [...(deck.playing ? [deck.playing.change.id] : []), ...deck.queue.map((c) => c.id)];
+  return [...(deck.playing ? [deck.playing.change.id] : []), ...queued(deck).map((c) => c.id)];
 }
 
 /** What a reload needs to rebuild the deck, texts aside. */
 export function savedOf(deck: Deck): Saved {
-  const changes = [...(deck.playing ? [deck.playing.change] : []), ...deck.queue];
+  const changes = [...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
   return {
     changes: changes.map(({ id, path, isTooLarge }): SavedChange => (isTooLarge ? { id, path, isTooLarge } : { id, path })),
     recorded: deck.recorded,
@@ -106,7 +130,9 @@ export function savedOf(deck: Deck): Saved {
 
 /** The deck a reload starts from: every saved change waiting, the one that was being typed starting over. */
 export function restore(saved: Saved, changes: Change[]): Deck {
-  return { ...emptyDeck, queue: changes, recorded: saved.recorded, isPaused: saved.isPaused };
+  const deck = newDeck();
+  for (const change of changes) deck.timeline.push(eventOf(change));
+  return { ...deck, recorded: saved.recorded, isPaused: saved.isPaused };
 }
 
 function plan(change: Change, opts: PlayOptions): Hunk[] {
@@ -131,17 +157,29 @@ function shownDone(change: Change, caret: number): Shown {
     : { path: change.path, text: change.after, caret };
 }
 
-function startNext(deck: Deck, opts: PlayOptions): Deck {
-  const [change, ...queue] = deck.queue;
-  if (!change) return deck;
-  if (change.isTooLarge) return { ...deck, queue, shown: shownDone(change, 0), hold: HOLD_TICKS };
+/** Plays the change at `seq` in one go: `shown` stays a while before the next change. */
+function showAtOnce(deck: Deck, seq: number, shown: Shown): boolean {
+  deck.timeline.complete(seq);
+  deck.shown = shown;
+  deck.hold = HOLD_TICKS;
+  return true;
+}
+
+/** Starts the next waiting change. Returns false when none waits. */
+function startNext(deck: Deck, opts: PlayOptions): boolean {
+  const next = deck.timeline.peek();
+  if (!next) return false;
+  const change = changeOf(next);
+  if (change.isTooLarge) return showAtOnce(deck, next.seq, shownDone(change, 0));
   const hunks = plan(change, opts);
   if (hunks.reduce((n, h) => n + h.insertText.length, 0) > MAX_ANIMATED_CHARS) {
-    return { ...deck, queue, shown: shownDone(change, finalCaret(hunks)), hold: HOLD_TICKS };
+    return showAtOnce(deck, next.seq, shownDone(change, finalCaret(hunks)));
   }
   const caret = caretBefore(hunks[0], 0);
-  const playing: Playback = { change, hunks, hunk: 0, deleted: 0, typed: 0, text: change.before, caret, credit: 0 };
-  return { ...deck, queue, playing, shown: { path: change.path, text: change.before, caret } };
+  const token = deck.timeline.begin(next.seq);
+  deck.playing = { change, seq: next.seq, token, hunks, hunk: 0, deleted: 0, typed: 0, text: change.before, caret, credit: 0 };
+  deck.shown = { path: change.path, text: change.before, caret };
+  return true;
 }
 
 function isLongDeletion(h: Hunk): boolean {
@@ -178,10 +216,13 @@ function settle(p: Playback): Playback {
   }
 }
 
-/** The deck one tick later. Returns the same object when nothing moved. */
-export function tick(deck: Deck, opts: PlayOptions): Deck {
-  if (deck.isPaused) return deck;
-  if (deck.hold > 0) return { ...deck, hold: deck.hold - 1 };
+/** Moves playback one tick on. Returns false when nothing moved. */
+export function tick(deck: Deck, opts: PlayOptions): boolean {
+  if (deck.isPaused) return false;
+  if (deck.hold > 0) {
+    deck.hold--;
+    return true;
+  }
   if (!deck.playing) return startNext(deck, opts);
 
   const rate = (opts.charsPerMinute / 60) * (TICK_MS / 1000);
@@ -194,27 +235,37 @@ export function tick(deck: Deck, opts: PlayOptions): Deck {
     if (step.endsTick) break;
   }
   // Done: show the text playback typed, which planHunks guarantees is the after text.
-  if (p.hunk >= p.hunks.length) return { ...deck, playing: undefined, shown: { path: p.change.path, text: p.text, caret: p.caret } };
-  return { ...deck, playing: { ...p, credit: Math.min(budget, rate + 1) }, shown: { path: p.change.path, text: p.text, caret: p.caret } };
+  if (p.hunk >= p.hunks.length) {
+    deck.timeline.complete(p.seq, p.token);
+    deck.playing = undefined;
+  } else deck.playing = { ...p, credit: Math.min(budget, rate + 1) };
+  deck.shown = { path: p.change.path, text: p.text, caret: p.caret };
+  return true;
 }
 
-export function togglePause(deck: Deck): Deck {
-  return { ...deck, isPaused: !deck.isPaused };
+export function togglePause(deck: Deck): void {
+  deck.isPaused = !deck.isPaused;
 }
 
 /** Finishes the current change at once; the next one starts on the next tick. */
-export function finish(deck: Deck): Deck {
+export function finish(deck: Deck): void {
   const p = deck.playing;
-  if (!p) return deck.hold > 0 ? { ...deck, hold: 0 } : deck;
-  return { ...deck, playing: undefined, hold: 0, shown: shownDone(p.change, finalCaret(p.hunks)) };
+  deck.hold = 0;
+  if (!p) return;
+  deck.timeline.complete(p.seq, p.token);
+  deck.playing = undefined;
+  deck.shown = shownDone(p.change, finalCaret(p.hunks));
 }
 
 /** Finishes every recorded change at once and shows the last one. */
-export function skipToLatest(deck: Deck, opts: PlayOptions): Deck {
-  const last = deck.queue[deck.queue.length - 1];
+export function skipToLatest(deck: Deck, opts: PlayOptions): void {
+  const last = queued(deck).at(-1);
   if (!last) return finish(deck);
   const caret = last.isTooLarge ? 0 : finalCaret(plan(last, opts));
-  return { ...deck, queue: [], playing: undefined, hold: 0, shown: shownDone(last, caret) };
+  deck.timeline.seekToEnd();
+  deck.playing = undefined;
+  deck.hold = 0;
+  deck.shown = shownDone(last, caret);
 }
 
 /** `path` relative to the session's working directory, or as given when outside it. */
@@ -261,7 +312,7 @@ function lineStart(text: string, at: number): number {
 /** What the pane draws for `deck`: status, and a window of the shown text around the caret. */
 export function viewOf(deck: Deck): View {
   const status = deck.isPaused ? 'paused' : deck.playing ? 'typing' : 'idle';
-  const base = { status, queued: deck.queue.length, isTyping: deck.playing !== undefined } as const;
+  const base = { status, queued: deck.timeline.pendingCount(), isTyping: deck.playing !== undefined } as const;
   const empty = { lines: [], firstLine: 1, firstColumn: 0, caretLine: 0, caretColumn: 0 };
   const s = deck.shown;
   if (!s) return { ...base, ...empty };
