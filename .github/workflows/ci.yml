@@ -72,12 +72,14 @@ jobs:
       - name: Unit tests
         run: npm test
 
-  # The Claude Code plugin in claude-code/. Its bundle of the shared modules and
-  # the bundle's declarations are committed (a marketplace install runs no
-  # build), so a stale one fails here.
-  # The plugin's tests run in a pinned Claude Code CLI, which needs no login for
-  # validate and test. Type-checking it needs the engine's types, which only a
-  # session that loads the plugin lays down, so that stays a local check.
+  # The Claude Code plugin in claude-code/ and the marketplace catalog in
+  # .claude-plugin/. Its bundle of the shared modules and the bundle's
+  # declarations are committed (a marketplace install runs no build), so a stale
+  # one fails here. A pinned Claude Code CLI validates the catalog and the
+  # plugin, runs the plugin's tests, and installs it from the checkout's
+  # marketplace, all with no login. Type-checking it needs the engine's types,
+  # which only a session that loads the plugin lays down, so that stays a local
+  # check.
   claude-code:
     name: Claude Code plugin
     needs: changes
@@ -105,7 +107,7 @@ jobs:
             fi
           done
 
-      - name: Validate and test the plugin
+      - name: Validate, test and install the plugin
         run: npm run check:claude-code
 
   # it/runTest.ts runs its VS Code launches in groups that share nothing:

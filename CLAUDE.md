@@ -8,8 +8,8 @@ A VS Code extension that watches files change on disk and replays each change as
 - `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
 - `npm run package`: builds the .vsix.
 - `npm run dev` / `npm run build` in `site/`: the docs site (separate npm project; run `npm install` there first).
-- `npm run build:claude-code`: rebuilds the Claude Code plugin's `claude-code/hooks/core.mjs` from the shared modules.
-- `npm run check:claude-code`: validates the Claude Code plugin and runs its tests in a pinned Claude Code CLI.
+- `npm run build:claude-code`: rebuilds the Claude Code plugin's `claude-code/hooks/core.mjs` and its declarations `core.d.mts` from the shared modules.
+- `npm run check:claude-code`: in a pinned Claude Code CLI, validates the plugin marketplace and the plugin, runs the plugin's tests, and installs it from the checkout's marketplace (`scripts/check-claude-code.mjs`).
 - `npm run typecheck:claude-code`: type-checks the plugin. Needs the engine types a session lays in `claude-code/.claude-plugin/types/` when it loads the plugin (`claude --plugin-dir claude-code`).
 
 ## Architecture
@@ -27,6 +27,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `src/extension.ts`: activation; wires recorder, timeline, player, mirror filesystem, view, and commands together.
 - `site/`: the agent-typewriter.com docs site (Astro + Starlight), deployed to Firebase Hosting from `main` by `.github/workflows/site.yml`. Its settings page is generated from `package.json`.
 - `claude-code/`: the Claude Code plugin, a function-hooks module that records the session's `Edit` and `Write` calls and types them out in a pane. `hooks/replay.ts` is its playback logic; `hooks/register.tsx` wires it to the engine.
+- `.claude-plugin/marketplace.json`: makes the repository a Claude Code plugin marketplace listing `claude-code/` by relative path, so a user installs the plugin from whichever branch or tag they add. The plugin sets no version: Claude Code versions it by commit.
 
 ### Shared core
 

@@ -1,6 +1,5 @@
 {
   "name": "agent-typewriter",
-  "version": "0.1.0",
   "description": "Replays the edits Claude makes in this session as human-like typing, in a pane beside the conversation (early access).",
   "author": { "name": "Eric Burns" },
   "homepage": "https://agent-typewriter.com",
