@@ -82,7 +82,7 @@ Validation fails on any error and on any warning, such as an unknown catalog fie
 
 - [The unpinned command serves `develop`, not releases] → The README names `#main` for released versions, and the table above is in `CONTRIBUTING.md`. Revisit before the official directory listing (at-o3z.9), which may want a pinned source.
 - [Versions are commit hashes, not numbers] → Bug reports are more precise; the GitHub release for a stable version still lists what changed.
-- [A `develop` merge that changes only the site or the extension may still count as a new plugin version] → The update is identical files; users see an update notice at most. Verified against the real behavior while applying, and noted in the docs if it happens.
+- [Any commit on the followed ref is a new plugin version, including one that changes only the site or the extension] → Confirmed while applying: the version is the head commit of the marketplace clone, not the last commit to touch `claude-code/`. The update brings identical files, so users see an update notice at most; the README says so.
 - [Claude Code's marketplace behavior changes, as early-access features may] → The CLI is pinned in CI, and the install check fails visibly when the pin is bumped and behavior differs.
 - [The testers' branch note goes stale once `claude-code-extension` merges into `develop`] → A follow-up bead tracks removing it, with the CHANGELOG entry, at that merge.
 

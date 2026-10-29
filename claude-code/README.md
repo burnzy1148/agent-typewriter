@@ -4,6 +4,58 @@ Watch the edits Claude makes in your session replayed as human-like typing, in a
 
 This is the Claude Code edition of [Agent Typewriter](https://agent-typewriter.com), the VS Code extension. It uses Claude Code's plugin API for function hooks and panes, which is in early access and may change between Claude Code releases. It needs Claude Code 2.1.309 or later.
 
+## Install
+
+In a Claude Code session, in a terminal or in the desktop app's Code tab:
+
+```
+/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
+```
+
+Claude Code asks to add this repository as the `agent-typewriter` marketplace, then shows the plugin so you can choose where to install it. From a shell, without a session:
+
+```bash
+claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
+```
+
+The terminal, the desktop app and Claude Code's VS Code extension share the marketplaces you add. Once it is added, Agent Typewriter is also in the desktop app's plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
+
+### Which version you get
+
+The repository's branches are the plugin's channels:
+
+- `burnzy1148/agent-typewriter` follows `develop`, the default branch: the plugin as it is merged, ahead of releases.
+- `burnzy1148/agent-typewriter#main` follows released versions only. It has the plugin from the first stable release that includes it.
+- `burnzy1148/agent-typewriter#claude-code-extension` is for testers until the plugin is merged into `develop`:
+
+  ```
+  /plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension
+  ```
+
+Any branch that has the marketplace works the same way, such as a pull request's branch you want to try.
+
+The plugin has no version number of its own: its version is the commit you installed, as `/plugin` and `claude plugin list` show it. Mention it when you report a problem.
+
+### Updating
+
+Claude Code doesn't update plugins from this marketplace by itself until you turn on auto-update: run `/plugin`, open **Marketplaces**, select `agent-typewriter` and choose **Enable auto-update**. To update now, choose **Update marketplace** there instead, or from a shell:
+
+```bash
+claude plugin marketplace update agent-typewriter
+claude plugin update agent-typewriter@agent-typewriter
+```
+
+Then run `/reload-plugins` or start a new session. Every new commit on the branch you follow counts as an update, so some updates change nothing in the plugin.
+
+### Switching branches
+
+Every branch registers as the same `agent-typewriter` marketplace, so remove it before adding another. Removing it uninstalls the plugin and forgets its options.
+
+```
+/plugin marketplace remove agent-typewriter
+/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#main
+```
+
 ## What it replays
 
 - Every `Edit` and `Write` the session runs, including those its subagents run.
@@ -33,15 +85,15 @@ Set them in `/config`:
 | Typing speed (`charsPerMinute`) | 1000 | Characters per minute. |
 | Natural authoring order (`naturalOrder`) | on | Type a new block's opening and closing lines before its body. Off types top to bottom. |
 
-## Trying it from a checkout
+## Working on the plugin
 
-From the repository root:
+To run your own checkout instead of an installed copy, from the repository root:
 
 ```bash
 claude --plugin-dir claude-code
 ```
 
-Then ask Claude to create or edit a file. See [CONTRIBUTING.md](../CONTRIBUTING.md) for building, testing and type-checking the plugin.
+Then ask Claude to create or edit a file. For that session, the checkout takes the place of an installed Agent Typewriter. See [CONTRIBUTING.md](../CONTRIBUTING.md) for building, testing and type-checking the plugin.
 
 ## License
 
