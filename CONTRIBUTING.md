@@ -53,14 +53,14 @@ npm run build     # static build in site/dist, fails on broken internal links
 
 ```
 npm run build:claude-code      # rebuild hooks/core.mjs after changing the shared modules; commit it
-npm run check:claude-code      # validate the plugin and run its tests in a pinned Claude Code CLI
+npm run check:claude-code      # validate the marketplace and the plugin, run its tests, install it (pinned Claude Code CLI)
 npm run typecheck:claude-code  # type-check it against the engine's types (see below)
 claude --plugin-dir claude-code
 ```
 
 The last line starts a Claude Code session with your working copy loaded. Ask Claude to edit a file and the pane types it out. Saving a file in `claude-code/` reloads the plugin in that session.
 
-The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude-code/tests/`) run under `claude plugin test`, which `check:claude-code` calls. Type-checking needs the engine's types in `claude-code/.claude-plugin/types/`, which Claude Code writes (and ignores in git) when a session loads the plugin from your folder, so run the plugin once with `--plugin-dir` first. CI cannot do that, so it runs the bundle check, validation and tests but not the type check.
+The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude-code/tests/`) run under `claude plugin test`, which `check:claude-code` calls. `check:claude-code` (`scripts/check-claude-code.mjs`) also validates the marketplace catalog, failing on any warning except the plugin's missing version (see below), and installs the plugin from your checkout's marketplace, which catches a catalog entry that points at a missing folder. It runs the CLI with a temporary `CLAUDE_CONFIG_DIR`, so your own Claude Code settings are left alone. Type-checking needs the engine's types in `claude-code/.claude-plugin/types/`, which Claude Code writes (and ignores in git) when a session loads the plugin from your folder, so run the plugin once with `--plugin-dir` first. CI cannot do that, so it runs the bundle check, validation, tests and install but not the type check.
 
 ## How the code fits together
 

@@ -67,14 +67,16 @@ The Release workflow is unchanged. Promoting `develop` to `main` releases the pl
 
 ### One script runs the plugin checks
 
-`npm run check:claude-code` runs a new `scripts/check-claude-code.mjs`, which keeps the pinned CLI version in one place and runs, in order:
+`npm run check:claude-code` runs a new `scripts/check-claude-code.mjs`, which keeps the pinned CLI version in one place and runs, in order, each with `CLAUDE_CONFIG_DIR` set to a fresh temporary folder:
 
-1. `plugin validate . --strict`: the catalog, and the manifest of the plugin it lists.
-2. `plugin validate claude-code --strict`: the manifest, hooks module and state contract.
+1. `plugin validate . --json`: the catalog, and the manifest of the plugin it lists.
+2. `plugin validate claude-code --json`: the manifest, hooks module and state contract.
 3. `plugin test claude-code`: the plugin's tests, as before.
-4. An install check: with `CLAUDE_CONFIG_DIR` set to a fresh temporary folder, `plugin marketplace add <checkout>` and `plugin install agent-typewriter@agent-typewriter`, then a check that `plugin list --json` shows it installed from the checkout. Validation passes a relative source that points at a missing folder; only an install catches it. The temporary folder keeps the developer's own Claude Code settings untouched, and none of these commands need a login.
+4. An install check: `plugin marketplace add <checkout>` and `plugin install agent-typewriter@agent-typewriter`, then a check that `plugin list --json` shows it enabled and read from the checkout's `claude-code/`. Validation passes a relative source that points at a missing folder; only an install catches it.
 
-`--strict` turns warnings such as unknown catalog fields into failures. The plugin-directory profile (`--profile directory`) stays out: it asks for an icon, which belongs to at-o3z.9. The CI job keeps running `npm run check:claude-code`, so its steps only change name.
+The temporary folder keeps the developer's own Claude Code settings out of it and matches CI, which has none; none of these commands need a login.
+
+Validation fails on any error and on any warning, such as an unknown catalog field, except one: with no `version`, the validator warns "No version specified" on the plugin's manifest. That warning is the versioning decision above, so the script reads the `--json` report and allows exactly that warning, where `--strict` would fail on it. The plugin-directory profile (`--profile directory`) stays out: it asks for an icon, which belongs to at-o3z.9. The CI job keeps running `npm run check:claude-code`, so its steps only change name.
 
 ## Risks / Trade-offs
 

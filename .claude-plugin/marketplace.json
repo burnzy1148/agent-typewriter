@@ -1,0 +1,14 @@
+{
+  "name": "agent-typewriter",
+  "description": "Agent Typewriter for Claude Code: watch the edits Claude makes replayed as human-like typing.",
+  "owner": {
+    "name": "Eric Burns",
+    "url": "https://github.com/burnzy1148"
+  },
+  "plugins": [
+    {
+      "name": "agent-typewriter",
+      "source": "./claude-code"
+    }
+  ]
+}

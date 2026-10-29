@@ -63,7 +63,7 @@ The plugin SHALL have no release process, version number or tag of its own. Prom
 - **THEN** no plugin-specific tag such as `agent-typewriter--v<version>` is created
 
 ### Requirement: The marketplace is checked on every change
-Every pull request that changes more than the docs site SHALL validate the catalog and the plugin with a pinned Claude Code CLI, treating warnings as errors, and SHALL install the plugin from the checkout's own marketplace. A failure in either SHALL fail the check.
+Every pull request that changes more than the docs site SHALL validate the catalog and the plugin with a pinned Claude Code CLI, treating every warning as an error except the one asking for a version, and SHALL install the plugin from the checkout's own marketplace. A failure in either SHALL fail the check.
 
 #### Scenario: Wrong plugin path
 - **WHEN** a PR changes the catalog entry's source to a folder that does not exist
