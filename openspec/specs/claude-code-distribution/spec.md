@@ -41,14 +41,14 @@ The plugin SHALL come from the same commit as the catalog the user added. Withou
 - **THEN** they get the plugin as of the latest stable release
 
 #### Scenario: Testers on a branch
-- **WHEN** a tester runs `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension`
+- **WHEN** a tester runs `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension`
 - **THEN** they get the plugin as it is at the head of `claude-code-extension`, even before that branch is merged into `develop`
 
 ### Requirement: Each commit is a plugin version
 Neither the plugin's manifest nor its catalog entry SHALL set a version, so that the installed version is the commit it came from. A user SHALL be offered an update whenever the ref they added has moved to a commit that changes the plugin, and SHALL NOT be offered one while it has not moved.
 
 #### Scenario: Fix on the testers' branch
-- **WHEN** a fix merges into `claude-code-extension` and a tester who added that branch updates the marketplace
+- **WHEN** a fix merges into `claude-code-extension` and a tester who added that branch updates the plugin
 - **THEN** their plugin updates to the commit with the fix
 
 #### Scenario: Merges between releases
@@ -71,14 +71,14 @@ The plugin SHALL have no release process, version number or tag of its own. Prom
 - **THEN** no plugin-specific tag such as `agent-typewriter--v<version>` is created
 
 ### Requirement: The marketplace is checked on every change
-Every pull request that changes more than the docs site SHALL validate the catalog and the plugin with a pinned Claude Code CLI, treating every warning as an error except the one asking for a version, and SHALL install the plugin from the checkout's own marketplace. A failure in either SHALL fail the check, and so SHALL a version set in the plugin's manifest or its catalog entry.
+Every pull request that changes more than the docs site SHALL validate the catalog and the plugin with a pinned Claude Code CLI, treating every error and every warning about the catalog, the manifest or the plugin's contents as a failure except the one asking for a version, and SHALL install the plugin from the checkout's own marketplace. A failure in either SHALL fail the check, and so SHALL a version set in the plugin's manifest or its catalog entry.
 
 #### Scenario: Wrong plugin path
 - **WHEN** a PR changes the catalog entry's source to a folder that does not exist
 - **THEN** the install check fails and the PR's checks fail
 
 #### Scenario: Unknown catalog field
-- **WHEN** a PR adds a misspelled field to `.claude-plugin/marketplace.json`
+- **WHEN** a PR adds a misspelled top-level field, or a misspelled field in the plugin's entry, to `.claude-plugin/marketplace.json`
 - **THEN** validation reports it and the PR's checks fail
 
 #### Scenario: Version set

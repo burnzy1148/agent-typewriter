@@ -4,8 +4,9 @@
 // catalog entry pointing at a missing folder (validation does not). It also
 // fails if the plugin sets a version, which would stop Claude Code versioning it
 // by commit. Everything runs with a fresh CLAUDE_CONFIG_DIR and without your
-// CLAUDE_CODE_PLUGIN_* variables, so your own Claude Code settings and plugins
-// stay out of it, as in CI. None of it needs a login.
+// CLAUDE_CODE_PLUGIN_* variables, so your user settings and plugins stay out of
+// it, as in CI; the checkout's own .claude/ settings still apply. None of it
+// needs a login.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
@@ -88,9 +89,9 @@ function install() {
 }
 
 try {
-  noVersion();
   validate('.');
   validate('claude-code');
+  noVersion();
   run(['plugin', 'test', 'claude-code']);
   install();
 } catch (e) {
