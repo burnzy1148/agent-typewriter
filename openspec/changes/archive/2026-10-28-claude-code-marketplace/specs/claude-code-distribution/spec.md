@@ -10,12 +10,16 @@ Defines how the Agent Typewriter plugin for Claude Code is published from this r
 The repository SHALL be a Claude Code plugin marketplace named `agent-typewriter`, with its catalog at `.claude-plugin/marketplace.json` in the repository root. The catalog SHALL list one plugin, `agent-typewriter`, whose files are the `claude-code/` folder of the same commit. It SHALL serve local Claude Code: the plugin SHALL install from it in the desktop app's local sessions, in Claude Code's VS Code extension, and with `/plugin` or `claude plugin` in a terminal.
 
 #### Scenario: Install in one step
-- **WHEN** a user of Claude Code 2.1.309 or later runs `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` in a session, or `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` in a shell
+- **WHEN** a user of Claude Code 2.1.309 or later runs `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` in a terminal session, or `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` in a shell
 - **THEN** the marketplace is added as `agent-typewriter` and the plugin installs as `agent-typewriter@agent-typewriter`
 
 #### Scenario: Desktop app
 - **WHEN** the `agent-typewriter` marketplace has been added and the user opens the plugin browser from the desktop app's Code tab
 - **THEN** Agent Typewriter is listed there and installs from it
+
+#### Scenario: VS Code
+- **WHEN** a user adds `burnzy1148/agent-typewriter` on the Marketplaces tab of Manage plugins (`/plugins`) in Claude Code's VS Code extension
+- **THEN** Agent Typewriter is listed on its Plugins tab and installs from it
 
 #### Scenario: Marketplace already added
 - **WHEN** a user who added the marketplace runs `/plugin install agent-typewriter@agent-typewriter`
@@ -67,7 +71,7 @@ The plugin SHALL have no release process, version number or tag of its own. Prom
 - **THEN** no plugin-specific tag such as `agent-typewriter--v<version>` is created
 
 ### Requirement: The marketplace is checked on every change
-Every pull request that changes more than the docs site SHALL validate the catalog and the plugin with a pinned Claude Code CLI, treating every warning as an error except the one asking for a version, and SHALL install the plugin from the checkout's own marketplace. A failure in either SHALL fail the check.
+Every pull request that changes more than the docs site SHALL validate the catalog and the plugin with a pinned Claude Code CLI, treating every warning as an error except the one asking for a version, and SHALL install the plugin from the checkout's own marketplace. A failure in either SHALL fail the check, and so SHALL a version set in the plugin's manifest or its catalog entry.
 
 #### Scenario: Wrong plugin path
 - **WHEN** a PR changes the catalog entry's source to a folder that does not exist
@@ -76,3 +80,7 @@ Every pull request that changes more than the docs site SHALL validate the catal
 #### Scenario: Unknown catalog field
 - **WHEN** a PR adds a misspelled field to `.claude-plugin/marketplace.json`
 - **THEN** validation reports it and the PR's checks fail
+
+#### Scenario: Version set
+- **WHEN** a PR adds a `version` to `claude-code/.claude-plugin/plugin.json` or to the plugin's catalog entry
+- **THEN** the check fails and the PR's checks fail

@@ -6,19 +6,19 @@ This is the Claude Code edition of [Agent Typewriter](https://agent-typewriter.c
 
 ## Install
 
-In a Claude Code session, in the desktop app's Code tab, in Claude Code's VS Code extension or in a terminal:
-
-```
-/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
-```
-
-Claude Code asks to add this repository as the `agent-typewriter` marketplace, then shows the plugin so you can choose where to install it. From a shell, without a session:
+From a shell:
 
 ```bash
 claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
 ```
 
-The terminal, the desktop app and Claude Code's VS Code extension share the marketplaces you add. Once it is added, Agent Typewriter is also in the desktop app's plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
+That adds this repository as the `agent-typewriter` marketplace and installs the plugin for your user account. The desktop app, Claude Code's VS Code extension and the terminal share the plugins and marketplaces you add, so Agent Typewriter is on in all three from the next session you start.
+
+Without a shell:
+
+- **VS Code:** type `/plugins` in the Claude Code panel to open **Manage plugins**, add `burnzy1148/agent-typewriter` on the **Marketplaces** tab, then install Agent Typewriter from the **Plugins** tab.
+- **Desktop app:** once the marketplace is added, Agent Typewriter is in the plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
+- **Terminal session:** `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` asks you to confirm the marketplace, then installs.
 
 Agent Typewriter is made for the desktop app and Claude Code's VS Code extension. If you run Claude Code in a terminal, replay with the [Agent Typewriter extension for VS Code](https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter) instead, which types out the same edits from disk.
 
@@ -32,32 +32,34 @@ The repository's branches are the plugin's channels:
 - `burnzy1148/agent-typewriter#main` follows released versions only. It has the plugin from the first stable release that includes it.
 - `burnzy1148/agent-typewriter#claude-code-extension` is for testers until the plugin is merged into `develop`:
 
-  ```
-  /plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension
+  ```bash
+  claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#claude-code-extension
   ```
 
 Any branch that has the marketplace works the same way, such as a pull request's branch you want to try.
 
-The plugin has no version number of its own: its version is the commit you installed, as `/plugin` and `claude plugin list` show it. Mention it when you report a problem.
+The plugin has no version number of its own: its version is the commit you installed, as `claude plugin list` shows it. Mention it when you report a problem.
 
 ### Updating
 
-Claude Code doesn't update plugins from this marketplace by itself until you turn on auto-update: run `/plugin`, open **Marketplaces**, select `agent-typewriter` and choose **Enable auto-update**. To update now, choose **Update marketplace** there instead, or from a shell:
+Claude Code doesn't update plugins from this marketplace by itself. To update now, from a shell:
 
 ```bash
 claude plugin marketplace update agent-typewriter
 claude plugin update agent-typewriter@agent-typewriter
 ```
 
-Then run `/reload-plugins` or start a new session. Every new commit on the branch you follow counts as an update, so some updates change nothing in the plugin.
+Then start a new session. Every new commit on the branch you follow counts as an update, so some updates change nothing in the plugin.
+
+To have Claude Code update it for you, turn on auto-update for the marketplace in a terminal session: run `/plugin`, open **Marketplaces**, select `agent-typewriter` and choose **Enable auto-update**.
 
 ### Switching branches
 
 Every branch registers as the same `agent-typewriter` marketplace, so remove it before adding another. Removing it uninstalls the plugin and forgets its options.
 
-```
-/plugin marketplace remove agent-typewriter
-/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#main
+```bash
+claude plugin marketplace remove agent-typewriter
+claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#main
 ```
 
 ## What it replays

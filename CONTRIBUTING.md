@@ -60,7 +60,7 @@ claude --plugin-dir claude-code
 
 The last line starts a Claude Code session with your working copy loaded. Ask Claude to edit a file and the pane types it out. Saving a file in `claude-code/` reloads the plugin in that session.
 
-The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude-code/tests/`) run under `claude plugin test`, which `check:claude-code` calls. `check:claude-code` (`scripts/check-claude-code.mjs`) also validates the marketplace catalog, failing on any warning except the plugin's missing version (see below), and installs the plugin from your checkout's marketplace, which catches a catalog entry that points at a missing folder. It runs the CLI with a temporary `CLAUDE_CONFIG_DIR`, so your own Claude Code settings are left alone. Type-checking needs the engine's types in `claude-code/.claude-plugin/types/`, which Claude Code writes (and ignores in git) when a session loads the plugin from your folder, so run the plugin once with `--plugin-dir` first. CI cannot do that, so it runs the bundle check, validation, tests and install but not the type check.
+The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude-code/tests/`) run under `claude plugin test`, which `check:claude-code` calls. `check:claude-code` (`scripts/check-claude-code.mjs`) also validates the marketplace catalog, failing on any warning except the plugin's missing version and on a version being set (see below), and installs the plugin from your checkout's marketplace, which catches a catalog entry that points at a missing folder. It runs the CLI with a temporary `CLAUDE_CONFIG_DIR`, so your own Claude Code settings are left alone. Type-checking needs the engine's types in `claude-code/.claude-plugin/types/`, which Claude Code writes (and ignores in git) when a session loads the plugin from your folder, so run the plugin once with `--plugin-dir` first. CI cannot do that, so it runs the bundle check, validation, tests and install but not the type check.
 
 **The marketplace.** `.claude-plugin/marketplace.json` makes the repository a Claude Code plugin marketplace named `agent-typewriter`, listing `claude-code/` by relative path. Claude Code clones the branch or tag a user adds and installs the plugin from that same clone, so branches are the plugin's channels:
 
@@ -72,15 +72,15 @@ The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude
 
 The marketplace reaches local Claude Code only: the desktop app's local sessions, Claude Code's VS Code extension and the terminal, which share the marketplaces a user adds. The plugin is made for the desktop app and the VS Code extension; people who run Claude Code in a terminal replay with the Agent Typewriter VS Code extension instead. Cloud sessions (claude.ai/code, the mobile app, the desktop app's cloud sessions, `claude --cloud`) have no `/plugin` and load neither plugins installed on the user's machine nor those a repository's `.claude/settings.json` turns on, so the plugin doesn't run there yet.
 
-`plugin.json` sets no `version`, so Claude Code versions the plugin by the commit it installed from, and users get each new commit on their branch when they update (any commit, even one outside `claude-code/`). Don't add a `version`: users would then stay on the commit they first installed until someone changed it. The validator warns about the missing version, and `check:claude-code` allows that one warning.
+`plugin.json` sets no `version`, so Claude Code versions the plugin by the commit it installed from, and users get each new commit on their branch when they update (any commit, even one outside `claude-code/`). Don't add a `version`: users would then stay on the commit they first installed until someone changed it. The validator warns about the missing version, and `check:claude-code` allows that one warning and fails if `plugin.json` or the catalog entry sets a version.
 
-**Testing a branch.** Push it, then in a Claude Code session:
+**Testing a branch.** Push it, then from a shell:
 
+```bash
+claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#<branch>
 ```
-/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#<branch>
-```
 
-If the `agent-typewriter` marketplace is already added from another branch, run `/plugin marketplace remove agent-typewriter` first. To pick up later pushes, update the marketplace (`/plugin`, **Marketplaces**, **Update marketplace**). Until `claude-code-extension` is merged into `develop`, testers install from `#claude-code-extension`. To keep a test install away from your own Claude Code setup, run the `claude plugin` commands from a shell with `CLAUDE_CONFIG_DIR` set to an empty folder, as `scripts/check-claude-code.mjs` does.
+If the `agent-typewriter` marketplace is already added from another branch, run `claude plugin marketplace remove agent-typewriter` first. To pick up later pushes, run `claude plugin marketplace update agent-typewriter`, then `claude plugin update agent-typewriter@agent-typewriter`. Until `claude-code-extension` is merged into `develop`, testers install from `#claude-code-extension`. To keep a test install away from your own Claude Code setup, run the `claude plugin` commands from a shell with `CLAUDE_CONFIG_DIR` set to an empty folder, as `scripts/check-claude-code.mjs` does.
 
 **Releases.** The plugin has no release, version number or tag of its own. The Release workflow's promotion of `develop` to `main` is what releases it to `#main` users, and the CHANGELOG and the GitHub release cover its changes along with the extension's.
 

@@ -6,7 +6,7 @@ The Claude Code plugin in `claude-code/` can only be tried today by cloning the 
 
 ## What Changes
 
-- **The repository becomes a plugin marketplace** named `agent-typewriter`, with `.claude-plugin/marketplace.json` at its root listing one plugin, `agent-typewriter`, whose files are `claude-code/` in the same commit. One command installs it in a local session (the terminal, the desktop app's local sessions or the VS Code extension): `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter`. After that, the desktop app's plugin browser lists it too.
+- **The repository becomes a plugin marketplace** named `agent-typewriter`, with `.claude-plugin/marketplace.json` at its root listing one plugin, `agent-typewriter`, whose files are `claude-code/` in the same commit. One shell command installs it for every local surface (the desktop app's local sessions, the VS Code extension and the terminal): `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter`. A terminal session does the same with `/plugin install`, VS Code can add the marketplace from `/plugins`, and the desktop app's plugin browser lists the plugin once the marketplace is added.
 - **The ref a user adds is their channel.** Without a ref they get the default branch, `develop`. `#main` gets released versions only. `#<branch>` gets a branch, which is how testers install from `claude-code-extension` before it reaches `develop`.
 - **Each commit is a plugin version.** `plugin.json` drops its `version` (0.1.0, never published), so Claude Code versions the plugin by commit and users of a ref receive every new commit on that ref when they update.
 - **Releases need no new workflow.** The Release workflow already promotes `develop` to `main`, and that promotion is the plugin's release for `#main` users. The plugin gets no version number or tag of its own.
@@ -35,5 +35,5 @@ None. `claude-code-replay` describes what the plugin does once installed and doe
 - `claude-code/.claude-plugin/plugin.json`: no `version`.
 - `package.json`'s `check:claude-code` and a new script under `scripts/` that runs the pinned CLI's checks and the install check; the CI job runs it as before.
 - `claude-code/README.md`, `CONTRIBUTING.md`, `CLAUDE.md`.
-- Users and testers need Claude Code 2.1.309 or later, as the plugin already does. One-step install (`--marketplace`) needs 2.1.275, which that covers.
+- Users and testers need Claude Code 2.1.309 or later, as the plugin already does. One-step install (`--marketplace`) needs 2.1.275 in a session and 2.1.292 in a shell, which that covers.
 - Until `claude-code-extension` merges into `develop`, the default command finds no marketplace; testers add the branch instead.
