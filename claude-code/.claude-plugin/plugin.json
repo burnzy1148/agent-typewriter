@@ -1,0 +1,24 @@
+{
+  "name": "agent-typewriter",
+  "version": "0.1.0",
+  "description": "Replays the edits Claude makes in this session as human-like typing, in a pane beside the conversation (early access).",
+  "author": { "name": "Eric Burns" },
+  "homepage": "https://agent-typewriter.com",
+  "repository": "https://github.com/burnzy1148/agent-typewriter",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "charsPerMinute": {
+      "type": "number",
+      "title": "Typing speed",
+      "description": "How fast changes are typed, in characters per minute.",
+      "default": 1000
+    },
+    "naturalOrder": {
+      "type": "boolean",
+      "title": "Natural authoring order",
+      "description": "Type a new block's opening and closing lines before its body, the way people write code. Off types each change top to bottom.",
+      "default": true
+    }
+  }
+}

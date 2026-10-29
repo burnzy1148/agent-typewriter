@@ -8,6 +8,9 @@ A VS Code extension that watches files change on disk and replays each change as
 - `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
 - `npm run package`: builds the .vsix.
 - `npm run dev` / `npm run build` in `site/`: the docs site (separate npm project; run `npm install` there first).
+- `npm run build:claude-code`: rebuilds the Claude Code plugin's `claude-code/hooks/core.mjs` from the shared modules.
+- `npm run check:claude-code`: validates the Claude Code plugin and runs its tests in a pinned Claude Code CLI.
+- `npm run typecheck:claude-code`: type-checks the plugin. Needs the engine types a session lays in `claude-code/.claude-plugin/types/` when it loads the plugin (`claude --plugin-dir claude-code`).
 
 ## Architecture
 
@@ -23,6 +26,11 @@ A VS Code extension that watches files change on disk and replays each change as
 - `src/config.ts`: reads and updates the `agentTypewriter.*` settings.
 - `src/extension.ts`: activation; wires recorder, timeline, player, mirror filesystem, view, and commands together.
 - `site/`: the agent-typewriter.com docs site (Astro + Starlight), deployed to Firebase Hosting from `main` by `.github/workflows/site.yml`. Its settings page is generated from `package.json`.
+- `claude-code/`: the Claude Code plugin, a function-hooks module that records the session's `Edit` and `Write` calls and types them out in a pane. `hooks/replay.ts` is its playback logic; `hooks/register.tsx` wires it to the engine.
+
+### Shared core
+
+The Claude Code plugin reuses `src/planner.ts` and `src/typingChunks.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit `core.mjs`; CI fails on a stale bundle. To share another module, add it to the bundle's entry and to `core.d.mts`.
 
 ## Rules that must not break
 

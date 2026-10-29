@@ -47,6 +47,21 @@ npm run build     # static build in site/dist, fails on broken internal links
 - PRs that change the site get a build check. PRs from branches in this repository also get a preview link posted on the PR; PRs from forks and Dependabot PRs don't, because their runs can't read the deploy secret. A PR that only changes `site/` skips the extension's tests.
 - Production follows releases: the site deploys when a release merges into `main`, so it always describes the published version.
 
+## The Claude Code plugin
+
+`claude-code/` is a Claude Code plugin that replays the edits a Claude Code session makes, in a pane beside the conversation. It is built on Claude Code's early-access function-hooks API: `hooks/register.tsx` hooks the `Edit` and `Write` tool calls and draws the pane, and `hooks/replay.ts` is its playback logic. It shares the diff planner and typing logic with the extension through `hooks/core.mjs`, a committed bundle of `src/planner.ts` and `src/typingChunks.ts`.
+
+```
+npm run build:claude-code      # rebuild hooks/core.mjs after changing the shared modules; commit it
+npm run check:claude-code      # validate the plugin and run its tests in a pinned Claude Code CLI
+npm run typecheck:claude-code  # type-check it against the engine's types (see below)
+claude --plugin-dir claude-code
+```
+
+The last line starts a Claude Code session with your working copy loaded. Ask Claude to edit a file and the pane types it out. Saving a file in `claude-code/` reloads the plugin in that session.
+
+The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude-code/tests/`) run under `claude plugin test`, which `check:claude-code` calls. Type-checking needs the engine's types in `claude-code/.claude-plugin/types/`, which Claude Code writes (and ignores in git) when a session loads the plugin from your folder, so run the plugin once with `--plugin-dir` first. CI cannot do that, so it runs the bundle check, validation and tests but not the type check.
+
 ## How the code fits together
 
 [CLAUDE.md](CLAUDE.md) describes the main modules in `src/` and the rules that must not break. The two most important:
