@@ -70,6 +70,8 @@ The replay logic's unit tests run in `npm test`. The plugin's own tests (`claude
 | `burnzy1148/agent-typewriter#main` | the latest stable release | a release PR merges into `main` |
 | `burnzy1148/agent-typewriter#<branch>` | that branch | a commit is pushed to it |
 
+The marketplace reaches local sessions only: the terminal, the desktop app's local sessions and the VS Code extension. Cloud sessions (claude.ai/code, the mobile app, the desktop app's cloud sessions, `claude --cloud`) have no `/plugin` and load neither plugins installed on the user's machine nor those a repository's `.claude/settings.json` turns on, so the plugin doesn't run there yet.
+
 `plugin.json` sets no `version`, so Claude Code versions the plugin by the commit it installed from, and users get each new commit on their branch when they update (any commit, even one outside `claude-code/`). Don't add a `version`: users would then stay on the commit they first installed until someone changed it. The validator warns about the missing version, and `check:claude-code` allows that one warning.
 
 **Testing a branch.** Push it, then in a Claude Code session:

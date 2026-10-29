@@ -6,7 +6,7 @@ The Claude Code plugin in `claude-code/` can only be tried today by cloning the 
 
 ## What Changes
 
-- **The repository becomes a plugin marketplace** named `agent-typewriter`, with `.claude-plugin/marketplace.json` at its root listing one plugin, `agent-typewriter`, whose files are `claude-code/` in the same commit. One command installs it: `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter`. After that, the desktop app's plugin browser lists it too.
+- **The repository becomes a plugin marketplace** named `agent-typewriter`, with `.claude-plugin/marketplace.json` at its root listing one plugin, `agent-typewriter`, whose files are `claude-code/` in the same commit. One command installs it in a local session (the terminal, the desktop app's local sessions or the VS Code extension): `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter`. After that, the desktop app's plugin browser lists it too.
 - **The ref a user adds is their channel.** Without a ref they get the default branch, `develop`. `#main` gets released versions only. `#<branch>` gets a branch, which is how testers install from `claude-code-extension` before it reaches `develop`.
 - **Each commit is a plugin version.** `plugin.json` drops its `version` (0.1.0, never published), so Claude Code versions the plugin by commit and users of a ref receive every new commit on that ref when they update.
 - **Releases need no new workflow.** The Release workflow already promotes `develop` to `main`, and that promotion is the plugin's release for `#main` users. The plugin gets no version number or tag of its own.
@@ -17,6 +17,7 @@ Out of scope:
 - Submitting the plugin to the official plugin directory (at-o3z.9), including the icon its validator asks for.
 - A version number for the plugin, or channels served as separate marketplaces.
 - The docs site.
+- Cloud sessions, which do not load marketplace plugins. Finding a route there is spike at-o3z.10.
 
 ## Capabilities
 

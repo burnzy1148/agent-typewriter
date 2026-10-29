@@ -20,6 +20,8 @@ claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
 
 The terminal, the desktop app and Claude Code's VS Code extension share the marketplaces you add. Once it is added, Agent Typewriter is also in the desktop app's plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
 
+This works in local sessions only. Cloud sessions (claude.ai/code, the mobile app, and the desktop app's cloud sessions) don't load plugins installed on your machine or turned on in a repository's settings, so Agent Typewriter isn't available there yet.
+
 ### Which version you get
 
 The repository's branches are the plugin's channels:

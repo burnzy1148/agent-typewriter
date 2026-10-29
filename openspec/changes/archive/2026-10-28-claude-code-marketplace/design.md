@@ -9,6 +9,7 @@ How Claude Code installs from a marketplace (as of 2.1.309, which the plugin alr
 - A user is offered an update only when the plugin's computed version changes. That version is `plugin.json`'s `version`, else the catalog entry's, else, for a relative path in a git-hosted marketplace, the commit it was installed from. A pinned `version` keeps everyone on their cached copy until the string changes, however many commits land.
 - A user can register only one marketplace per name. Auto-update is off for third-party marketplaces until the user turns it on; without it, users update with `/plugin marketplace update` or `claude plugin update`.
 - The terminal, the desktop app's local sessions and the VS Code extension read the same settings, so a marketplace added in one is available in the others. The desktop app's plugin browser (**+** → **Add plugins**) lists plugins from added marketplaces.
+- Cloud sessions (claude.ai/code, the mobile app, the desktop app's cloud sessions, `claude --cloud`) have no `/plugin`, and load neither the plugins installed on the user's machine nor those a repository's `.claude/settings.json` turns on (`enabledPlugins`, `extraKnownMarketplaces`). A marketplace therefore reaches local sessions only.
 
 The repository's default branch is `develop`. `main` only moves when the Release workflow's `release/v<version>` PR merges. `claude-code/` exists only on `claude-code-extension` until that branch is merged into `develop`. `plugin.json` says `0.1.0`, which was never published. The VS Code extension has its own channels (`release-publishing`); the `.vsix` ships an allow-list of files, so new root files do not reach it.
 
@@ -22,6 +23,7 @@ The repository's default branch is `develop`. `main` only moves when the Release
 **Non-Goals:**
 - Readable plugin version numbers, release notes per plugin version, or `<plugin>--v<version>` tags for dependency ranges. Nothing depends on this plugin.
 - Making `burnzy1148/agent-typewriter` without a ref serve released versions while the default branch is `develop`.
+- Loading the plugin in cloud sessions. The spike at-o3z.10 looks for a route (`CLAUDE_CODE_PLUGIN_DIRS` in the cloud environment, a setup script, claude.ai account plugins, or organization managed settings); the docs say cloud sessions are not covered yet.
 
 ## Decisions
 
