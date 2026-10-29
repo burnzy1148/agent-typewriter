@@ -2,7 +2,7 @@ import { expect, test, type Engine } from 'claude-code/testing';
 
 import { PANE_ID, start, world } from './world';
 
-const SURFACES = ['terminal', 'desktop', 'vscode'] as const;
+const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const;
 type Surface = (typeof SURFACES)[number];
 
 const PANE = {
