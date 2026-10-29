@@ -12,7 +12,7 @@
 
 ## 3. Install from GitHub
 
-- [ ] 3.1 Push the branch and, in a fresh temporary `CLAUDE_CONFIG_DIR`, run `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#<this branch>` with the pinned CLI. Verify it adds the `agent-typewriter` marketplace, installs `agent-typewriter@agent-typewriter`, and that `plugin list` shows a commit as its version.
+- [x] 3.1 Push the branch and, in a fresh temporary `CLAUDE_CONFIG_DIR`, run `claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter#<this branch>` with the pinned CLI. Verify it adds the `agent-typewriter` marketplace, installs `agent-typewriter@agent-typewriter`, and that `plugin list` shows a commit as its version.
 - [ ] 3.2 Push a commit that changes `claude-code/`, then run `plugin marketplace update agent-typewriter` and `plugin update agent-typewriter@agent-typewriter` in the same folder. Verify the plugin updates to the new commit, and note whether a commit outside `claude-code/` also counts as an update (design.md, Risks). Drop the test commit before review.
 
 ## 4. Docs
