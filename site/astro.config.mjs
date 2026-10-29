@@ -6,7 +6,7 @@ import starlightLinksValidator from 'starlight-links-validator';
 
 const repo = 'https://github.com/burnzy1148/agent-typewriter';
 const site = 'https://agent-typewriter.com';
-const bannerAlt = "Agent Typewriter: watch your agent's edits replayed as if a person were typing them";
+const bannerAlt = "Agent Typewriter: watch your agent's edits replayed as if a human were typing them";
 
 export default defineConfig({
   site,
@@ -14,7 +14,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Agent Typewriter',
-      description: "Watch your agent's edits replayed in VS Code as if a person were typing them.",
+      description: "Watch your agent's edits replayed in VS Code as if a human were typing them.",
       logo: { src: './src/assets/icon.png', alt: '' },
       favicon: '/images/icon.png',
       social: [
