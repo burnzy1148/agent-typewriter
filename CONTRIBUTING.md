@@ -49,10 +49,10 @@ npm run build     # static build in site/dist, fails on broken internal links
 
 ## The Claude Code plugin
 
-`claude-code/` is a Claude Code plugin that replays the edits a Claude Code session makes, in a pane beside the conversation. It is built on Claude Code's early-access function-hooks API: `hooks/register.tsx` hooks the `Edit` and `Write` tool calls and draws the pane, and `hooks/replay.ts` is its playback logic. It shares the diff planner and typing logic with the extension through `hooks/core.mjs`, a committed bundle of `src/planner.ts` and `src/typingChunks.ts`.
+`claude-code/` is a Claude Code plugin that replays the edits a Claude Code session makes, in a pane beside the conversation. It is built on Claude Code's early-access function-hooks API: `hooks/register.tsx` hooks the `Edit` and `Write` tool calls and draws the pane, and `hooks/replay.ts` is its playback logic. It shares the diff planner, typing logic and timeline with the extension through `hooks/core.mjs`, a committed bundle of `src/planner.ts`, `src/typingChunks.ts` and `src/timeline.ts`, with its declarations in `hooks/core.d.mts`, generated from the ones tsc emits.
 
 ```
-npm run build:claude-code      # rebuild hooks/core.mjs after changing the shared modules; commit it
+npm run build:claude-code      # rebuild hooks/core.mjs and core.d.mts after changing the shared modules; commit both
 npm run check:claude-code      # validate the marketplace and the plugin, run its tests, install it (pinned Claude Code CLI)
 npm run typecheck:claude-code  # type-check it against the engine's types (see below)
 claude --plugin-dir claude-code

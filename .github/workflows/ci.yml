@@ -73,12 +73,13 @@ jobs:
         run: npm test
 
   # The Claude Code plugin in claude-code/ and the marketplace catalog in
-  # .claude-plugin/. Its bundle of the shared modules is committed (a marketplace
-  # install runs no build), so a stale one fails here. A pinned Claude Code CLI
-  # validates the catalog and the plugin, runs the plugin's tests, and installs
-  # it from the checkout's marketplace, all with no login. Type-checking it needs
-  # the engine's types, which only a session that loads the plugin lays down, so
-  # that stays a local check.
+  # .claude-plugin/. Its bundle of the shared modules and the bundle's
+  # declarations are committed (a marketplace install runs no build), so a stale
+  # one fails here. A pinned Claude Code CLI validates the catalog and the
+  # plugin, runs the plugin's tests, and installs it from the checkout's
+  # marketplace, all with no login. Type-checking it needs the engine's types,
+  # which only a session that loads the plugin lays down, so that stays a local
+  # check.
   claude-code:
     name: Claude Code plugin
     needs: changes
@@ -97,10 +98,14 @@ jobs:
       - name: Check the shared-core bundle is up to date
         run: |
           npm run build:claude-code
-          git diff --exit-code -- claude-code/hooks/core.mjs || {
-            echo "::error file=claude-code/hooks/core.mjs::Stale bundle. Run npm run build:claude-code and commit the result."
-            exit 1
-          }
+          for file in claude-code/hooks/core.mjs claude-code/hooks/core.d.mts; do
+            # status, not diff: it also catches a file that is not committed at all.
+            if [ -n "$(git status --porcelain -- "$file")" ]; then
+              git diff -- "$file"
+              echo "::error file=$file::Stale or missing bundle. Run npm run build:claude-code and commit the result."
+              exit 1
+            fi
+          done
 
       - name: Validate, test and install the plugin
         run: npm run check:claude-code

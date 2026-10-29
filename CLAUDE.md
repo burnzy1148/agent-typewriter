@@ -8,7 +8,7 @@ A VS Code extension that watches files change on disk and replays each change as
 - `npm run it`: integration tests in a real headless VS Code. Needs xvfb on Linux.
 - `npm run package`: builds the .vsix.
 - `npm run dev` / `npm run build` in `site/`: the docs site (separate npm project; run `npm install` there first).
-- `npm run build:claude-code`: rebuilds the Claude Code plugin's `claude-code/hooks/core.mjs` from the shared modules.
+- `npm run build:claude-code`: rebuilds the Claude Code plugin's `claude-code/hooks/core.mjs` and its declarations `core.d.mts` from the shared modules.
 - `npm run check:claude-code`: in a pinned Claude Code CLI, validates the plugin marketplace and the plugin, runs the plugin's tests, and installs it from the checkout's marketplace (`scripts/check-claude-code.mjs`).
 - `npm run typecheck:claude-code`: type-checks the plugin. Needs the engine types a session lays in `claude-code/.claude-plugin/types/` when it loads the plugin (`claude --plugin-dir claude-code`).
 
@@ -31,7 +31,7 @@ A VS Code extension that watches files change on disk and replays each change as
 
 ### Shared core
 
-The Claude Code plugin reuses `src/planner.ts` and `src/typingChunks.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit `core.mjs`; CI fails on a stale bundle. To share another module, add it to the bundle's entry and to `core.d.mts`.
+The Claude Code plugin reuses `src/planner.ts`, `src/typingChunks.ts` and `src/timeline.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes, with its declarations in `core.d.mts`, generated from the ones tsc emits. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit both files; CI fails on a stale bundle. To share another module, add it to the bundle's entry.
 
 ## Rules that must not break
 
