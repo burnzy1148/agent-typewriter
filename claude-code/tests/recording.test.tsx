@@ -89,6 +89,32 @@ test('when the file cannot be read after the tool, its result reaches Claude unc
   expect(w.saved.recorded).toBe(0);
 });
 
+test('a terminal session records nothing, reads nothing and opens nothing', async ($, on) => {
+  const w = world(on, { '/w/a.ts': 'A\n' });
+  w.surfaces = ['terminal'];
+  await start($, 'terminal');
+  const edited = await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
+  const written = await $.tool.call({ tool: 'Write', file_path: '/w/b.ts', content: 'b\n' });
+
+  expect(edited.result).toEqual({});
+  expect(written.result).toEqual({});
+  expect(w.files.get('/w/a.ts')).toBe('B\n');
+  expect(w.files.get('/w/b.ts')).toBe('b\n');
+  expect(w.saved.recorded).toBe(0);
+  expect(w.texts.size).toBe(0);
+  expect(w.reads).toEqual([]);
+  expect(w.opens).toEqual([]);
+});
+
+test('a session with no surface still records', async ($, on) => {
+  const w = world(on, { '/w/a.ts': 'A\n' });
+  w.surfaces = [];
+  await start($);
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
+
+  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'A\n', after: 'B\n' }]);
+});
+
 test('a Bash write is not recorded', async ($, on) => {
   const w = world(on);
   await start($);

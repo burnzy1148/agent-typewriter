@@ -24,9 +24,8 @@ Without a shell:
 
 - **VS Code:** type `/plugins` in the Claude Code panel to open **Manage plugins**, add `burnzy1148/agent-typewriter` on the **Marketplaces** tab, then install Agent Typewriter from the **Plugins** tab.
 - **Desktop app:** once the marketplace is added, Agent Typewriter is in the plugin browser: click **+** next to the prompt box and choose **Add plugins** (or **Plugins**, then **Browse plugins**).
-- **Terminal session:** `/plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter` asks you to confirm the marketplace, then installs.
 
-Agent Typewriter is made for the desktop app's local sessions and Claude Code's VS Code extension. A desktop app or phone attached to another session by Remote Control doesn't show its pane. If you run Claude Code in a terminal, replay with the [Agent Typewriter extension for VS Code](https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter) instead, which types out the same edits from disk.
+Agent Typewriter is made for the desktop app's local sessions and Claude Code's VS Code extension. A desktop app or phone attached to another session by Remote Control doesn't show its pane. In a session you run in a terminal, the plugin stays out of the way: it records nothing and draws nothing, and `/typewriter` points you to the [Agent Typewriter extension for VS Code](https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter), which types out the same edits from disk.
 
 Use it in a local session. Cloud sessions (claude.ai/code, the mobile app, and the desktop app's cloud sessions) don't load plugins installed on your machine or turned on in a repository's settings. A cloud environment that loads it some other way, such as by naming its folder in `CLAUDE_CODE_PLUGIN_DIRS`, records the session's edits, but no client draws the pane for a cloud session yet.
 
@@ -76,7 +75,7 @@ Files larger than 1 MB are not typed: the pane names them and moves on. A change
 
 ## The pane
 
-The pane opens by itself on the first change, where Claude Code can dock it beside the conversation: in the desktop app, or in a wide terminal. Anywhere else, run `/typewriter` to open it.
+The pane opens by itself on the first change, where Claude Code can dock it beside the conversation, as in the desktop app. Anywhere else, run `/typewriter` to open it.
 
 It shows the file being typed (by its path in your project), the lines around the caret with line numbers and syntax highlighting, and whether playback is typing, paused or idle with how many changes are queued. Its buttons:
 
