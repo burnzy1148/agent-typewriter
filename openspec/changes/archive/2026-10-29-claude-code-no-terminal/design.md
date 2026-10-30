@@ -58,7 +58,7 @@ In a terminal-only session the command returns `{ text }` without calling `$.ui.
 
 ## Risks / Trade-offs
 
-- **A mixed session may show an empty pane frame in a wide terminal.** `$.ui.open` cannot leave out a surface, and the frame is the engine's to draw. → No session mixes the terminal with a drawing surface today (spike at-o3z.10). If one ever does, revisit with whatever per-surface placement the engine offers then.
+- **A mixed session shows an empty pane frame in the terminal.** `$.ui.open` cannot leave out a surface, and the frame is the engine's to draw: an open on the first change places it from 144 columns (110 once the person has opened the pane before), and `/typewriter` places it at any width. → No session mixes the terminal with a drawing surface today (spike at-o3z.10). If one ever does, revisit with whatever per-surface placement the engine offers then.
 - **`surfaces()` may be empty in the desktop app or VS Code before their client attaches.** → An empty list keeps recording, so an early edit is never lost.
 - **People who use the pane in a wide terminal lose it.** → The README and `/typewriter` point them to the VS Code extension. The plugin is in early access on the `claude-code-extension` branch, so few people are affected.
 

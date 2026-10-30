@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing';
 
-import { start, waiting, world } from './world';
+import { PANE_ID, start, waiting, world } from './world';
 
 test('an Edit is recorded with the text before and after it', async ($, on) => {
   const w = world(on, { '/w/app.ts': 'const a = 1;\n' });
@@ -113,6 +113,20 @@ test('a session with no surface still records', async ($, on) => {
   await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
 
   expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'A\n', after: 'B\n' }]);
+});
+
+test('the surfaces are asked at each call, so recording starts once a drawing surface attaches', async ($, on) => {
+  const w = world(on, { '/w/a.ts': 'A\n' });
+  w.surfaces = ['terminal'];
+  await start($, 'terminal');
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
+  expect(w.saved.recorded).toBe(0);
+
+  w.surfaces = ['terminal', 'desktop'];
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'B', new_string: 'C' });
+
+  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'B\n', after: 'C\n' }]);
+  expect(w.opens).toEqual([PANE_ID]);
 });
 
 test('a Bash write is not recorded', async ($, on) => {
