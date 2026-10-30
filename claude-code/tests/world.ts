@@ -2,7 +2,7 @@
 // file tools acting on it, and the engine calls the plugin makes at start.
 // It also watches what the plugin writes to $.state.
 
-import type { On, Shaped, ToolCallResult } from 'claude-code';
+import type { On, RenderSurface, Shaped, ToolCallResult } from 'claude-code';
 import { mock, type Engine, type MockClock } from 'claude-code/testing';
 
 import type { Saved, View } from '../types';
@@ -26,6 +26,8 @@ export type World = {
   writes: string[];
   /** Makes every later `$.fs.read` fail. */
   breakReads: () => void;
+  /** What `$.session.surfaces()` answers; a test may change it. */
+  surfaces: RenderSurface[];
 };
 
 /** Answers a Write in place of the in-memory one, as a refusal or a tool of its own would. */
@@ -42,6 +44,7 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
     reads: [],
     writes: [],
     breakReads: () => (isBroken = true),
+    surfaces: ['desktop'],
   };
   let isBroken = false;
   // Each write to a file moves its modification time on.
@@ -86,6 +89,7 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
     return { value: { isPlaced: true } };
   });
   on('session.start', (_, e) => ({ cwd: e.cwd }));
+  on('session.surfaces', () => ({ value: w.surfaces }));
 
   // The file tools, acting on the in-memory files.
   on('tool.call', { tool: 'Edit' }, (_, e) => {

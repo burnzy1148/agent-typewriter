@@ -1,6 +1,7 @@
 // Wires playback (replay.ts) to Claude Code: records the session's Edit and
 // Write calls, ticks the deck on a timer, and draws the pane. The plugin only
-// reads files; it never writes one.
+// reads files; it never writes one. A session that draws only in a terminal is
+// left to the VS Code extension: nothing is recorded or drawn there.
 //
 // The deck lives in module memory. Hooks, the timer and button handlers run in
 // this one module, one at a time, so they change it directly. $.state keeps
@@ -35,6 +36,8 @@ import {
 
 const PANE = 'agent-typewriter';
 const TITLE = 'Agent Typewriter';
+const TERMINAL_POINTER =
+  "Agent Typewriter for Claude Code doesn't replay in the terminal. To watch Claude's edits typed out, use the Agent Typewriter extension for VS Code (https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter), or run Claude Code in the desktop app.";
 /** Columns the Code element's line-number gutter takes. */
 const GUTTER = 8;
 
@@ -156,6 +159,24 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   return ran;
 }
 
+/** Whether the session draws only on the terminal. An empty list (a -p run, a cloud session) is not. */
+async function isTerminalOnly($: EngineInterface): Promise<boolean> {
+  const surfaces = await $.session.surfaces();
+  return surfaces.length > 0 && surfaces.every((s) => s === 'terminal');
+}
+
+/** Records a file tool's change, unless the session draws only on the terminal. */
+async function recordIfShown<R extends { deny?: string; isError?: boolean }>(
+  $: EngineInterface,
+  live: Live,
+  path: string,
+  id: string,
+  run: () => Promise<R>,
+): Promise<R> {
+  if (await isTerminalOnly($)) return run();
+  return record($, live, path, id, run);
+}
+
 /** Applies a control's action to the deck. */
 function act($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
   fn(live.deck);
@@ -186,20 +207,23 @@ export const register: Register = (on, options) => {
   });
 
   on('command.run', { command: 'typewriter' }, async ($) => {
+    if (await isTerminalOnly($)) return { text: TERMINAL_POINTER };
     await $.ui.open({ id: PANE, title: TITLE });
     return { text: 'Agent Typewriter pane opened.' };
   });
 
   // A failure while recording never blocks the tool: the handler runs it, or
   // hands back the result it already has.
-  on('tool.call', { tool: 'Edit' }, ($, e, next) => record($, live, e.file_path, e.tool_use_id, () => next(e))).catch(
+  on('tool.call', { tool: 'Edit' }, ($, e, next) => recordIfShown($, live, e.file_path, e.tool_use_id, () => next(e))).catch(
     ($, e, next) => next(e),
   );
-  on('tool.call', { tool: 'Write' }, ($, e, next) => record($, live, e.file_path, e.tool_use_id, () => next(e))).catch(
+  on('tool.call', { tool: 'Write' }, ($, e, next) => recordIfShown($, live, e.file_path, e.tool_use_id, () => next(e))).catch(
     ($, e, next) => next(e),
   );
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    // The terminal is left to the VS Code extension.
+    if (e.surface === 'terminal') return next(e);
     const { Box, Text, Button, Code } = $.ui.resolve(e);
     const v = await read($, view);
     const queued = v.queued > 0 ? ` · ${v.queued} queued` : '';

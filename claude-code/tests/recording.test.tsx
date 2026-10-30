@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing';
 
-import { start, waiting, world } from './world';
+import { PANE_ID, start, waiting, world } from './world';
 
 test('an Edit is recorded with the text before and after it', async ($, on) => {
   const w = world(on, { '/w/app.ts': 'const a = 1;\n' });
@@ -87,6 +87,46 @@ test('when the file cannot be read after the tool, its result reaches Claude unc
   expect(ran.deny).toBe(undefined);
   expect(ran.result).toEqual({ marker: 'from the tool' });
   expect(w.saved.recorded).toBe(0);
+});
+
+test('a terminal session records nothing, reads nothing and opens nothing', async ($, on) => {
+  const w = world(on, { '/w/a.ts': 'A\n' });
+  w.surfaces = ['terminal'];
+  await start($, 'terminal');
+  const edited = await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
+  const written = await $.tool.call({ tool: 'Write', file_path: '/w/b.ts', content: 'b\n' });
+
+  expect(edited.result).toEqual({});
+  expect(written.result).toEqual({});
+  expect(w.files.get('/w/a.ts')).toBe('B\n');
+  expect(w.files.get('/w/b.ts')).toBe('b\n');
+  expect(w.saved.recorded).toBe(0);
+  expect(w.texts.size).toBe(0);
+  expect(w.reads).toEqual([]);
+  expect(w.opens).toEqual([]);
+});
+
+test('a session with no surface still records', async ($, on) => {
+  const w = world(on, { '/w/a.ts': 'A\n' });
+  w.surfaces = [];
+  await start($);
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
+
+  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'A\n', after: 'B\n' }]);
+});
+
+test('the surfaces are asked at each call, so recording starts once a drawing surface attaches', async ($, on) => {
+  const w = world(on, { '/w/a.ts': 'A\n' });
+  w.surfaces = ['terminal'];
+  await start($, 'terminal');
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
+  expect(w.saved.recorded).toBe(0);
+
+  w.surfaces = ['terminal', 'desktop'];
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'B', new_string: 'C' });
+
+  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'B\n', after: 'C\n' }]);
+  expect(w.opens).toEqual([PANE_ID]);
 });
 
 test('a Bash write is not recorded', async ($, on) => {

@@ -2,7 +2,8 @@ import { expect, test, type Engine } from 'claude-code/testing';
 
 import { PANE_ID, start, world } from './world';
 
-const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const;
+// The plugin draws nothing on the terminal; that is the VS Code extension's.
+const SURFACES = ['desktop', 'vscode', 'mobile'] as const;
 type Surface = (typeof SURFACES)[number];
 
 const PANE = {
@@ -20,7 +21,7 @@ const PANE = {
 } as const;
 
 /** What the pane draws on `surface`: the file's name, the status line, and the Code element's props. */
-async function look($: Engine, surface: Surface) {
+async function look($: Engine, surface: Surface | 'terminal') {
   const ui = await $.ui.mount({ ...PANE, surface });
   const name = (await ui.find({ type: 'Text', text: /^(?!.*(typing|paused|idle))/ }))?.text;
   const status = (await ui.find({ type: 'Text', text: /^(typing|paused|idle)/ }))?.text;
@@ -81,7 +82,7 @@ test('a file outside the working directory is named by its absolute path', async
   await $.tool.call({ tool: 'Write', file_path: '/tmp/scratch.ts', content: 'x\n' });
   await w.clock.advance(5_000);
 
-  expect((await look($, 'terminal')).name).toBe('/tmp/scratch.ts');
+  expect((await look($, 'desktop')).name).toBe('/tmp/scratch.ts');
 });
 
 test('the status counts the changes waiting to play', async ($, on) => {
@@ -206,6 +207,42 @@ test('/typewriter opens the pane', async ($, on) => {
   expect(w.opens).toEqual([PANE_ID]);
 });
 
+test('/typewriter in a terminal session points to the VS Code extension and opens nothing', async ($, on) => {
+  const w = world(on);
+  w.surfaces = ['terminal'];
+  await start($, 'terminal');
+  const ran = await $.command.run({
+    command: 'typewriter',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 200 },
+  });
+  expect(ran.text).toContain('Agent Typewriter extension for VS Code');
+  expect(ran.text).toContain('desktop app');
+  expect(w.opens).toEqual([]);
+});
+
+test('a session on the terminal and the desktop records and draws on the desktop, and draws nothing on the terminal', async ($, on) => {
+  const w = world(on, { '/w/src/app.ts': BEFORE });
+  w.surfaces = ['terminal', 'desktop'];
+  // Stands in for what the engine draws when no plugin draws the pane.
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, () => ({ type: 'Box' }));
+  await start($, 'terminal');
+  await $.tool.call({ tool: 'Edit', file_path: '/w/src/app.ts', old_string: BEFORE, new_string: AFTER });
+  await w.clock.advance(60_000);
+
+  expect(w.saved.recorded).toBe(1);
+  expect(w.opens).toEqual([PANE_ID]);
+  const desktop = await look($, 'desktop');
+  expect(desktop.name).toBe('src/app.ts');
+  expect(desktop.code?.source).toBe(AFTER);
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' });
+  expect(await ui.drawn()).toMatchObject({ type: 'Box' });
+  for (const type of ['Text', 'Button', 'Code'] as const) expect(await ui.findAll({ type })).toEqual([]);
+  await ui.unmount();
+});
+
 test('a file too large to replay is named and skipped', async ($, on) => {
   const w = world(on);
   await start($);
@@ -213,9 +250,9 @@ test('a file too large to replay is named and skipped', async ($, on) => {
   await $.tool.call({ tool: 'Write', file_path: '/w/next.ts', content: 'n\n' });
   await w.clock.advance(60);
 
-  expect((await look($, 'terminal')).note).toBe('big.json is too large to replay.');
+  expect((await look($, 'desktop')).note).toBe('big.json is too large to replay.');
   await w.clock.advance(5_000);
-  expect((await look($, 'terminal')).code?.source).toBe('n\n');
+  expect((await look($, 'desktop')).code?.source).toBe('n\n');
 });
 
 /**
