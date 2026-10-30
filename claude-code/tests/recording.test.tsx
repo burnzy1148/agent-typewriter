@@ -1,23 +1,31 @@
 import { expect, test } from 'claude-code/testing';
 
 import { TICK_MS } from '../hooks/replay';
-import { PANE_ID, start, waiting, world } from './world';
+import { PANE_ID, kept, start, world } from './world';
 
-test('an Edit is recorded with the text before and after it', async ($, on) => {
+test('an Edit is recorded with the text before and after it, as a modify at the time it ran', async ($, on) => {
   const w = world(on, { '/w/app.ts': 'const a = 1;\n' });
   await start($);
+  await w.clock.advance(1_000);
   await $.tool.call({ tool: 'Edit', file_path: '/w/app.ts', old_string: '1', new_string: '2' });
 
-  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/app.ts', before: 'const a = 1;\n', after: 'const a = 2;\n' }]);
+  expect(kept(w)).toEqual([
+    { id: expect.any(String), path: '/w/app.ts', kind: 'modify', time: w.clock.now(), before: 'const a = 1;\n', after: 'const a = 2;\n' },
+  ]);
   expect(w.writes).toEqual([]);
 });
 
-test('a Write of a new file is recorded with empty before text', async ($, on) => {
-  const w = world(on);
+test('a Write of a new file is recorded as a create with empty before text; a Write over a file is a modify', async ($, on) => {
+  const w = world(on, { '/w/old.md': 'old\n' });
   await start($);
+  await w.clock.advance(1_000);
   await $.tool.call({ tool: 'Write', file_path: '/w/notes.md', content: '# Notes\n' });
+  await $.tool.call({ tool: 'Write', file_path: '/w/old.md', content: 'new\n' });
 
-  expect(waiting(w)[0]).toMatchObject({ path: '/w/notes.md', before: '', after: '# Notes\n' });
+  expect(kept(w)).toMatchObject([
+    { path: '/w/notes.md', kind: 'create', time: w.clock.now(), before: '', after: '# Notes\n' },
+    { path: '/w/old.md', kind: 'modify', before: 'old\n', after: 'new\n' },
+  ]);
 });
 
 test("a subagent's Write is recorded", async ($, on) => {
@@ -34,7 +42,7 @@ test('two edits to one file are recorded as two changes', async ($, on) => {
   await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
   await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'B', new_string: 'C' });
 
-  expect(waiting(w).map((c) => [c.before, c.after])).toEqual([
+  expect(kept(w).map((c) => [c.before, c.after])).toEqual([
     ['A\n', 'B\n'],
     ['B\n', 'C\n'],
   ]);
@@ -45,7 +53,7 @@ test('CRLF line endings are recorded as LF', async ($, on) => {
   await start($);
   await $.tool.call({ tool: 'Edit', file_path: '/w/win.ts', old_string: 'b', new_string: 'c' });
 
-  expect(waiting(w)[0]).toMatchObject({ before: 'a\nb\n', after: 'a\nc\n' });
+  expect(kept(w)[0]).toMatchObject({ before: 'a\nb\n', after: 'a\nc\n' });
 });
 
 test('a refused call records nothing and its refusal reaches Claude', async ($, on) => {
@@ -113,7 +121,7 @@ test('a session with no surface still records', async ($, on) => {
   await start($);
   await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'A', new_string: 'B' });
 
-  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'A\n', after: 'B\n' }]);
+  expect(kept(w)).toMatchObject([{ path: '/w/a.ts', before: 'A\n', after: 'B\n' }]);
 });
 
 test('the surfaces are asked at each call, so recording starts once a drawing surface attaches', async ($, on) => {
@@ -126,7 +134,8 @@ test('the surfaces are asked at each call, so recording starts once a drawing su
   w.surfaces = ['terminal', 'desktop'];
   await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'B', new_string: 'C' });
 
-  expect(waiting(w)).toEqual([{ id: expect.any(String), path: '/w/a.ts', before: 'B\n', after: 'C\n' }]);
+  expect(kept(w)).toMatchObject([{ path: '/w/a.ts', before: 'B\n', after: 'C\n' }]);
+  expect(kept(w).length).toBe(1);
   expect(w.opens).toEqual([PANE_ID]);
 });
 
@@ -142,8 +151,12 @@ test('a file over the replay limit is recorded without its text', async ($, on) 
   const w = world(on, { '/w/big.json': '' });
   await start($);
   await $.tool.call({ tool: 'Write', file_path: '/w/big.json', content: 'x'.repeat(1_000_001) });
+  await $.tool.call({ tool: 'Write', file_path: '/w/new.json', content: 'x'.repeat(1_000_001) });
 
-  expect(w.saved.changes).toEqual([{ id: expect.any(String), path: '/w/big.json', isTooLarge: true }]);
+  expect(w.saved.changes).toEqual([
+    { id: expect.any(String), path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
+    { id: expect.any(String), path: '/w/new.json', kind: 'create', time: 0, isTooLarge: true },
+  ]);
   expect(w.texts.size).toBe(0);
 });
 
@@ -153,7 +166,7 @@ test('once a file was over the limit, neither text is read', async ($, on) => {
   await $.tool.call({ tool: 'Write', file_path: '/w/big.json', content: 'small\n' });
 
   expect(w.reads).toEqual([]);
-  expect(w.saved.changes).toEqual([{ id: expect.any(String), path: '/w/big.json', isTooLarge: true }]);
+  expect(w.saved.changes).toMatchObject([{ path: '/w/big.json', isTooLarge: true }]);
 });
 
 test('a large file left with the same size and time records nothing', async ($, on) => {
@@ -166,15 +179,26 @@ test('a large file left with the same size and time records nothing', async ($, 
   expect(w.reads).toEqual([]);
 });
 
-test('a finished change has its texts cleared', async ($, on) => {
+test('a played change keeps its texts until 200 later changes push it out, and its texts are then cleared', async ($, on) => {
   const w = world(on);
   await start($);
   await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
   const [id] = w.saved.changes.map((c) => c.id);
+  await w.clock.advance(5_000);
+  expect(w.saved.played).toBe(1);
+  expect(kept(w)).toMatchObject([{ id, path: '/w/a.ts', before: '', after: 'a\n' }]);
+
+  for (let i = 0; i < 199; i++) await $.tool.call({ tool: 'Write', file_path: `/w/c${i}.ts`, content: `${i}\n` });
+  await w.clock.settle();
+  expect(w.saved.changes.length).toBe(200);
+  expect(w.saved.played).toBe(1);
   expect(w.texts.get(`${id}:after`)).toBe('a\n');
 
-  await w.clock.advance(5_000);
-  expect(w.saved.changes).toEqual([]);
+  await $.tool.call({ tool: 'Write', file_path: '/w/last.ts', content: 'last\n' });
+  await w.clock.settle();
+  expect(w.saved.changes.length).toBe(200);
+  expect(w.saved.played).toBe(0);
+  expect(w.saved.changes.map((c) => c.path)).not.toContain('/w/a.ts');
   expect(w.texts.get(`${id}:before`)).toBe('');
   expect(w.texts.get(`${id}:after`)).toBe('');
 });
@@ -198,7 +222,7 @@ test('a tick while a change is being recorded leaves its texts saved', async ($,
   await $.tool.call({ tool: 'Edit', file_path: '/w/b.ts', old_string: 'B', new_string: 'C' });
 
   expect(isArmed).toBe(false);
-  expect(waiting(w).find((c) => c.path === '/w/b.ts')).toMatchObject({ before: 'B\n', after: 'C\n' });
+  expect(kept(w).find((c) => c.path === '/w/b.ts')).toMatchObject({ before: 'B\n', after: 'C\n' });
 });
 
 // The review's repro: a single $.state value is capped at 4,194,304 characters,

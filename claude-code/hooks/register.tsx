@@ -5,7 +5,7 @@
 //
 // The deck lives in module memory. Hooks, the timer and button handlers run in
 // this one module, one at a time, so they change it directly. $.state keeps
-// only what must outlive a reload (`saved`, and each waiting change's texts in
+// only what must outlive a reload (`saved`, and each kept change's texts in
 // the `text` family) and what the pane draws (`view`).
 
 import { atom, read, update } from 'claude-code';
@@ -14,16 +14,17 @@ import type { EngineInterface, Register } from 'claude-code';
 import { normalizeEol } from './core.mjs';
 import {
   MAX_REPLAY_BYTES,
+  SAVED_SHAPE,
   TICK_MS,
   enqueue,
   finish,
   frame,
   isUnchanged,
-  liveIds,
   newDeck,
   playOptions,
   relativePath,
   restore,
+  savedFrom,
   savedOf,
   skipToLatest,
   tick,
@@ -42,8 +43,10 @@ const TERMINAL_POINTER =
 const GUTTER = 8;
 
 // Change a tag when its value's fields change: a reload then starts fresh
-// instead of reading what an earlier version stored.
-const saved = atom({ plugin: 'agent-typewriter', key: 'saved' } as const, savedOf(newDeck()), { shape: 'saved-1' });
+// instead of reading what an earlier version stored. `saved` reads its earlier
+// tag through savedFrom.
+const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
+const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
 const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-1' });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
@@ -68,14 +71,17 @@ function sync($: EngineInterface, live: Live): void {
 }
 
 async function flush($: EngineInterface, live: Live): Promise<void> {
-  const ids = new Set(liveIds(live.deck));
+  // Texts are blanked before `saved` stops naming their change: a reload in
+  // between skips a change with blank texts, while the other order could leave
+  // texts that nothing names and nothing blanks.
+  const nextSaved = savedOf(live.deck);
+  const ids = new Set(nextSaved.changes.map((c) => c.id));
   for (const id of [...live.texts]) {
     if (ids.has(id)) continue;
     live.texts.delete(id);
     await $.state.set({ ...text, id: `${id}:before` }, '');
     await $.state.set({ ...text, id: `${id}:after` }, '');
   }
-  const nextSaved = savedOf(live.deck);
   const savedJson = JSON.stringify(nextSaved);
   if (savedJson !== live.savedJson) {
     live.savedJson = savedJson;
@@ -91,7 +97,7 @@ async function flush($: EngineInterface, live: Live): Promise<void> {
 
 /** Rebuilds the deck from what an earlier load saved; a change whose texts are gone is skipped. */
 async function load($: EngineInterface, live: Live): Promise<void> {
-  const was = await read($, saved);
+  const was = savedFrom((await $.state.get(savedRef)).value);
   const changes: Change[] = [];
   for (const c of was.changes) {
     if (c.isTooLarge) {
@@ -104,7 +110,7 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     if (before === undefined || after === undefined || before === after) continue;
     changes.push({ ...c, before, after });
   }
-  live.deck = restore(was, changes, live.cwd);
+  live.deck = restore(was, changes, live.opts, live.cwd);
   sync($, live);
 }
 
@@ -133,14 +139,15 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   const after = await snapshot($, path, !before || 'text' in before);
   if (!after) return ran;
 
+  const recorded = { id, path, kind: before ? 'modify' : 'create', time: await $.clock.now() } as const;
   let change: Change;
   if ('text' in after && (!before || 'text' in before)) {
-    change = { id, path, before: before?.text ?? '', after: after.text };
+    change = { ...recorded, before: before?.text ?? '', after: after.text };
   } else {
     const isSame =
       before !== undefined && !('text' in before) && !('text' in after) && before.size === after.size && before.mtimeMs === after.mtimeMs;
     if (isSame) return ran;
-    change = { id, path, before: '', after: '', isTooLarge: true };
+    change = { ...recorded, before: '', after: '', isTooLarge: true };
   }
   if (isUnchanged(change)) return ran;
 

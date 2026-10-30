@@ -37,7 +37,7 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
   const w: World = {
     files: new Map(Object.entries(files)),
     clock: mock.clock(on),
-    saved: { changes: [], recorded: 0, isPaused: false },
+    saved: { changes: [], played: 0, recorded: 0, isPaused: false },
     texts: new Map(),
     views: [],
     opens: [],
@@ -108,8 +108,8 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
   return w;
 }
 
-/** The waiting changes the plugin saved, with the texts it saved for them. */
-export function waiting(w: World) {
+/** The changes the plugin saved, played and waiting, with the texts it saved for them. */
+export function kept(w: World) {
   return w.saved.changes.map((c) => ({ ...c, before: w.texts.get(`${c.id}:before`), after: w.texts.get(`${c.id}:after`) }));
 }
 

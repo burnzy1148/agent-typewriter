@@ -283,13 +283,13 @@ function seed(on: Parameters<typeof world>[0], saved: unknown, texts: Record<str
   });
 }
 
+const R = { id: 'r', path: '/w/r.ts', kind: 'create', time: 1_000 } as const;
+const S = { id: 's', path: '/w/s.ts', kind: 'modify', time: 2_000 } as const;
+const RS_TEXTS = { 'r:before': '', 'r:after': 'kept\n', 's:before': 'old\n', 's:after': 'new\n' };
+
 test('after a reload, the saved changes play, the one that was being typed from its start', async ($, on) => {
   const w = world(on);
-  seed(
-    on,
-    { shape: 'saved-1', value: { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 's', path: '/w/s.ts' }], recorded: 2, isPaused: false } },
-    { 'r:before': '', 'r:after': 'kept\n', 's:before': 'old\n', 's:after': 'new\n' },
-  );
+  seed(on, { shape: 'saved-2', value: { changes: [R, S], played: 0, recorded: 2, isPaused: false } }, RS_TEXTS);
   await start($);
   await w.clock.advance(60);
   expect((await look($, 'desktop')).name).toBe('r.ts');
@@ -300,9 +300,58 @@ test('after a reload, the saved changes play, the one that was being typed from 
   expect(code?.source).toBe('new\n');
 });
 
+test('after a reload, played changes stay played with their texts, kind and time, and only the waiting ones play', async ($, on) => {
+  const w = world(on);
+  const saved = { changes: [R, S], played: 1, recorded: 2, isPaused: false };
+  seed(on, { shape: 'saved-2', value: saved }, RS_TEXTS);
+  await start($);
+  await w.clock.settle();
+  expect(w.saved).toEqual(saved);
+  // The pane picks up on the played change until the waiting one starts.
+  const shown = await look($, 'desktop');
+  expect([shown.name, shown.status, shown.code?.source]).toEqual(['r.ts', 'idle · 1 queued', 'kept\n']);
+
+  await w.clock.advance(10_000);
+  expect((await look($, 'desktop')).code?.source).toBe('new\n');
+  expect(w.views.some((v) => v.path === '/w/r.ts' && v.isTyping)).toBe(false);
+  expect(w.saved).toEqual({ ...saved, played: 2 });
+  expect(w.texts.size).toBe(0);
+});
+
+test('after a reload with every change played, the pane shows the last one done and types nothing', async ($, on) => {
+  const w = world(on);
+  seed(on, { shape: 'saved-2', value: { changes: [R, S], played: 2, recorded: 2, isPaused: false } }, RS_TEXTS);
+  await start($);
+  await w.clock.advance(5_000);
+
+  const { name, status, code } = await look($, 'desktop');
+  expect([name, status, code?.source]).toEqual(['s.ts', 'idle', 'new\n']);
+  expect(w.views.length > 0 && w.views.every((v) => !v.isTyping)).toBe(true);
+});
+
+test('after a reload, changes saved by the earlier saved-1 shape play', async ($, on) => {
+  const w = world(on);
+  seed(
+    on,
+    { shape: 'saved-1', value: { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 's', path: '/w/s.ts' }], recorded: 2, isPaused: false } },
+    RS_TEXTS,
+  );
+  await start($);
+  await w.clock.advance(60);
+  expect((await look($, 'desktop')).name).toBe('r.ts');
+
+  await w.clock.advance(10_000);
+  expect((await look($, 'desktop')).code?.source).toBe('new\n');
+  expect(w.saved.changes).toEqual([
+    { id: 'r', path: '/w/r.ts', kind: 'modify', time: 0 },
+    { id: 's', path: '/w/s.ts', kind: 'modify', time: 0 },
+  ]);
+  expect(w.saved.played).toBe(2);
+});
+
 test('after a reload, a pause is kept', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-1', value: { changes: [{ id: 'r', path: '/w/r.ts' }], recorded: 1, isPaused: true } }, { 'r:before': '', 'r:after': 'x\n' });
+  seed(on, { shape: 'saved-2', value: { changes: [R], played: 0, recorded: 1, isPaused: true } }, { 'r:before': '', 'r:after': 'x\n' });
   await start($);
   await w.clock.advance(5_000);
 
