@@ -7,7 +7,7 @@ Defines how the Agent Typewriter plugin for Claude Code records the file edits a
 ## Requirements
 
 ### Requirement: Session edits are recorded
-The plugin SHALL record a change for each `Edit` and `Write` tool call that the session runs, including calls made by its subagents. It SHALL NOT record writes made any other way, including by `Bash`, `NotebookEdit`, other programs, or the user.
+The plugin SHALL record a change for each `Edit` and `Write` tool call that the session runs, including calls made by its subagents, except in a session that draws only on the terminal surface. It SHALL NOT record writes made any other way, including by `Bash`, `NotebookEdit`, other programs, or the user.
 
 #### Scenario: Edit in the main conversation
 - **WHEN** Claude edits `src/app.ts` with the `Edit` tool and the edit succeeds
@@ -24,6 +24,10 @@ The plugin SHALL record a change for each `Edit` and `Write` tool call that the 
 #### Scenario: Edit outside the session
 - **WHEN** the user saves `src/app.ts` in their editor during the session
 - **THEN** no change is recorded
+
+#### Scenario: Session with no surface
+- **WHEN** Claude edits `src/app.ts` in a session that draws on no surface, such as a `-p` run or a cloud session
+- **THEN** one change for `src/app.ts` is recorded
 
 ### Requirement: Before text is captured when the call starts
 A change's before text SHALL be the file's text read when the tool call starts, before the tool runs, and its after text SHALL be the file's text read once the tool has finished. A file that does not exist when the call starts SHALL have empty before text.
@@ -119,7 +123,7 @@ The plugin SHALL provide a `naturalOrder` option, defaulting to on. With it on, 
 - **THEN** the function's opening and closing lines are typed before its body
 
 ### Requirement: Replay pane
-The plugin SHALL show an "Agent Typewriter" pane on the terminal, desktop and VS Code surfaces of Claude Code. While a change plays, the pane SHALL show its file, the part of the file's current text around the caret with the caret marked, and line numbers, with syntax highlighting chosen from the file's name.
+The plugin SHALL show an "Agent Typewriter" pane on the desktop and VS Code surfaces of Claude Code. While a change plays, the pane SHALL show its file, the part of the file's current text around the caret with the caret marked, and line numbers, with syntax highlighting chosen from the file's name.
 
 #### Scenario: Long file
 - **WHEN** a change edits line 400 of a 900-line file
@@ -146,21 +150,6 @@ The pane SHALL show whether playback is typing, paused, or idle, and how many re
 #### Scenario: Changes waiting
 - **WHEN** a change is playing and two more are recorded
 - **THEN** the pane shows that it is typing and that 2 changes are queued
-
-### Requirement: Opening the pane
-A `/typewriter` command SHALL open the pane. When the session records its first change, the pane SHALL also open by itself where Claude Code docks a pane beside the conversation without taking it over: in the desktop app, and in a terminal wide enough. Elsewhere it SHALL stay undrawn until the user runs `/typewriter` or the terminal grows wide enough.
-
-#### Scenario: Desktop app
-- **WHEN** the first change of a session in the desktop app is recorded and the pane is not open
-- **THEN** the pane opens beside the conversation
-
-#### Scenario: Narrow terminal
-- **WHEN** the first change is recorded in a terminal too narrow to dock a pane
-- **THEN** the pane is not drawn until the user runs `/typewriter`
-
-#### Scenario: Later changes
-- **WHEN** the user closes the pane and the session records more changes
-- **THEN** the pane does not open again by itself
 
 ### Requirement: Playback controls
 The pane SHALL have controls to pause and resume playback, to finish the current change at once, and to skip to the latest change. Pausing SHALL stop typing at the current keystroke, and resuming SHALL continue from there. Skipping to the latest SHALL finish every recorded change at once and show the last one's after text.
@@ -194,3 +183,39 @@ A change to a file larger than 1,000,000 bytes, before or after the tool ran, SH
 #### Scenario: Generated file
 - **WHEN** Claude writes a 2 MB generated file
 - **THEN** the pane says that file is too large to replay and plays the next change
+
+### Requirement: Pane opens on request or on the first change
+A `/typewriter` command SHALL open the pane, except in a session that draws only on the terminal surface. When the session records its first change, the pane SHALL also open by itself where Claude Code docks a pane beside the conversation without taking it over, as in the desktop app. Elsewhere it SHALL stay undrawn until the user runs `/typewriter`.
+
+#### Scenario: Desktop app
+- **WHEN** the first change of a session in the desktop app is recorded and the pane is not open
+- **THEN** the pane opens beside the conversation
+
+#### Scenario: Command in the desktop app
+- **WHEN** the user runs `/typewriter` in the desktop app while the pane is closed
+- **THEN** the pane opens
+
+#### Scenario: Later changes
+- **WHEN** the user closes the pane and the session records more changes
+- **THEN** the pane does not open again by itself
+
+### Requirement: Terminal sessions are left to the VS Code extension
+In a session that draws only on the terminal surface, the plugin SHALL NOT record changes, SHALL NOT read the files that `Edit` and `Write` calls touch, and SHALL NOT open its pane. People who run Claude Code in a terminal replay with the Agent Typewriter extension for VS Code instead.
+
+#### Scenario: Edit in a terminal session
+- **WHEN** Claude edits `src/app.ts` in a session that draws only in a terminal
+- **THEN** no change is recorded, the plugin does not read `src/app.ts`, and the pane does not open
+
+### Requirement: `/typewriter` in a terminal session points to the extension
+In a session that draws only on the terminal surface, `/typewriter` SHALL NOT open the pane. It SHALL answer that Agent Typewriter for Claude Code does not replay in the terminal, and name the Agent Typewriter extension for VS Code and the Claude Code desktop app as the places to watch edits replayed.
+
+#### Scenario: Command in a terminal session
+- **WHEN** the user runs `/typewriter` in a session that draws only in a terminal
+- **THEN** the pane does not open and the answer points to the Agent Typewriter extension for VS Code
+
+### Requirement: Nothing is drawn on the terminal surface
+When a session draws on the terminal and on another surface at once, the plugin SHALL record and draw on the other surface as in any session, and SHALL draw nothing of its own on the terminal surface.
+
+#### Scenario: Terminal and desktop together
+- **WHEN** a session draws on the terminal and the desktop app, and Claude edits `src/app.ts`
+- **THEN** the change is recorded and typed out in the desktop app's pane, and the terminal shows nothing drawn by the plugin
