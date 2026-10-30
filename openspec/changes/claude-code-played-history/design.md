@@ -74,10 +74,12 @@ Alternative: bump the tag and let old state drop. Rejected: a tester who updates
 
 - **More of `$.state` used.** Played texts stay until the timeline drops them, so `$.state` can hold 20,000,000 characters of text, played or waiting, where before it held the waiting ones only. The in-memory timeline already held them. → The limit is unchanged. Each text member stays under the engine's 4,194,304-character value cap, since a file over 1,000,000 bytes keeps no text.
 - **A played change whose texts are lost is skipped on reload.** That happens only if a write failed. → As for waiting changes now, the rest of the history loads.
-- **A `saved-1` change's time is `0`.** → Only a reload across this update has them, and only for changes recorded before it. Readers of `time` (at-o3z.12) must treat `0` as unknown.
+- **A `saved-1` change's time is `0`.** → Only a reload across this update has them, and only for changes recorded before it. Readers of `time` (at-o3z.12) must treat `0` as unknown. *Corrected in implementation:* the spec now says so, in "Changes saved by an earlier version still load".
 
 ## Migration Plan
 
 `saved-1` state loads through `savedFrom()`. The next `flush()` writes it back as `saved-2`. Rolling back to a build that knows only `saved-1` drops `saved-2` state at its next reload, which is what a tag bump does. The plugin is in early access on the `claude-code-extension` branch.
 
 The `saved-1` reader can go once no session that saved under `saved-1` can still reload, which is any time after this ships to `develop` (at-o3z.11).
+
+*Superseded in implementation:* the requirement "Changes saved by an earlier version still load" now specifies how `saved-1` state loads, so removing the reader would change the spec. It stays unless a later change removes that requirement.

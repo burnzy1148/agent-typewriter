@@ -20,6 +20,7 @@
 ## 4. Integration
 
 - [x] 4.1 Run `npm run typecheck`, `npm test`, `npm run typecheck:claude-code` and `npm run check:claude-code`, and `openspec validate claude-code-played-history --strict`. All pass.
+- [x] 4.2 *Added in implementation:* correct the delta spec after the round-1 spec review. Set the limit besides the change being typed and add the "Change typed past the limit" scenario. Add the requirement "Changes saved by an earlier version still load" with a reload-across-an-update scenario. Record both under *Corrected in implementation* in proposal.md. The existing unit and plugin tests already cover both behaviors. Verify with `openspec validate --all --strict --no-interactive`.
 
 ## Workflow follow-up
 
