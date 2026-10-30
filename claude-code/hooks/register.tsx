@@ -145,13 +145,15 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   if (isUnchanged(change)) return ran;
 
   if (!change.isTooLarge) {
-    live.texts.add(id);
     await $.state.set({ ...text, id: `${id}:before` }, change.before);
     await $.state.set({ ...text, id: `${id}:after` }, change.after);
   }
   // Read the deck after the writes: the timer and other hooks may have moved it.
   const isFirst = live.deck.recorded === 0;
   enqueue(live.deck, change, live.cwd);
+  // Tracked only once queued: a flush during the writes would take it for a
+  // change that is gone and blank its texts.
+  if (!change.isTooLarge) live.texts.add(id);
   sync($, live);
   // Unasked, the engine places the pane only where it docks beside the
   // conversation; elsewhere it waits for /typewriter.

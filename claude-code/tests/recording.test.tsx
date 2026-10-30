@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing';
 
+import { TICK_MS } from '../hooks/replay';
 import { PANE_ID, start, waiting, world } from './world';
 
 test('an Edit is recorded with the text before and after it', async ($, on) => {
@@ -176,6 +177,28 @@ test('a finished change has its texts cleared', async ($, on) => {
   expect(w.saved.changes).toEqual([]);
   expect(w.texts.get(`${id}:before`)).toBe('');
   expect(w.texts.get(`${id}:after`)).toBe('');
+});
+
+test('a tick while a change is being recorded leaves its texts saved', async ($, on) => {
+  const w = world(on, { '/w/b.ts': 'B\n' });
+  // Moves the clock one tick on as the next change's before text is written.
+  let isArmed = false;
+  on('state.set', { plugin: 'agent-typewriter', key: 'text' }, async (_, e, next) => {
+    const set = await next(e);
+    if (isArmed && String(e.id).endsWith(':before')) {
+      isArmed = false;
+      await w.clock.advance(TICK_MS);
+    }
+    return set;
+  });
+  await start($);
+  // A change waiting, so the tick has something to play and writes what it moved.
+  await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
+  isArmed = true;
+  await $.tool.call({ tool: 'Edit', file_path: '/w/b.ts', old_string: 'B', new_string: 'C' });
+
+  expect(isArmed).toBe(false);
+  expect(waiting(w).find((c) => c.path === '/w/b.ts')).toMatchObject({ before: 'B\n', after: 'C\n' });
 });
 
 // The review's repro: a single $.state value is capped at 4,194,304 characters,
