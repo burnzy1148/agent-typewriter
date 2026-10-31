@@ -92,6 +92,8 @@ Set them in `/config`:
 | Typing speed (`charsPerMinute`) | 1000 | Characters per minute. |
 | Natural authoring order (`naturalOrder`) | on | Type a new block's opening and closing lines before its body. Off types top to bottom. |
 
+Changing an option reloads the plugin. It keeps the session's recorded changes, played and queued, and the change being typed starts over.
+
 ## Working on the plugin
 
 To run your own checkout instead of an installed copy, from the repository root:

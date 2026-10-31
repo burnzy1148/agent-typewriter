@@ -4,16 +4,17 @@ import { normalizeEol } from '../claude-code/hooks/core.mjs';
 import {
   MAX_WAITING,
   MAX_WAITING_CHARS,
+  SAVED_SHAPE,
   TICK_MS,
   enqueue,
   finish,
   frame,
-  liveIds,
   newDeck,
   playOptions,
   queued,
   relativePath,
   restore,
+  savedFrom,
   savedOf,
   showControls,
   skipToLatest,
@@ -28,7 +29,7 @@ import {
 const FAST: PlayOptions = { charsPerMinute: 6000, naturalOrder: true };
 
 function change(id: string, before: string, after: string, path = `/w/${id}.ts`): Change {
-  return { id, path, before, after };
+  return { id, path, before, after, kind: 'modify', time: 0 };
 }
 
 /** A new deck with `changes` recorded in order. */
@@ -191,7 +192,7 @@ test('an unchanged file records nothing', () => {
 });
 
 test('a too-large change is named, held briefly, and skipped', () => {
-  const d = deckOf({ id: 'big', path: '/w/big.json', before: '', after: '', isTooLarge: true }, change('next', '', 'n\n'));
+  const d = deckOf({ ...change('big', '', '', '/w/big.json'), isTooLarge: true }, change('next', '', 'n\n'));
   tick(d, FAST);
   assert.deepEqual(d.shown, { path: '/w/big.json', text: '', caret: 0, isTooLarge: true });
   assert.ok(d.hold > 0);
@@ -304,18 +305,92 @@ test('waiting text is capped; the oldest waiting changes are dropped', () => {
   assert.equal(d.recorded, 25);
 });
 
-test('saved state lists the playing change first and restores with it starting over', () => {
-  const d = deckOf(change('a', '', 'alpha\n'), change('b', '', 'beta\n'));
+test('saved state lists the played changes, the one being typed, then the waiting ones, and restores them', () => {
+  const changes = [change('a', '', 'alpha\n'), change('b', '', 'beta\n'), { ...change('c', '', 'gamma\n'), kind: 'create', time: 7 } as const];
+  const d = deckOf(...changes);
   tick(d, FAST);
+  finish(d);
   tick(d, FAST);
-  assert.deepEqual(liveIds(d), ['a', 'b']);
+  assert.equal(playingId(d), 'b');
   togglePause(d);
   const saved = savedOf(d);
-  assert.deepEqual(saved, { changes: [{ id: 'a', path: '/w/a.ts' }, { id: 'b', path: '/w/b.ts' }], recorded: 2, isPaused: true });
-  const back = restore(saved, [change('a', '', 'alpha\n'), change('b', '', 'beta\n')]);
+  assert.deepEqual(saved, {
+    changes: [
+      { id: 'a', path: '/w/a.ts', kind: 'modify', time: 0 },
+      { id: 'b', path: '/w/b.ts', kind: 'modify', time: 0 },
+      { id: 'c', path: '/w/c.ts', kind: 'create', time: 7 },
+    ],
+    played: 1,
+    recorded: 3,
+    isPaused: true,
+  });
+
+  // The one being typed starts over; the played one stays played and is shown done.
+  const back = restore(saved, changes, FAST);
   assert.equal(back.playing, undefined);
-  assert.deepEqual(queued(back).map((c) => c.id), ['a', 'b']);
+  assert.deepEqual(
+    back.timeline.all().map((e) => [e.kind, e.time, back.timeline.stateOf(e.seq)]),
+    [
+      ['modify', 0, 'played'],
+      ['modify', 0, 'pending'],
+      ['create', 7, 'pending'],
+    ],
+  );
+  assert.deepEqual(queued(back).map((c) => c.id), ['b', 'c']);
+  assert.deepEqual(back.shown, { path: '/w/a.ts', text: 'alpha\n', caret: 6 });
   assert.equal(back.isPaused, true);
+  assert.deepEqual(savedOf(back), saved);
+});
+
+test('a reload with every change played plays none again and shows the last one done', () => {
+  const changes = [change('a', '', 'alpha\n'), change('b', 'one\ntwo\n', 'one\nbeta\ntwo\n')];
+  const d = deckOf(...changes);
+  playOut(d);
+  const saved = savedOf(d);
+  assert.equal(saved.played, 2);
+  const back = restore(saved, changes, FAST);
+  assert.deepEqual(back.shown, d.shown);
+  assert.equal(tick(back, FAST), false);
+  assert.equal(back.timeline.pendingCount(), 0);
+  assert.deepEqual(savedOf(back), saved);
+});
+
+test('a reload skips a saved change whose texts are gone, and the rest keep their states', () => {
+  const [a, b, c] = [change('a', '', 'a\n'), change('b', '', 'b\n'), change('c', '', 'c\n')];
+  const d = deckOf(a, b, c);
+  for (let i = 0; i < 2; i++) {
+    tick(d, FAST);
+    finish(d);
+  }
+  const saved = savedOf(d);
+  assert.equal(saved.played, 2);
+
+  const noB = restore(saved, [a, c], FAST);
+  assert.deepEqual(savedOf(noB), { ...saved, changes: saved.changes.filter((s) => s.id !== 'b'), played: 1 });
+  assert.equal(noB.shown?.text, 'a\n');
+  const onlyC = restore(saved, [c], FAST);
+  assert.deepEqual(savedOf(onlyC), { ...saved, changes: saved.changes.filter((s) => s.id === 'c'), played: 0 });
+  assert.equal(onlyC.shown, undefined);
+});
+
+test('saved state is read under its own tag, under saved-1 as waiting modifies at time 0, and not under any other', () => {
+  const d = deckOf({ ...change('a', '', 'a\n'), kind: 'create', time: 5 });
+  playOut(d);
+  const saved = savedOf(d);
+  assert.deepEqual(savedFrom({ shape: SAVED_SHAPE, value: saved }), saved);
+  const v1 = { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 'big', path: '/w/big.json', isTooLarge: true }], recorded: 3, isPaused: true };
+  assert.deepEqual(savedFrom({ shape: 'saved-1', value: v1 }), {
+    changes: [
+      { id: 'r', path: '/w/r.ts', kind: 'modify', time: 0 },
+      { id: 'big', path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
+    ],
+    played: 0,
+    recorded: 3,
+    isPaused: true,
+  });
+  const empty = { changes: [], played: 0, recorded: 0, isPaused: false };
+  assert.deepEqual(savedFrom({ shape: 'saved-0', value: saved }), empty);
+  assert.deepEqual(savedFrom(undefined), empty);
 });
 
 test('a reload at either limit keeps the change being typed, which starts over', () => {
@@ -326,7 +401,7 @@ test('a reload at either limit keeps the change being typed, which starts over',
   };
   const reload = (d: Deck) => {
     const saved = savedOf(d);
-    return restore(saved, saved.changes.map((s) => recorded.get(s.id)!));
+    return restore(saved, saved.changes.map((s) => recorded.get(s.id)!), FAST);
   };
 
   const d = newDeck();
@@ -336,7 +411,7 @@ test('a reload at either limit keeps the change being typed, which starts over',
   assert.equal(playingId(d), 'typing');
   const back = reload(d);
   assert.equal(queued(back).length, MAX_WAITING + 1);
-  assert.deepEqual(queued(back).map((c) => c.id), liveIds(d));
+  assert.deepEqual(queued(back).map((c) => c.id), savedOf(d).changes.map((c) => c.id));
   // Recording another brings the waiting changes back within the limit, oldest dropped.
   enqueue(back, change('new', '', 'n\n'));
   assert.equal(queued(back).length, MAX_WAITING);
@@ -368,8 +443,7 @@ function typingPastTheLimit() {
 
 test('the change being typed still finishes, and is saved, once the timeline drops it', () => {
   const d = typingPastTheLimit();
-  assert.deepEqual(liveIds(d).slice(0, 2), ['typing', 'c0']);
-  assert.equal(savedOf(d).changes[0]?.id, 'typing');
+  assert.deepEqual(savedOf(d).changes.slice(0, 2).map((c) => c.id), ['typing', 'c0']);
   assert.equal(queued(d).length, MAX_WAITING);
   const frames: string[] = [];
   while (playingId(d) === 'typing') {
@@ -388,7 +462,7 @@ test('skip to latest works once the timeline has dropped the change being typed'
   assert.equal(d.playing, undefined);
   assert.equal(queued(d).length, 0);
   assert.equal(d.shown?.text, `${MAX_WAITING - 1}\n`);
-  assert.deepEqual(savedOf(d).changes, []);
+  assert.deepEqual([savedOf(d).changes.length, savedOf(d).played], [MAX_WAITING, MAX_WAITING]);
   enqueue(d, change('next', '', 'n\n'));
   assert.equal(playOut(d).deck.shown?.text, 'n\n');
 });
@@ -399,10 +473,25 @@ test('timeline events name the path relative to the working directory and count 
   enqueue(d, edit, '/w');
   const [e] = d.timeline.all();
   assert.deepEqual([e?.uri, e?.relPath, e?.linesAdded, e?.linesRemoved], ['/w/src/a.ts', 'src/a.ts', 2, 1]);
-  assert.equal(restore(savedOf(d), [edit], '/w').timeline.all()[0]?.relPath, 'src/a.ts');
+  assert.equal(restore(savedOf(d), [edit], FAST, '/w').timeline.all()[0]?.relPath, 'src/a.ts');
   const win = newDeck();
   enqueue(win, change('b', '', 'b\n', 'C:\\w\\src\\b.ts'), 'C:\\w');
   assert.equal(win.timeline.all()[0]?.relPath, 'src/b.ts');
+});
+
+test('timeline events carry each change\'s kind and time', () => {
+  const d = deckOf({ ...change('a', '', 'a\n'), kind: 'create', time: 1_700_000_000_000 }, { ...change('b', 'b\n', 'B\n'), time: 1_700_000_000_500 });
+  assert.deepEqual(
+    d.timeline.all().map((e) => [e.kind, e.time]),
+    [
+      ['create', 1_700_000_000_000],
+      ['modify', 1_700_000_000_500],
+    ],
+  );
+  assert.deepEqual(queued(d).map((c) => [c.kind, c.time]), [
+    ['create', 1_700_000_000_000],
+    ['modify', 1_700_000_000_500],
+  ]);
 });
 
 test('played changes are dropped before waiting ones', () => {

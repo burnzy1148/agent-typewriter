@@ -30,8 +30,12 @@ const MAX_STEPS_PER_TICK = 2000;
 export const VIEW_LINES = 120;
 export const VIEW_COLUMNS = 400;
 
-/** One recorded change, texts normalized to LF. A too-large change keeps no text. */
-export type Change = { id: string; path: string; before: string; after: string; isTooLarge?: boolean };
+/**
+ * One recorded change, texts normalized to LF. A too-large change keeps no
+ * text. `kind` says whether the file was new, and `time` is when the change was
+ * recorded, in epoch milliseconds.
+ */
+export type Change = { id: string; path: string; before: string; after: string; kind: 'create' | 'modify'; time: number; isTooLarge?: boolean };
 
 /** A Windows absolute path: a drive letter, or a UNC share. */
 const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
@@ -42,20 +46,18 @@ type Event = ChangeEvent & Change;
 /**
  * `change` with the fields every timeline event carries. `uri` is the absolute
  * path and `relPath` the path relative to `cwd` with forward slashes, as the
- * extension's events name it; the line counts are real. `kind` and `time` are
- * placeholders, always 'modify' and 0: the saved state does not keep them, so a
- * reload could not restore them. Save them before anything reads them.
+ * extension's events name it; the line counts are real.
  */
 function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
   const { added, removed } = countChanges(change.before, change.after);
   const relative = relativePath(change.path, cwd);
   const relPath = WINDOWS_PATH.test(change.path) ? relative.replace(/\\/g, '/') : relative;
-  return { ...change, uri: change.path, relPath, time: 0, kind: 'modify', eol: '\n', linesAdded: added, linesRemoved: removed };
+  return { ...change, uri: change.path, relPath, eol: '\n', linesAdded: added, linesRemoved: removed };
 }
 
 function changeOf(e: ChangeEvent): Change {
-  const { id, path, before, after, isTooLarge } = e as Event;
-  return { id, path, before, after, ...(isTooLarge && { isTooLarge }) };
+  const { id, path, before, after, kind, time, isTooLarge } = e as Event;
+  return { id, path, before, after, kind, time, ...(isTooLarge && { isTooLarge }) };
 }
 
 export type Playback = {
@@ -131,29 +133,65 @@ export function queued(deck: Deck): Change[] {
   return timeline.all().filter((e) => timeline.stateOf(e.seq) === 'pending').map(changeOf);
 }
 
-/** Ids of the changes still to play, the one being typed first. */
-export function liveIds(deck: Deck): string[] {
-  return [...(deck.playing ? [deck.playing.change.id] : []), ...queued(deck).map((c) => c.id)];
+/** The changes played, oldest first. */
+function played(deck: Deck): Change[] {
+  const { timeline } = deck;
+  return timeline.all().filter((e) => timeline.stateOf(e.seq) === 'played').map(changeOf);
 }
 
-/** What a reload needs to rebuild the deck, texts aside. */
+/**
+ * What a reload needs to rebuild the deck, texts aside. The change being typed
+ * is kept even once the timeline has dropped it; by then it has dropped every
+ * played change too, so the order holds.
+ */
 export function savedOf(deck: Deck): Saved {
-  const changes = [...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
+  const done = played(deck);
+  const changes = [...done, ...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
   return {
-    changes: changes.map(({ id, path, isTooLarge }): SavedChange => (isTooLarge ? { id, path, isTooLarge } : { id, path })),
+    changes: changes.map(({ id, path, kind, time, isTooLarge }): SavedChange => ({ id, path, kind, time, ...(isTooLarge && { isTooLarge }) })),
+    played: done.length,
     recorded: deck.recorded,
     isPaused: deck.isPaused,
   };
 }
 
-/** The deck a reload starts from: every saved change waiting, the one that was being typed starting over. */
-export function restore(saved: Saved, changes: Change[], cwd?: string): Deck {
+/**
+ * The deck a reload starts from. `changes` are the saved changes whose texts
+ * were found, in saved order. Those `saved.played` counts as played stay
+ * played, the last of them shown done; the rest wait, the one that was being
+ * typed starting over.
+ */
+export function restore(saved: Saved, changes: Change[], opts: PlayOptions, cwd?: string): Deck {
   // The change being typed sat outside the limits, so with it the saved changes
   // can be one over them. The timeline holds them all until the next is recorded.
   const chars = changes.reduce((n, c) => n + c.before.length + c.after.length, 0);
   const timeline = new Timeline(Math.max(MAX_WAITING, changes.length), Math.max(MAX_WAITING_CHARS, chars));
   for (const change of changes) timeline.push(eventOf(change, cwd));
-  return { ...newDeck(), timeline, recorded: saved.recorded, isPaused: saved.isPaused };
+  const wasPlayed = new Set(saved.changes.slice(0, saved.played).map((c) => c.id));
+  const done = changes.filter((c) => wasPlayed.has(c.id));
+  const next = timeline.all()[done.length];
+  if (next) timeline.seek(next.seq);
+  else timeline.seekToEnd();
+  const last = done.at(-1);
+  return { ...newDeck(), timeline, ...(last && { shown: shownFinished(last, opts) }), recorded: saved.recorded, isPaused: saved.isPaused };
+}
+
+/** The tag `saved` is kept under. savedFrom also reads the tag before it. */
+export const SAVED_SHAPE = 'saved-2';
+
+/** `saved` as the `saved-1` tag kept it: the changes still to play, the one being typed first, without kind or time. */
+type SavedV1 = { changes: { id: string; path: string; isTooLarge?: boolean }[]; recorded: number; isPaused: boolean };
+
+/**
+ * The Saved a stored `saved` value holds: as stored under SAVED_SHAPE; under
+ * `saved-1`, which kept neither kind nor time, every change waiting, each a
+ * modify at time 0; under any other tag, or none, nothing.
+ */
+export function savedFrom(stored: { shape: string; value: unknown } | undefined): Saved {
+  if (stored?.shape === SAVED_SHAPE) return stored.value as Saved;
+  if (stored?.shape !== 'saved-1') return savedOf(newDeck());
+  const was = stored.value as SavedV1;
+  return { ...was, changes: was.changes.map((c) => ({ ...c, kind: 'modify', time: 0 })), played: 0 };
 }
 
 function plan(change: Change, opts: PlayOptions): Hunk[] {
@@ -176,6 +214,11 @@ function shownDone(change: Change, caret: number): Shown {
   return change.isTooLarge
     ? { path: change.path, text: '', caret: 0, isTooLarge: true }
     : { path: change.path, text: change.after, caret };
+}
+
+/** `change` shown done, the caret where typing it ends. */
+function shownFinished(change: Change, opts: PlayOptions): Shown {
+  return shownDone(change, change.isTooLarge ? 0 : finalCaret(plan(change, opts)));
 }
 
 /** Plays the change at `seq` in one go: `shown` stays a while before the next change. */
@@ -282,11 +325,10 @@ export function finish(deck: Deck): void {
 export function skipToLatest(deck: Deck, opts: PlayOptions): void {
   const last = queued(deck).at(-1);
   if (!last) return finish(deck);
-  const caret = last.isTooLarge ? 0 : finalCaret(plan(last, opts));
   deck.timeline.seekToEnd();
   deck.playing = undefined;
   deck.hold = 0;
-  deck.shown = shownDone(last, caret);
+  deck.shown = shownFinished(last, opts);
 }
 
 /** `path` relative to the session's working directory, or as given when outside it. */

@@ -2,11 +2,19 @@
 // (hooks/replay.ts); state keeps what must outlive a reload and what the pane
 // draws. The engine requires this file to be self-contained.
 
-/** A waiting change as a reload needs it; its texts are `text` members. */
-export type SavedChange = { id: string; path: string; isTooLarge?: boolean };
+/**
+ * A kept change as a reload needs it; its texts are `text` members. `kind` says
+ * whether the file was new, and `time` is when the change was recorded, in
+ * epoch milliseconds.
+ */
+export type SavedChange = { id: string; path: string; kind: 'create' | 'modify'; time: number; isTooLarge?: boolean };
 
-/** The changes still to play, the one being typed first, and playback's switches. */
-export type Saved = { changes: SavedChange[]; recorded: number; isPaused: boolean };
+/**
+ * Every change the deck keeps, oldest first (the played ones, the one being
+ * typed, then the waiting ones), how many of them lead as played, and
+ * playback's switches.
+ */
+export type Saved = { changes: SavedChange[]; played: number; recorded: number; isPaused: boolean };
 
 /** What the pane draws: a window of the shown text around the caret, made safe to draw. */
 export type View = {
