@@ -67,7 +67,7 @@ Alternative: put the rows in `view`. Rejected: up to 201 rows would be rewritten
 
 Top to bottom, as on the mockup's Main board: the header (file name, the current change's number, status), the code, the controls (From start, Pause or Resume, Finish current, Skip to latest, with hotkeys `r`, `p`, `f`, `l`), a "Changes" line ("Pick a change to play from it"), and the list. The list gets up to 40% of the body's rows, at least 3, and no more than it needs; the code gets the rest, at least 3. The whole tree fits the body, so the engine has nothing of its own to scroll.
 
-Each row is one plain `Button` keyed `change:<id>`: a glyph (✓ played, ▸ typing, paused or next, ○ queued, ⊘ a too-large change that has played), `#<number>`, the tool, the folder dim and the file name bold, the state word, and `+added −removed`. A pure helper cuts the path at its end so a row stays one line at the body's width. A later bead can add a lane dot, a reveal `Button` beside the row, or a turn header above a group of rows without changing this.
+Each row is one plain `Button` keyed `change:<id>`: a glyph (✓ played, ▸ typing, paused or next, ○ queued, ⊘ a too-large change that has played), `#<number>`, the tool, the folder dim and the file name bold, the state word, and `+added −removed`. A pure helper cuts the folder first, then the file name, each at its end, so a row stays one line at the body's width and keeps the file name as long as it can. A later bead can add a lane dot, a reveal `Button` beside the row, or a turn header above a group of rows without changing this.
 
 ### The list scrolls itself
 

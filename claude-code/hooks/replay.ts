@@ -6,9 +6,9 @@
 // what the hooks write to $.state.
 
 import { Timeline, authoringOrder, backspaceStep, countChanges, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
-import type { Saved, SavedChange, View } from '../types';
+import type { Listing, Row, Saved, SavedChange, Tool, View } from '../types';
 
-export type { Saved, SavedChange, View };
+export type { Listing, Row, Saved, SavedChange, Tool, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
@@ -32,10 +32,25 @@ export const VIEW_COLUMNS = 400;
 
 /**
  * One recorded change, texts normalized to LF. A too-large change keeps no
- * text. `kind` says whether the file was new, and `time` is when the change was
+ * text. `number` is its place in the session's recording order, from 1, and
+ * `tool` the tool that made it, unknown for a change an earlier version saved.
+ * `kind` says whether the file was new, and `time` is when the change was
  * recorded, in epoch milliseconds.
  */
-export type Change = { id: string; path: string; before: string; after: string; kind: 'create' | 'modify'; time: number; isTooLarge?: boolean };
+export type Change = {
+  id: string;
+  number: number;
+  tool?: Tool;
+  path: string;
+  before: string;
+  after: string;
+  kind: 'create' | 'modify';
+  time: number;
+  isTooLarge?: boolean;
+};
+
+/** A change as recorded, before enqueue numbers it. */
+export type NewChange = Omit<Change, 'number'>;
 
 /** A Windows absolute path: a drive letter, or a UNC share. */
 const WINDOWS_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/;
@@ -56,8 +71,8 @@ function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
 }
 
 function changeOf(e: ChangeEvent): Change {
-  const { id, path, before, after, kind, time, isTooLarge } = e as Event;
-  return { id, path, before, after, kind, time, ...(isTooLarge && { isTooLarge }) };
+  const { id, number, tool, path, before, after, kind, time, isTooLarge } = e as Event;
+  return { id, number, ...(tool && { tool }), path, before, after, kind, time, ...(isTooLarge && { isTooLarge }) };
 }
 
 export type Playback = {
@@ -77,8 +92,8 @@ export type Playback = {
   credit: number;
 };
 
-/** What the pane shows: the playing change, or the last one played. */
-export type Shown = { path: string; text: string; caret: number; isTooLarge?: boolean };
+/** What the pane shows, and the id of the change it shows: the playing change, a change cued to play next, or the last one played. */
+export type Shown = { id: string; path: string; text: string; caret: number; isTooLarge?: boolean };
 
 /** Playback's state, which its functions change in place. */
 export type Deck = {
@@ -109,21 +124,22 @@ export function playOptions(options: Readonly<Record<string, unknown>>): PlayOpt
 }
 
 /** A change that leaves the file as it was, which is not recorded. */
-export function isUnchanged(change: Change): boolean {
+export function isUnchanged(change: NewChange): boolean {
   return !change.isTooLarge && change.before === change.after;
 }
 
 /**
- * Adds a recorded change, its path named relative to `cwd`, dropping the oldest
- * ones past either limit. Returns false, adding nothing, for an unchanged file.
+ * Adds a recorded change, numbered next in the session and its path named
+ * relative to `cwd`, dropping the oldest ones past either limit. Returns false,
+ * adding nothing, for an unchanged file.
  */
-export function enqueue(deck: Deck, change: Change, cwd?: string): boolean {
+export function enqueue(deck: Deck, change: NewChange, cwd?: string): boolean {
   if (isUnchanged(change)) return false;
   // A restored deck may hold more than the limits allow (see restore); a new change brings it back within them.
   deck.timeline.setLimit(MAX_WAITING);
   deck.timeline.setSizeLimit(MAX_WAITING_CHARS);
-  deck.timeline.push(eventOf(change, cwd));
   deck.recorded++;
+  deck.timeline.push(eventOf({ ...change, number: deck.recorded }, cwd));
   return true;
 }
 
@@ -148,7 +164,17 @@ export function savedOf(deck: Deck): Saved {
   const done = played(deck);
   const changes = [...done, ...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
   return {
-    changes: changes.map(({ id, path, kind, time, isTooLarge }): SavedChange => ({ id, path, kind, time, ...(isTooLarge && { isTooLarge }) })),
+    changes: changes.map(
+      ({ id, number, tool, path, kind, time, isTooLarge }): SavedChange => ({
+        id,
+        number,
+        ...(tool && { tool }),
+        path,
+        kind,
+        time,
+        ...(isTooLarge && { isTooLarge }),
+      }),
+    ),
     played: done.length,
     recorded: deck.recorded,
     isPaused: deck.isPaused,
@@ -158,8 +184,9 @@ export function savedOf(deck: Deck): Saved {
 /**
  * The deck a reload starts from. `changes` are the saved changes whose texts
  * were found, in saved order. Those `saved.played` counts as played stay
- * played, the last of them shown done; the rest wait, the one that was being
- * typed starting over.
+ * played; the rest wait, the one that was being typed starting over. Paused,
+ * the pane shows the next change cued, as a pick while paused leaves it;
+ * otherwise the last played change done.
  */
 export function restore(saved: Saved, changes: Change[], opts: PlayOptions, cwd?: string): Deck {
   // The change being typed sat outside the limits, so with it the saved changes
@@ -173,25 +200,42 @@ export function restore(saved: Saved, changes: Change[], opts: PlayOptions, cwd?
   if (next) timeline.seek(next.seq);
   else timeline.seekToEnd();
   const last = done.at(-1);
-  return { ...newDeck(), timeline, ...(last && { shown: shownFinished(last, opts) }), recorded: saved.recorded, isPaused: saved.isPaused };
+  const shown = saved.isPaused && next ? shownBefore(changeOf(next), opts) : last && shownFinished(last, opts);
+  return { ...newDeck(), timeline, ...(shown && { shown }), recorded: saved.recorded, isPaused: saved.isPaused };
 }
 
-/** The tag `saved` is kept under. savedFrom also reads the tag before it. */
-export const SAVED_SHAPE = 'saved-2';
+/** The tag `saved` is kept under. savedFrom also reads the tags before it. */
+export const SAVED_SHAPE = 'saved-3';
+
+/** `saved` as the `saved-2` tag kept it: no change's number or tool. */
+type SavedV2 = { changes: Omit<SavedChange, 'number' | 'tool'>[]; played: number; recorded: number; isPaused: boolean };
 
 /** `saved` as the `saved-1` tag kept it: the changes still to play, the one being typed first, without kind or time. */
 type SavedV1 = { changes: { id: string; path: string; isTooLarge?: boolean }[]; recorded: number; isPaused: boolean };
 
 /**
  * The Saved a stored `saved` value holds: as stored under SAVED_SHAPE; under
- * `saved-1`, which kept neither kind nor time, every change waiting, each a
- * modify at time 0; under any other tag, or none, nothing.
+ * `saved-2`, which kept no numbers or tools, as stored and numbered by place;
+ * under `saved-1`, which kept neither kind nor time either, every change
+ * waiting, each a modify at time 0, numbered by place; under any other tag,
+ * or none, nothing.
  */
 export function savedFrom(stored: { shape: string; value: unknown } | undefined): Saved {
   if (stored?.shape === SAVED_SHAPE) return stored.value as Saved;
+  if (stored?.shape === 'saved-2') return numbered(stored.value as SavedV2);
   if (stored?.shape !== 'saved-1') return savedOf(newDeck());
   const was = stored.value as SavedV1;
-  return { ...was, changes: was.changes.map((c) => ({ ...c, kind: 'modify', time: 0 })), played: 0 };
+  return numbered({ ...was, changes: was.changes.map((c) => ({ ...c, kind: 'modify', time: 0 })), played: 0 });
+}
+
+/**
+ * `saved` with its changes numbered by place, the last taking the count of
+ * changes recorded and each earlier one the number before. Exact unless a
+ * change between two kept ones was dropped or lost its texts.
+ */
+function numbered(saved: SavedV2): Saved {
+  const last = Math.max(saved.recorded, saved.changes.length);
+  return { ...saved, changes: saved.changes.map((c, i) => ({ ...c, number: last - (saved.changes.length - 1 - i) })) };
 }
 
 function plan(change: Change, opts: PlayOptions): Hunk[] {
@@ -212,13 +256,19 @@ function finalCaret(hunks: Hunk[]): number {
 
 function shownDone(change: Change, caret: number): Shown {
   return change.isTooLarge
-    ? { path: change.path, text: '', caret: 0, isTooLarge: true }
-    : { path: change.path, text: change.after, caret };
+    ? { id: change.id, path: change.path, text: '', caret: 0, isTooLarge: true }
+    : { id: change.id, path: change.path, text: change.after, caret };
 }
 
 /** `change` shown done, the caret where typing it ends. */
 function shownFinished(change: Change, opts: PlayOptions): Shown {
   return shownDone(change, change.isTooLarge ? 0 : finalCaret(plan(change, opts)));
+}
+
+/** `change` shown before it plays: its before text, the caret where typing it starts. A too-large one shows its note. */
+function shownBefore(change: Change, opts: PlayOptions): Shown {
+  if (change.isTooLarge) return shownDone(change, 0);
+  return { id: change.id, path: change.path, text: change.before, caret: caretBefore(plan(change, opts)[0], 0) };
 }
 
 /** Plays the change at `seq` in one go: `shown` stays a while before the next change. */
@@ -242,7 +292,7 @@ function startNext(deck: Deck, opts: PlayOptions): boolean {
   const caret = caretBefore(hunks[0], 0);
   const token = deck.timeline.begin(next.seq);
   deck.playing = { change, seq: next.seq, token, hunks, hunk: 0, deleted: 0, typed: 0, text: change.before, caret, credit: 0 };
-  deck.shown = { path: change.path, text: change.before, caret };
+  deck.shown = { id: change.id, path: change.path, text: change.before, caret };
   return true;
 }
 
@@ -303,7 +353,7 @@ export function tick(deck: Deck, opts: PlayOptions): boolean {
     deck.timeline.complete(p.seq, p.token);
     deck.playing = undefined;
   } else deck.playing = { ...p, credit: Math.min(budget, rate + 1) };
-  deck.shown = { path: p.change.path, text: p.text, caret: p.caret };
+  deck.shown = { id: p.change.id, path: p.change.path, text: p.text, caret: p.caret };
   return true;
 }
 
@@ -311,24 +361,131 @@ export function togglePause(deck: Deck): void {
   deck.isPaused = !deck.isPaused;
 }
 
-/** Finishes the current change at once; the next one starts on the next tick. */
-export function finish(deck: Deck): void {
+/**
+ * Finishes the current change at once: the one being typed, or one cued by a
+ * pick while paused. The next one starts on the next tick that is not paused.
+ */
+export function finish(deck: Deck, opts: PlayOptions): void {
   const p = deck.playing;
   deck.hold = 0;
-  if (!p) return;
-  deck.timeline.complete(p.seq, p.token);
+  if (p) {
+    deck.timeline.complete(p.seq, p.token);
+    deck.playing = undefined;
+    deck.shown = shownDone(p.change, finalCaret(p.hunks));
+    return;
+  }
+  const next = deck.timeline.peek();
+  if (!next || (next as Event).id !== deck.shown?.id) return;
+  deck.timeline.complete(next.seq);
+  deck.shown = shownFinished(changeOf(next), opts);
+}
+
+/**
+ * Makes the kept change `id` the next one played, as the extension's seek
+ * does: the change being typed stops, the ones recorded after `id` follow, the
+ * ones before it count as played, and the pause state stays. The pane shows
+ * it cued, as it is before it plays. Picking the change being typed starts it
+ * over. Returns false, changing nothing, when the change is no longer kept.
+ */
+export function seek(deck: Deck, id: string, opts: PlayOptions): boolean {
+  const e = deck.timeline.all().find((x) => (x as Event).id === id);
+  const p = deck.playing;
+  if (!e) {
+    // Only the change being typed outlives its place in the timeline; it starts over where it is.
+    if (p?.change.id !== id) return false;
+    deck.playing = { ...p, hunk: 0, deleted: 0, typed: 0, text: p.change.before, caret: caretBefore(p.hunks[0], 0), credit: 0 };
+    deck.hold = 0;
+    deck.shown = shownBefore(p.change, opts);
+    return true;
+  }
+  deck.timeline.seek(e.seq);
   deck.playing = undefined;
-  deck.shown = shownDone(p.change, finalCaret(p.hunks));
+  deck.hold = 0;
+  deck.shown = shownBefore(changeOf(e), opts);
+  return true;
+}
+
+/** Plays from the first change kept, as a pick of it does. Returns false when none is kept. */
+export function replayFromStart(deck: Deck, opts: PlayOptions): boolean {
+  const first = listingOf(deck).rows[0];
+  return first !== undefined && seek(deck, first.id, opts);
 }
 
 /** Finishes every recorded change at once and shows the last one. */
 export function skipToLatest(deck: Deck, opts: PlayOptions): void {
   const last = queued(deck).at(-1);
-  if (!last) return finish(deck);
+  if (!last) return finish(deck, opts);
   deck.timeline.seekToEnd();
   deck.playing = undefined;
   deck.hold = 0;
   deck.shown = shownFinished(last, opts);
+}
+
+function rowOf(e: Event, state: Row['state']): Row {
+  return {
+    id: e.id,
+    number: e.number,
+    ...(e.tool && { tool: e.tool }),
+    path: e.path,
+    state,
+    added: e.linesAdded,
+    removed: e.linesRemoved,
+    ...(e.isTooLarge && { isTooLarge: true }),
+  };
+}
+
+/**
+ * The pane's list: a row per kept change, oldest first, the change being typed
+ * included once the timeline has dropped it; how many changes recorded before
+ * the oldest kept one are gone; and the id of the change the pane shows.
+ */
+export function listingOf(deck: Deck): Listing {
+  const { timeline, playing } = deck;
+  // A change being typed that the timeline dropped is older than every change it keeps.
+  const outside = playing && !timeline.get(playing.seq) ? [rowOf({ ...eventOf(playing.change, undefined), seq: playing.seq }, 'playing')] : [];
+  const rows = [...outside, ...timeline.all().map((e) => rowOf(e as Event, timeline.stateOf(e.seq)))];
+  return { rows, dropped: Math.max(0, (rows[0]?.number ?? 1) - 1), ...(deck.shown && { current: deck.shown.id }) };
+}
+
+/**
+ * The first of `count` rows a window `height` rows high shows: row `top` when
+ * the person has scrolled the list, else the one that puts row `current` a
+ * third of the way down. Clamped so the window stays within the rows.
+ */
+export function listWindow(count: number, current: number | undefined, height: number, top?: number): number {
+  const want = top ?? (current === undefined ? 0 : current - Math.floor(height / 3));
+  return Math.max(0, Math.min(want, count - height));
+}
+
+/** A row as the pane draws it: the lead, the path's folder and file name, and the tail, together at most the width asked for. */
+export type RowLabel = { lead: string; dir: string; file: string; tail: string };
+
+/**
+ * How the pane draws `row`, its path named `name`, in `width` columns. The
+ * lead is a glyph (✓ played, ▸ typing, paused or next, ○ queued, ⊘ a
+ * too-large change played), the number and the tool. The tail is the state
+ * word, on the current row and on a too-large change passed, and the lines
+ * added and removed. The folder is cut before the file name, each at its end.
+ */
+export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPaused: boolean }, width: number): RowLabel {
+  const tooLargePlayed = row.isTooLarge && row.state === 'played';
+  const glyph = row.state === 'played' ? (tooLargePlayed ? '⊘' : '✓') : row.state === 'playing' || at.isCurrent ? '▸' : '○';
+  let word = '';
+  if (at.isCurrent && row.state === 'playing') word = at.isPaused ? 'Paused' : 'Typing';
+  else if (at.isCurrent && row.state === 'pending') word = 'Next';
+  else if (tooLargePlayed) word = at.isCurrent ? 'Too large' : 'Not typed';
+  const delta = row.isTooLarge ? '' : [row.added > 0 && `+${row.added}`, row.removed > 0 && `−${row.removed}`].filter(Boolean).join(' ');
+  const lead = [glyph, `#${row.number}`, row.tool].filter(Boolean).join(' ') + ' ';
+  const tail = [word, delta].filter(Boolean).join(' ');
+  const cut = name.search(/[^\\/]*$/);
+  let dir = name.slice(0, cut);
+  let file = name.slice(cut);
+  const room = Math.max(1, width - lead.length - (tail ? tail.length + 1 : 0));
+  if (dir.length + file.length > room) {
+    dir = file.length + 2 <= room ? dir.slice(0, room - file.length - 1) + '…' : '';
+    if (file.length > room) file = file.slice(0, Math.max(0, room - 1)) + '…';
+  }
+  return { lead, dir, file, tail: tail ? ' ' + tail : '' };
 }
 
 /** `path` relative to the session's working directory, or as given when outside it. */
