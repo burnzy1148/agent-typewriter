@@ -3,14 +3,14 @@ import { expect, test } from 'claude-code/testing';
 import { TICK_MS } from '../hooks/replay';
 import { PANE_ID, kept, start, world } from './world';
 
-test('an Edit is recorded with the text before and after it, as a modify at the time it ran', async ($, on) => {
+test('an Edit is recorded with the text before and after it, as a modify by Edit at the time it ran, numbered 1', async ($, on) => {
   const w = world(on, { '/w/app.ts': 'const a = 1;\n' });
   await start($);
   await w.clock.advance(1_000);
   await $.tool.call({ tool: 'Edit', file_path: '/w/app.ts', old_string: '1', new_string: '2' });
 
   expect(kept(w)).toEqual([
-    { id: expect.any(String), path: '/w/app.ts', kind: 'modify', time: w.clock.now(), before: 'const a = 1;\n', after: 'const a = 2;\n' },
+    { id: expect.any(String), number: 1, tool: 'Edit', path: '/w/app.ts', kind: 'modify', time: w.clock.now(), before: 'const a = 1;\n', after: 'const a = 2;\n' },
   ]);
   expect(w.writes).toEqual([]);
 });
@@ -23,8 +23,8 @@ test('a Write of a new file is recorded as a create with empty before text; a Wr
   await $.tool.call({ tool: 'Write', file_path: '/w/old.md', content: 'new\n' });
 
   expect(kept(w)).toMatchObject([
-    { path: '/w/notes.md', kind: 'create', time: w.clock.now(), before: '', after: '# Notes\n' },
-    { path: '/w/old.md', kind: 'modify', before: 'old\n', after: 'new\n' },
+    { number: 1, tool: 'Write', path: '/w/notes.md', kind: 'create', time: w.clock.now(), before: '', after: '# Notes\n' },
+    { number: 2, tool: 'Write', path: '/w/old.md', kind: 'modify', before: 'old\n', after: 'new\n' },
   ]);
 });
 
@@ -154,8 +154,8 @@ test('a file over the replay limit is recorded without its text', async ($, on) 
   await $.tool.call({ tool: 'Write', file_path: '/w/new.json', content: 'x'.repeat(1_000_001) });
 
   expect(w.saved.changes).toEqual([
-    { id: expect.any(String), path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
-    { id: expect.any(String), path: '/w/new.json', kind: 'create', time: 0, isTooLarge: true },
+    { id: expect.any(String), number: 1, tool: 'Write', path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
+    { id: expect.any(String), number: 2, tool: 'Write', path: '/w/new.json', kind: 'create', time: 0, isTooLarge: true },
   ]);
   expect(w.texts.size).toBe(0);
 });

@@ -77,11 +77,16 @@ Files larger than 1 MB are not typed: the pane names them and moves on. A change
 
 The pane opens by itself on the first change, where Claude Code can dock it beside the conversation, as in the desktop app. Anywhere else, run `/typewriter` to open it; in a terminal session it points you to the VS Code extension instead.
 
-It shows the file being typed (by its path in your project), the lines around the caret with line numbers and syntax highlighting, and whether playback is typing, paused or idle with how many changes are queued. Its buttons:
+It shows the file being typed (by its path in your project) and the change's number, the lines around the caret with line numbers and syntax highlighting, and whether playback is typing, paused or idle with how many changes are queued. Its buttons, with the key that presses each while the pane has the keyboard:
 
-- **Pause** / **Resume**: stop typing where it is, and carry on from there.
-- **Finish current**: show the current change done and start the next one.
-- **Skip to latest**: finish every queued change and show the last one.
+- **From start** (`r`): play every change again from the first one the pane keeps.
+- **Pause** / **Resume** (`p`): stop typing where it is, and carry on from there.
+- **Finish current** (`f`): show the current change done and start the next one.
+- **Skip to latest** (`l`): finish every queued change and show the last one.
+
+Below them, the pane lists the session's changes, oldest first: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press something that moves playback.
+
+Press a change to play from it: it is typed next and the later ones follow, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done.
 
 ## Options
 

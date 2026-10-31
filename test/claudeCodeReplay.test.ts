@@ -9,13 +9,18 @@ import {
   enqueue,
   finish,
   frame,
+  listWindow,
+  listingOf,
   newDeck,
   playOptions,
   queued,
   relativePath,
+  replayFromStart,
   restore,
+  rowLabel,
   savedFrom,
   savedOf,
+  seek,
   showControls,
   skipToLatest,
   tick,
@@ -23,17 +28,28 @@ import {
   viewOf,
   type Change,
   type Deck,
+  type NewChange,
   type PlayOptions,
+  type Row,
+  type Saved,
 } from '../claude-code/hooks/replay';
 
 const FAST: PlayOptions = { charsPerMinute: 6000, naturalOrder: true };
 
-function change(id: string, before: string, after: string, path = `/w/${id}.ts`): Change {
+function change(id: string, before: string, after: string, path = `/w/${id}.ts`): NewChange {
   return { id, path, before, after, kind: 'modify', time: 0 };
 }
 
+/** The changes a reload finds for `saved`: each saved change with the texts of the recorded change of its id, none for one not in `recorded`. */
+function withTexts(saved: Saved, recorded: NewChange[]): Change[] {
+  return saved.changes.flatMap((s) => {
+    const c = recorded.find((r) => r.id === s.id);
+    return c ? [{ ...s, before: c.before, after: c.after }] : [];
+  });
+}
+
 /** A new deck with `changes` recorded in order. */
-function deckOf(...changes: Change[]): Deck {
+function deckOf(...changes: NewChange[]): Deck {
   const d = newDeck();
   for (const c of changes) enqueue(d, c);
   return d;
@@ -159,7 +175,7 @@ test('finish shows the current change done and the next one starts', () => {
   const d = deckOf(change('a', '', 'alpha\n'), change('b', '', 'beta\n'), change('c', '', 'gamma\n'));
   tick(d, FAST);
   tick(d, FAST);
-  finish(d);
+  finish(d, FAST);
   assert.equal(d.shown?.text, 'alpha\n');
   assert.equal(d.playing, undefined);
   tick(d, FAST);
@@ -194,7 +210,7 @@ test('an unchanged file records nothing', () => {
 test('a too-large change is named, held briefly, and skipped', () => {
   const d = deckOf({ ...change('big', '', '', '/w/big.json'), isTooLarge: true }, change('next', '', 'n\n'));
   tick(d, FAST);
-  assert.deepEqual(d.shown, { path: '/w/big.json', text: '', caret: 0, isTooLarge: true });
+  assert.deepEqual(d.shown, { id: 'big', path: '/w/big.json', text: '', caret: 0, isTooLarge: true });
   assert.ok(d.hold > 0);
   const { deck } = playOut(d);
   assert.equal(deck.shown?.text, 'n\n');
@@ -222,7 +238,7 @@ test('paths are named relative to the working directory', () => {
 test('the view follows the caret deep in a long file', () => {
   const text = Array.from({ length: 900 }, (_, i) => `line ${i + 1}`).join('\n');
   const caret = text.indexOf('line 400') + 4;
-  const view = viewOf({ ...newDeck(), shown: { path: '/w/long.txt', text, caret } });
+  const view = viewOf({ ...newDeck(), shown: { id: 'v', path: '/w/long.txt', text, caret } });
   assert.equal(view.caretLine, 399);
   assert.equal(view.caretColumn, 4);
   assert.ok(view.lines.length <= 120);
@@ -234,20 +250,20 @@ test('the view follows the caret deep in a long file', () => {
 });
 
 test('the view handles the caret at the very start, before a leading newline', () => {
-  const view = viewOf({ ...newDeck(), shown: { path: '/w/a', text: '\nabc', caret: 0 } });
+  const view = viewOf({ ...newDeck(), shown: { id: 'v', path: '/w/a', text: '\nabc', caret: 0 } });
   assert.deepEqual([view.caretLine, view.caretColumn, view.firstLine], [0, 0, 1]);
   assert.deepEqual(view.lines, ['', 'abc']);
 });
 
 test('the view shows control characters as symbols, keeping tabs and columns', () => {
   assert.equal(showControls('a\fb\x1b\x00\x7f\x85\tc'), 'a\u240cb\u241b\u2400\u2421\ufffd\tc');
-  const view = viewOf({ ...newDeck(), shown: { path: '/w/a', text: 'x = 1\n\f\ny = 2\n', caret: 0 } });
+  const view = viewOf({ ...newDeck(), shown: { id: 'v', path: '/w/a', text: 'x = 1\n\f\ny = 2\n', caret: 0 } });
   assert.deepEqual(view.lines, ['x = 1', '\u240c', 'y = 2', '']);
 });
 
 test('the view cuts a long line around the caret and the frame keeps the caret on screen', () => {
   const text = 'x'.repeat(150_000) + 'HERE' + 'y'.repeat(150_000);
-  const view = viewOf({ ...newDeck(), playing: undefined, shown: { path: '/w/min.js', text, caret: 150_002 } });
+  const view = viewOf({ ...newDeck(), playing: undefined, shown: { id: 'v', path: '/w/min.js', text, caret: 150_002 } });
   assert.ok(view.lines[0]!.length <= 400);
   assert.ok(view.lines[0]!.includes('HERE'));
   const f = frame({ ...view, isTyping: true }, 10, 72);
@@ -306,27 +322,27 @@ test('waiting text is capped; the oldest waiting changes are dropped', () => {
 });
 
 test('saved state lists the played changes, the one being typed, then the waiting ones, and restores them', () => {
-  const changes = [change('a', '', 'alpha\n'), change('b', '', 'beta\n'), { ...change('c', '', 'gamma\n'), kind: 'create', time: 7 } as const];
+  const changes = [change('a', '', 'alpha\n'), { ...change('b', '', 'beta\n'), tool: 'Edit' } as const, { ...change('c', '', 'gamma\n'), tool: 'Write', kind: 'create', time: 7 } as const];
   const d = deckOf(...changes);
   tick(d, FAST);
-  finish(d);
+  finish(d, FAST);
   tick(d, FAST);
   assert.equal(playingId(d), 'b');
   togglePause(d);
   const saved = savedOf(d);
   assert.deepEqual(saved, {
     changes: [
-      { id: 'a', path: '/w/a.ts', kind: 'modify', time: 0 },
-      { id: 'b', path: '/w/b.ts', kind: 'modify', time: 0 },
-      { id: 'c', path: '/w/c.ts', kind: 'create', time: 7 },
+      { id: 'a', number: 1, path: '/w/a.ts', kind: 'modify', time: 0 },
+      { id: 'b', number: 2, tool: 'Edit', path: '/w/b.ts', kind: 'modify', time: 0 },
+      { id: 'c', number: 3, tool: 'Write', path: '/w/c.ts', kind: 'create', time: 7 },
     ],
     played: 1,
     recorded: 3,
     isPaused: true,
   });
 
-  // The one being typed starts over; the played one stays played and is shown done.
-  const back = restore(saved, changes, FAST);
+  // The one being typed starts over and, paused, is shown cued; the played one stays played.
+  const back = restore(saved, withTexts(saved, changes), FAST);
   assert.equal(back.playing, undefined);
   assert.deepEqual(
     back.timeline.all().map((e) => [e.kind, e.time, back.timeline.stateOf(e.seq)]),
@@ -337,9 +353,11 @@ test('saved state lists the played changes, the one being typed, then the waitin
     ],
   );
   assert.deepEqual(queued(back).map((c) => c.id), ['b', 'c']);
-  assert.deepEqual(back.shown, { path: '/w/a.ts', text: 'alpha\n', caret: 6 });
+  assert.deepEqual(back.shown, { id: 'b', path: '/w/b.ts', text: '', caret: 0 });
   assert.equal(back.isPaused, true);
   assert.deepEqual(savedOf(back), saved);
+  // Unpaused, the played one is shown done until the next starts.
+  assert.deepEqual(restore({ ...saved, isPaused: false }, withTexts(saved, changes), FAST).shown, { id: 'a', path: '/w/a.ts', text: 'alpha\n', caret: 6 });
 });
 
 test('a reload with every change played plays none again and shows the last one done', () => {
@@ -348,7 +366,7 @@ test('a reload with every change played plays none again and shows the last one 
   playOut(d);
   const saved = savedOf(d);
   assert.equal(saved.played, 2);
-  const back = restore(saved, changes, FAST);
+  const back = restore(saved, withTexts(saved, changes), FAST);
   assert.deepEqual(back.shown, d.shown);
   assert.equal(tick(back, FAST), false);
   assert.equal(back.timeline.pendingCount(), 0);
@@ -360,29 +378,46 @@ test('a reload skips a saved change whose texts are gone, and the rest keep thei
   const d = deckOf(a, b, c);
   for (let i = 0; i < 2; i++) {
     tick(d, FAST);
-    finish(d);
+    finish(d, FAST);
   }
   const saved = savedOf(d);
   assert.equal(saved.played, 2);
 
-  const noB = restore(saved, [a, c], FAST);
+  const noB = restore(saved, withTexts(saved, [a, c]), FAST);
   assert.deepEqual(savedOf(noB), { ...saved, changes: saved.changes.filter((s) => s.id !== 'b'), played: 1 });
   assert.equal(noB.shown?.text, 'a\n');
-  const onlyC = restore(saved, [c], FAST);
+  const onlyC = restore(saved, withTexts(saved, [c]), FAST);
   assert.deepEqual(savedOf(onlyC), { ...saved, changes: saved.changes.filter((s) => s.id === 'c'), played: 0 });
   assert.equal(onlyC.shown, undefined);
 });
 
-test('saved state is read under its own tag, under saved-1 as waiting modifies at time 0, and not under any other', () => {
-  const d = deckOf({ ...change('a', '', 'a\n'), kind: 'create', time: 5 });
+test('saved state is read under its own tag, under saved-2 and saved-1 numbered by place, and not under any other', () => {
+  const d = deckOf({ ...change('a', '', 'a\n'), tool: 'Write', kind: 'create', time: 5 });
   playOut(d);
   const saved = savedOf(d);
+  assert.equal(SAVED_SHAPE, 'saved-3');
   assert.deepEqual(savedFrom({ shape: SAVED_SHAPE, value: saved }), saved);
+  const v2 = {
+    changes: [
+      { id: 'p', path: '/w/p.ts', kind: 'create', time: 4 },
+      { id: 'q', path: '/w/q.ts', kind: 'modify', time: 6 },
+    ],
+    played: 1,
+    recorded: 5,
+    isPaused: false,
+  };
+  assert.deepEqual(savedFrom({ shape: 'saved-2', value: v2 }), {
+    ...v2,
+    changes: [
+      { id: 'p', number: 4, path: '/w/p.ts', kind: 'create', time: 4 },
+      { id: 'q', number: 5, path: '/w/q.ts', kind: 'modify', time: 6 },
+    ],
+  });
   const v1 = { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 'big', path: '/w/big.json', isTooLarge: true }], recorded: 3, isPaused: true };
   assert.deepEqual(savedFrom({ shape: 'saved-1', value: v1 }), {
     changes: [
-      { id: 'r', path: '/w/r.ts', kind: 'modify', time: 0 },
-      { id: 'big', path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
+      { id: 'r', number: 2, path: '/w/r.ts', kind: 'modify', time: 0 },
+      { id: 'big', number: 3, path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
     ],
     played: 0,
     recorded: 3,
@@ -394,14 +429,14 @@ test('saved state is read under its own tag, under saved-1 as waiting modifies a
 });
 
 test('a reload at either limit keeps the change being typed, which starts over', () => {
-  const recorded = new Map<string, Change>();
-  const record = (d: Deck, c: Change) => {
-    recorded.set(c.id, c);
+  const recorded: NewChange[] = [];
+  const record = (d: Deck, c: NewChange) => {
+    recorded.push(c);
     enqueue(d, c);
   };
   const reload = (d: Deck) => {
     const saved = savedOf(d);
-    return restore(saved, saved.changes.map((s) => recorded.get(s.id)!), FAST);
+    return restore(saved, withTexts(saved, recorded), FAST);
   };
 
   const d = newDeck();
@@ -473,7 +508,7 @@ test('timeline events name the path relative to the working directory and count 
   enqueue(d, edit, '/w');
   const [e] = d.timeline.all();
   assert.deepEqual([e?.uri, e?.relPath, e?.linesAdded, e?.linesRemoved], ['/w/src/a.ts', 'src/a.ts', 2, 1]);
-  assert.equal(restore(savedOf(d), [edit], FAST, '/w').timeline.all()[0]?.relPath, 'src/a.ts');
+  assert.equal(restore(savedOf(d), withTexts(savedOf(d), [edit]), FAST, '/w').timeline.all()[0]?.relPath, 'src/a.ts');
   const win = newDeck();
   enqueue(win, change('b', '', 'b\n', 'C:\\w\\src\\b.ts'), 'C:\\w');
   assert.equal(win.timeline.all()[0]?.relPath, 'src/b.ts');
@@ -507,7 +542,7 @@ test('the timeline keeps played changes and marks each one played, playing or pe
   const d = deckOf(change('a', '', 'alpha\n'), change('b', '', 'beta\n'), change('c', '', 'gamma\n'));
   const seqs = d.timeline.all().map((e) => e.seq);
   tick(d, FAST);
-  finish(d);
+  finish(d, FAST);
   tick(d, FAST);
   assert.deepEqual(seqs.map((s) => d.timeline.stateOf(s)), ['played', 'playing', 'pending']);
   assert.equal(d.timeline.cursor, seqs[1]);
@@ -518,4 +553,271 @@ test('the timeline keeps played changes and marks each one played, playing or pe
 
 test('the shared bundle normalizes line endings', () => {
   assert.equal(normalizeEol('a\r\nb\rc\n'), 'a\nb\nc\n');
+});
+
+test('changes are numbered in recorded order and keep their tool; an unchanged file takes no number', () => {
+  const d = deckOf({ ...change('a', '', 'a\n'), tool: 'Write' }, change('same', 'x\n', 'x\n'), { ...change('b', 'b\n', 'B\n'), tool: 'Edit' }, change('c', '', 'c\n'));
+  assert.deepEqual(
+    d.timeline.all().map((e) => [(e as unknown as Change).id, (e as unknown as Change).number, (e as unknown as Change).tool]),
+    [
+      ['a', 1, 'Write'],
+      ['b', 2, 'Edit'],
+      ['c', 3, undefined],
+    ],
+  );
+  assert.deepEqual(queued(d).map((c) => [c.number, c.tool]), [
+    [1, 'Write'],
+    [2, 'Edit'],
+    [3, undefined],
+  ]);
+});
+
+test('saved state round-trips numbers and tools', () => {
+  const changes = [{ ...change('a', '', 'a\n'), tool: 'Write' } as const, { ...change('b', 'b\n', 'B\n'), tool: 'Edit' } as const];
+  const d = deckOf(...changes);
+  tick(d, FAST);
+  finish(d, FAST);
+  const saved = savedOf(d);
+  assert.deepEqual(saved.changes.map((c) => [c.id, c.number, c.tool]), [
+    ['a', 1, 'Write'],
+    ['b', 2, 'Edit'],
+  ]);
+  const back = restore(saved, withTexts(saved, changes), FAST);
+  assert.deepEqual(savedOf(back), saved);
+  assert.deepEqual(listingOf(back).rows.map((r) => [r.number, r.tool, r.state]), [
+    [1, 'Write', 'played'],
+    [2, 'Edit', 'pending'],
+  ]);
+});
+
+/** Six changes, each a new file holding its id, with the `n`th (1-based) being typed. */
+function sixWithTyping(n: number) {
+  const d = deckOf(...['a', 'b', 'c', 'd', 'e', 'f'].map((id) => change(id, '', `${id}${id}${id}\n`)));
+  for (let i = 1; i < n; i++) {
+    tick(d, FAST);
+    finish(d, FAST);
+  }
+  tick(d, FAST);
+  assert.equal(playingId(d), ['a', 'b', 'c', 'd', 'e', 'f'][n - 1]);
+  return d;
+}
+
+/** The ids each change starts typing in, until nothing is left. */
+function startOrder(d: Deck) {
+  const order: string[] = [];
+  while (!isIdle(d)) {
+    tick(d, FAST);
+    const id = playingId(d);
+    if (id && order.at(-1) !== id) order.push(id);
+  }
+  return order;
+}
+
+test('a seek back while playing types the picked change next, then the rest, and earlier ones stay played', () => {
+  const d = sixWithTyping(5);
+  assert.equal(seek(d, 'b', FAST), true);
+  assert.equal(d.playing, undefined);
+  assert.deepEqual(d.shown, { id: 'b', path: '/w/b.ts', text: '', caret: 0 });
+  assert.deepEqual(listingOf(d).rows.map((r) => r.state), ['played', 'pending', 'pending', 'pending', 'pending', 'pending']);
+  assert.deepEqual(startOrder(d), ['b', 'c', 'd', 'e', 'f']);
+  assert.equal(d.shown?.text, 'fff\n');
+});
+
+test('a seek forward while playing skips the changes before the picked one', () => {
+  const d = sixWithTyping(2);
+  seek(d, 'e', FAST);
+  assert.deepEqual(listingOf(d).rows.map((r) => r.state), ['played', 'played', 'played', 'played', 'pending', 'pending']);
+  assert.deepEqual(startOrder(d), ['e', 'f']);
+});
+
+test('a seek while paused types nothing until resume, then the picked change and the rest', () => {
+  const d = sixWithTyping(5);
+  togglePause(d);
+  seek(d, 'b', FAST);
+  assert.equal(d.isPaused, true);
+  for (let i = 0; i < 20; i++) assert.equal(tick(d, FAST), false);
+  assert.equal(d.shown?.id, 'b');
+  assert.equal(listingOf(d).current, 'b');
+  togglePause(d);
+  assert.deepEqual(startOrder(d), ['b', 'c', 'd', 'e', 'f']);
+});
+
+test('a seek to the change being typed starts it over', () => {
+  const d = deckOf(change('long', '', 'one two three four five six\n'), change('next', '', 'n\n'));
+  for (let i = 0; i < 4; i++) tick(d, FAST);
+  assert.ok(d.shown!.text.length > 0);
+  seek(d, 'long', FAST);
+  assert.deepEqual(d.shown, { id: 'long', path: '/w/long.ts', text: '', caret: 0 });
+  tick(d, FAST);
+  assert.equal(playingId(d), 'long');
+  assert.equal(d.playing?.text, '');
+});
+
+test('a seek overtakes the change being typed, so its stale completion moves nothing', () => {
+  const d = sixWithTyping(5);
+  const { seq, token } = d.playing!;
+  seek(d, 'b', FAST);
+  const cursor = d.timeline.cursor;
+  d.timeline.complete(seq, token);
+  assert.equal(d.timeline.cursor, cursor);
+  assert.equal(queued(d)[0]?.id, 'b');
+});
+
+test('a seek to a change no longer kept changes nothing', () => {
+  const d = sixWithTyping(3);
+  assert.equal(seek(d, 'gone', FAST), false);
+  assert.equal(playingId(d), 'c');
+});
+
+test('a seek to the change being typed starts it over even once the timeline has dropped it', () => {
+  const d = typingPastTheLimit();
+  tick(d, FAST);
+  assert.ok(d.playing!.text.length > 0);
+  assert.equal(seek(d, 'typing', FAST), true);
+  assert.equal(playingId(d), 'typing');
+  assert.equal(d.playing!.text, '');
+  assert.equal(listingOf(d).rows[0]?.id, 'typing');
+});
+
+test('from start plays every kept change again after everything played', () => {
+  const d = deckOf(change('a', '', 'a\n'), change('b', '', 'b\n'), change('c', '', 'c\n'));
+  playOut(d);
+  assert.equal(replayFromStart(d, FAST), true);
+  assert.deepEqual(startOrder(d), ['a', 'b', 'c']);
+  assert.equal(replayFromStart(newDeck(), FAST), false);
+});
+
+test('from start while paused cues the first change and stays paused', () => {
+  const d = sixWithTyping(4);
+  togglePause(d);
+  replayFromStart(d, FAST);
+  assert.equal(d.isPaused, true);
+  assert.deepEqual(d.shown, { id: 'a', path: '/w/a.ts', text: '', caret: 0 });
+  assert.equal(tick(d, FAST), false);
+});
+
+test('finish current after a seek while paused shows the picked change done, and the next follows on resume', () => {
+  const d = sixWithTyping(4);
+  togglePause(d);
+  seek(d, 'b', FAST);
+  finish(d, FAST);
+  assert.deepEqual(d.shown, { id: 'b', path: '/w/b.ts', text: 'bbb\n', caret: 4 });
+  assert.deepEqual(listingOf(d).rows.slice(0, 3).map((r) => r.state), ['played', 'played', 'pending']);
+  assert.equal(tick(d, FAST), false);
+  togglePause(d);
+  assert.deepEqual(startOrder(d), ['c', 'd', 'e', 'f']);
+});
+
+test('finish current during the hold after a change shown at once leaves the next change waiting', () => {
+  const d = deckOf({ ...change('big', '', '', '/w/big.json'), isTooLarge: true }, change('n', '', 'n\n'));
+  tick(d, FAST);
+  assert.ok(d.hold > 0);
+  finish(d, FAST);
+  assert.equal(d.hold, 0);
+  assert.equal(d.shown?.id, 'big');
+  assert.equal(queued(d)[0]?.id, 'n');
+});
+
+test('a seek while paused survives a reload: still paused, the picked change cued, the rest after it', () => {
+  const changes = ['a', 'b', 'c', 'd'].map((id) => change(id, `${id}\n`, `${id}${id}\n`));
+  const d = deckOf(...changes);
+  for (let i = 0; i < 3; i++) {
+    tick(d, FAST);
+    finish(d, FAST);
+  }
+  togglePause(d);
+  seek(d, 'b', FAST);
+  const saved = savedOf(d);
+  assert.equal(saved.played, 1);
+  const back = restore(saved, withTexts(saved, changes), FAST);
+  assert.equal(back.isPaused, true);
+  assert.equal(back.shown?.text, 'b\n');
+  assert.deepEqual(back.shown, d.shown);
+  assert.deepEqual(listingOf(back), {
+    rows: listingOf(d).rows,
+    dropped: 0,
+    current: 'b',
+  });
+  togglePause(back);
+  assert.deepEqual(startOrder(back), ['b', 'c', 'd']);
+});
+
+test('the listing has a row per kept change with its state, counts and the change shown', () => {
+  const d = deckOf(
+    { ...change('a', '', 'one\ntwo\n'), tool: 'Write' },
+    { ...change('b', 'x\ny\n', 'x\nY\n'), tool: 'Edit' },
+    change('c', '', 'c\n'),
+    { ...change('big', '', '', '/w/big.json'), isTooLarge: true },
+    change('e', 'gone\n', ''),
+  );
+  tick(d, FAST);
+  finish(d, FAST);
+  tick(d, FAST);
+  finish(d, FAST);
+  tick(d, FAST);
+  assert.deepEqual(listingOf(d), {
+    rows: [
+      { id: 'a', number: 1, tool: 'Write', path: '/w/a.ts', state: 'played', added: 2, removed: 0 },
+      { id: 'b', number: 2, tool: 'Edit', path: '/w/b.ts', state: 'played', added: 1, removed: 1 },
+      { id: 'c', number: 3, path: '/w/c.ts', state: 'playing', added: 1, removed: 0 },
+      { id: 'big', number: 4, path: '/w/big.json', state: 'pending', isTooLarge: true, added: 0, removed: 0 },
+      { id: 'e', number: 5, path: '/w/e.ts', state: 'pending', added: 0, removed: 1 },
+    ],
+    dropped: 0,
+    current: 'c',
+  });
+  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0 });
+});
+
+test('the listing counts the changes dropped before the oldest kept one', () => {
+  const d = newDeck();
+  for (let i = 0; i < MAX_WAITING + 12; i++) enqueue(d, change(`c${i}`, '', `${i}\n`));
+  const l = listingOf(d);
+  assert.equal(l.rows.length, MAX_WAITING);
+  assert.equal(l.rows[0]?.number, 13);
+  assert.equal(l.dropped, 12);
+});
+
+test('the list window follows the current row a third of the way down, or stays where it was scrolled', () => {
+  assert.equal(listWindow(80, 0, 10), 0);
+  assert.equal(listWindow(80, 39, 10), 36);
+  assert.equal(listWindow(80, 79, 10), 70);
+  assert.equal(listWindow(5, 4, 10), 0, 'a list that fits starts at its first row');
+  assert.equal(listWindow(80, undefined, 10), 0);
+  assert.equal(listWindow(80, 39, 10, 2), 2);
+  assert.equal(listWindow(80, 39, 10, -5), 0);
+  assert.equal(listWindow(80, 39, 10, 500), 70);
+});
+
+const ROW: Row = { id: 'r', number: 7, tool: 'Edit', path: '/w/src/routes/signup.ts', state: 'played', added: 4, removed: 0 };
+const AT = { isCurrent: false, isPaused: false };
+
+test('a row label shows a glyph, number, tool, path and counts, and the state word only where it belongs', () => {
+  const label = (row: Partial<Row>, at: Partial<typeof AT> = {}) => {
+    const l = rowLabel({ ...ROW, ...row }, 'src/routes/signup.ts', { ...AT, ...at }, 80);
+    return `${l.lead}${l.dir}${l.file}${l.tail}`;
+  };
+  assert.deepEqual(rowLabel(ROW, 'src/routes/signup.ts', AT, 80), { lead: '✓ #7 Edit ', dir: 'src/routes/', file: 'signup.ts', tail: ' +4' });
+  assert.equal(label({ state: 'playing' }, { isCurrent: true }), '▸ #7 Edit src/routes/signup.ts Typing +4');
+  assert.equal(label({ state: 'playing' }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Paused +4');
+  assert.equal(label({ state: 'pending' }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Next +4');
+  assert.equal(label({ state: 'pending', added: 1, removed: 1 }), '○ #7 Edit src/routes/signup.ts +1 −1');
+  assert.equal(label({ state: 'played' }, { isCurrent: true }), '✓ #7 Edit src/routes/signup.ts +4');
+  assert.equal(label({ isTooLarge: true, added: 0 }, { isCurrent: true }), '⊘ #7 Edit src/routes/signup.ts Too large');
+  assert.equal(label({ isTooLarge: true, added: 0 }), '⊘ #7 Edit src/routes/signup.ts Not typed');
+  assert.equal(label({ isTooLarge: true, state: 'pending', added: 0 }), '○ #7 Edit src/routes/signup.ts');
+  assert.equal(label({ tool: undefined }), '✓ #7 src/routes/signup.ts +4');
+});
+
+test('a row label cuts the folder, then the file name, to fit', () => {
+  const fit = (width: number) => rowLabel(ROW, 'src/routes/signup.ts', AT, width);
+  assert.deepEqual(fit(28), { lead: '✓ #7 Edit ', dir: 'src/r…', file: 'signup.ts', tail: ' +4' });
+  for (const width of [40, 28, 22, 18, 15]) {
+    const l = fit(width);
+    assert.equal(`${l.lead}${l.dir}${l.file}${l.tail}`.length <= width, true, `width ${width}: ${JSON.stringify(l)}`);
+  }
+  assert.deepEqual(fit(22), { lead: '✓ #7 Edit ', dir: '', file: 'signup.ts', tail: ' +4' });
+  assert.deepEqual(fit(18), { lead: '✓ #7 Edit ', dir: '', file: 'sign…', tail: ' +4' });
+  assert.equal(rowLabel(ROW, 'signup.ts', AT, 80).dir, '');
+  assert.equal(rowLabel(ROW, 'C:\\w\\src\\a.ts', AT, 80).file, 'a.ts');
 });

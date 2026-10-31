@@ -20,21 +20,46 @@ const PANE = {
   },
 } as const;
 
-/** What the pane draws on `surface`: the file's name, the status line, and the Code element's props. */
+/** What the pane draws on `surface`: the file's name, the current change's number, the status line, and the Code element's props. */
 async function look($: Engine, surface: Surface | 'terminal') {
   const ui = await $.ui.mount({ ...PANE, surface });
   const name = (await ui.find({ type: 'Text', text: /^(?!.*(typing|paused|idle))/ }))?.text;
+  const number = (await ui.find({ type: 'Text', text: /^#\d+$/ }))?.text;
   const status = (await ui.find({ type: 'Text', text: /^(typing|paused|idle)/ }))?.text;
   const code = (await ui.find({ type: 'Code' }))?.props as { source: string; startLine: number; path: string } | undefined;
   const note = (await ui.find({ type: 'Text', text: /too large|typed out here/ }))?.text;
   await ui.unmount();
-  return { name, status, code, note };
+  return { name, number, status, code, note };
+}
+
+/** The changes list the pane draws on `surface`, `bodyRows` high: each row's text, and the note on dropped changes. */
+async function list($: Engine, surface: Surface = 'desktop', bodyRows = 20) {
+  const ui = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, scroll: { offset: 0, bodyRows } } });
+  const rows = (await ui.findAll({ type: 'Button' })).filter((b) => b.key?.startsWith('change:')).map((b) => b.text);
+  const dropped = (await ui.find({ type: 'Text', text: /dropped/ }))?.text;
+  await ui.unmount();
+  return { rows, dropped };
 }
 
 async function press($: Engine, key: string) {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
   await ui.press({ key });
   await ui.unmount();
+}
+
+/** Presses the list's row for change number `n`, which must be drawn. */
+async function pressRow($: Engine, n: number) {
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  const row = (await ui.findAll({ type: 'Button' })).find((b) => b.key?.startsWith('change:') && b.text.includes(`#${n} `));
+  expect(row?.key).toBeDefined();
+  await ui.press({ key: row!.key! });
+  await ui.unmount();
+}
+
+/** The person's wheel over the pane, `by` rows. */
+async function wheel($: Engine, by: number) {
+  const scroll = $.ui.scroll as unknown as (e: object) => Promise<unknown>;
+  await scroll({ component: 'Pane', requestId: PANE_ID, offset: 0, by, bodyRows: 20, contentRows: 20, origin: { kind: 'person' } });
 }
 
 const BEFORE = 'function add(a, b) {\n  return a + b;\n}\n';
@@ -283,13 +308,13 @@ function seed(on: Parameters<typeof world>[0], saved: unknown, texts: Record<str
   });
 }
 
-const R = { id: 'r', path: '/w/r.ts', kind: 'create', time: 1_000 } as const;
-const S = { id: 's', path: '/w/s.ts', kind: 'modify', time: 2_000 } as const;
+const R = { id: 'r', number: 1, tool: 'Write', path: '/w/r.ts', kind: 'create', time: 1_000 } as const;
+const S = { id: 's', number: 2, tool: 'Edit', path: '/w/s.ts', kind: 'modify', time: 2_000 } as const;
 const RS_TEXTS = { 'r:before': '', 'r:after': 'kept\n', 's:before': 'old\n', 's:after': 'new\n' };
 
 test('after a reload, the saved changes play, the one that was being typed from its start', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-2', value: { changes: [R, S], played: 0, recorded: 2, isPaused: false } }, RS_TEXTS);
+  seed(on, { shape: 'saved-3', value: { changes: [R, S], played: 0, recorded: 2, isPaused: false } }, RS_TEXTS);
   await start($);
   await w.clock.advance(60);
   expect((await look($, 'desktop')).name).toBe('r.ts');
@@ -303,7 +328,7 @@ test('after a reload, the saved changes play, the one that was being typed from 
 test('after a reload, played changes stay played with their texts, kind and time, and only the waiting ones play', async ($, on) => {
   const w = world(on);
   const saved = { changes: [R, S], played: 1, recorded: 2, isPaused: false };
-  seed(on, { shape: 'saved-2', value: saved }, RS_TEXTS);
+  seed(on, { shape: 'saved-3', value: saved }, RS_TEXTS);
   await start($);
   await w.clock.settle();
   expect(w.saved).toEqual(saved);
@@ -320,7 +345,7 @@ test('after a reload, played changes stay played with their texts, kind and time
 
 test('after a reload with every change played, the pane shows the last one done and types nothing', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-2', value: { changes: [R, S], played: 2, recorded: 2, isPaused: false } }, RS_TEXTS);
+  seed(on, { shape: 'saved-3', value: { changes: [R, S], played: 2, recorded: 2, isPaused: false } }, RS_TEXTS);
   await start($);
   await w.clock.advance(5_000);
 
@@ -343,19 +368,35 @@ test('after a reload, changes saved by the earlier saved-1 shape play', async ($
   await w.clock.advance(10_000);
   expect((await look($, 'desktop')).code?.source).toBe('new\n');
   expect(w.saved.changes).toEqual([
-    { id: 'r', path: '/w/r.ts', kind: 'modify', time: 0 },
-    { id: 's', path: '/w/s.ts', kind: 'modify', time: 0 },
+    { id: 'r', number: 1, path: '/w/r.ts', kind: 'modify', time: 0 },
+    { id: 's', number: 2, path: '/w/s.ts', kind: 'modify', time: 0 },
   ]);
   expect(w.saved.played).toBe(2);
 });
 
-test('after a reload, a pause is kept', async ($, on) => {
+test('after a reload, a pause is kept and the next change is shown before it plays, marked Next', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-2', value: { changes: [R], played: 0, recorded: 1, isPaused: true } }, { 'r:before': '', 'r:after': 'x\n' });
+  seed(on, { shape: 'saved-3', value: { changes: [R, S], played: 1, recorded: 2, isPaused: true } }, RS_TEXTS);
   await start($);
   await w.clock.advance(5_000);
 
-  expect((await look($, 'desktop')).status).toBe('paused · 1 queued');
+  const { name, number, status, code } = await look($, 'desktop');
+  expect([name, number, status, code?.source]).toEqual(['s.ts', '#2', 'paused · 1 queued', 'old\n']);
+  expect((await list($)).rows).toEqual(['✓ #1 Write r.ts +1', '▸ #2 Edit s.ts Next +1 −1']);
+});
+
+test('after a reload, changes saved by the earlier saved-2 shape are numbered by place and show no tool', async ($, on) => {
+  const w = world(on);
+  const unnumbered = ({ number, tool, ...c }: typeof R | typeof S) => c;
+  seed(on, { shape: 'saved-2', value: { changes: [unnumbered(R), unnumbered(S)], played: 1, recorded: 5, isPaused: false } }, RS_TEXTS);
+  await start($);
+  await w.clock.advance(10_000);
+
+  expect((await list($)).rows).toEqual(['✓ #4 r.ts +1', '✓ #5 s.ts +1 −1']);
+  expect(w.saved.changes).toEqual([
+    { id: 'r', number: 4, path: '/w/r.ts', kind: 'create', time: 1_000 },
+    { id: 's', number: 5, path: '/w/s.ts', kind: 'modify', time: 2_000 },
+  ]);
 });
 
 test('after a reload, saved changes in another shape are dropped', async ($, on) => {
@@ -413,4 +454,196 @@ test('a change inserting more than 6,000 characters is shown at once', async ($,
   const { status, code } = await look($, 'desktop');
   expect(status).toBe('idle');
   expect(code!.source.length < 1_000).toBe(true);
+});
+
+/** Records `src/a.ts` (a Write of two lines), an Edit of `d.ts`, and a Write of `c.ts`. */
+async function three($: Engine) {
+  await $.tool.call({ tool: 'Write', file_path: '/w/src/a.ts', content: 'one\ntwo\n' });
+  await $.tool.call({ tool: 'Edit', file_path: '/w/d.ts', old_string: 'y', new_string: 'Y' });
+  await $.tool.call({ tool: 'Write', file_path: '/w/c.ts', content: 'c\n' });
+}
+
+test('the list shows each change with its state, number, tool, path and counts, on every surface', async ($, on) => {
+  const w = world(on, { '/w/d.ts': 'x\ny\n' });
+  await start($);
+  await three($);
+  await w.clock.advance(60);
+  for (const surface of SURFACES) {
+    expect((await list($, surface)).rows).toEqual(['▸ #1 Write src/a.ts Typing +2', '○ #2 Edit d.ts +1 −1', '○ #3 Write c.ts +1']);
+  }
+  expect((await look($, 'desktop')).number).toBe('#1');
+
+  await press($, 'pause');
+  expect((await list($)).rows[0]).toBe('▸ #1 Write src/a.ts Paused +2');
+  await press($, 'pause');
+  await w.clock.advance(60_000);
+  expect((await list($)).rows).toEqual(['✓ #1 Write src/a.ts +2', '✓ #2 Edit d.ts +1 −1', '✓ #3 Write c.ts +1']);
+});
+
+test('before anything is recorded, there is no list', async ($, on) => {
+  world(on);
+  await start($);
+  expect(await list($)).toEqual({ rows: [], dropped: undefined });
+});
+
+test('a too-large change reads Too large while shown and Not typed once passed', async ($, on) => {
+  const w = world(on);
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/big.json', content: 'x'.repeat(1_000_001) });
+  await $.tool.call({ tool: 'Write', file_path: '/w/next.ts', content: 'one two three four\n' });
+  await w.clock.advance(60);
+  expect((await list($)).rows).toEqual(['⊘ #1 Write big.json Too large', '○ #2 Write next.ts +1']);
+  await w.clock.advance(1_200);
+  expect((await list($)).rows).toEqual(['⊘ #1 Write big.json Not typed', '▸ #2 Write next.ts Typing +1']);
+});
+
+test('pressing an earlier change while playing types it next, then the ones after it', async ($, on) => {
+  const w = world(on, { '/w/d.ts': 'x\ny\n' });
+  await start($);
+  await three($);
+  await w.clock.advance(60_000);
+
+  await pressRow($, 1);
+  await w.clock.advance(60);
+  const { name, status } = await look($, 'desktop');
+  expect([name, status]).toEqual(['src/a.ts', 'typing · 2 queued']);
+  expect((await list($)).rows).toEqual(['▸ #1 Write src/a.ts Typing +2', '○ #2 Edit d.ts +1 −1', '○ #3 Write c.ts +1']);
+  await w.clock.advance(60_000);
+  expect((await look($, 'desktop')).code?.source).toBe('c\n');
+});
+
+test('pressing a change while paused shows it as it was before, marked Next, and resume types it and the rest', async ($, on) => {
+  const w = world(on, { '/w/d.ts': 'x\ny\n' });
+  await start($);
+  await three($);
+  await w.clock.advance(60_000);
+  await press($, 'pause');
+
+  await pressRow($, 2);
+  await w.clock.advance(5_000);
+  const paused = await look($, 'desktop');
+  expect([paused.name, paused.number, paused.status, paused.code?.source]).toEqual(['d.ts', '#2', 'paused · 2 queued', 'x\ny\n']);
+  expect((await list($)).rows).toEqual(['✓ #1 Write src/a.ts +2', '▸ #2 Edit d.ts Next +1 −1', '○ #3 Write c.ts +1']);
+
+  await press($, 'pause');
+  await w.clock.advance(60);
+  expect((await list($)).rows[1]).toBe('▸ #2 Edit d.ts Typing +1 −1');
+  await w.clock.advance(60_000);
+  expect((await look($, 'desktop')).code?.source).toBe('c\n');
+});
+
+test('pressing the change being typed starts it over', async ($, on) => {
+  const w = world(on);
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/long.ts', content: 'one two three four five six seven\n' });
+  await w.clock.advance(1_000);
+  expect((await look($, 'desktop')).code?.source.length).toBeGreaterThan(5);
+
+  await pressRow($, 1);
+  expect((await look($, 'desktop')).code?.source).toBe('');
+  await w.clock.advance(400);
+  const { status, code } = await look($, 'desktop');
+  expect(status).toBe('typing');
+  expect(code!.source.length < 'one two three four five six seven\n'.length).toBe(true);
+});
+
+test('From start replays every change after they all played, and keeps a pause', async ($, on) => {
+  const w = world(on, { '/w/d.ts': 'x\ny\n' });
+  await start($);
+  await three($);
+  await w.clock.advance(60_000);
+
+  await press($, 'start');
+  await w.clock.advance(60);
+  expect((await list($)).rows[0]).toBe('▸ #1 Write src/a.ts Typing +2');
+
+  await press($, 'pause');
+  await press($, 'start');
+  await w.clock.advance(5_000);
+  const { name, status, code } = await look($, 'desktop');
+  expect([name, status, code?.source]).toEqual(['src/a.ts', 'paused · 3 queued', '']);
+  expect((await list($)).rows[0]).toBe('▸ #1 Write src/a.ts Next +2');
+});
+
+test('Finish current on a change picked while paused shows it done, and the next one types on resume', async ($, on) => {
+  const w = world(on, { '/w/d.ts': 'x\ny\n' });
+  await start($);
+  await three($);
+  await w.clock.advance(60_000);
+  await press($, 'pause');
+  await pressRow($, 2);
+
+  await press($, 'finish');
+  await w.clock.advance(5_000);
+  const { name, status, code } = await look($, 'desktop');
+  expect([name, status, code?.source]).toEqual(['d.ts', 'paused · 1 queued', 'x\nY\n']);
+  expect((await list($)).rows).toEqual(['✓ #1 Write src/a.ts +2', '✓ #2 Edit d.ts +1 −1', '○ #3 Write c.ts +1']);
+  await press($, 'pause');
+  await w.clock.advance(60);
+  expect((await list($)).rows[2]).toBe('▸ #3 Write c.ts Typing +1');
+});
+
+test('the controls have hotkeys: r From start, p Pause, f Finish current, l Skip to latest', async ($, on) => {
+  world(on);
+  await start($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  const keys = await Promise.all(['start', 'pause', 'finish', 'skip'].map(async (key) => [(await ui.find({ key }))?.text, (await ui.find({ key }))?.props.hotkey]));
+  await ui.unmount();
+  expect(keys).toEqual([
+    ['From start', 'r'],
+    ['Pause', 'p'],
+    ['Finish current', 'f'],
+    ['Skip to latest', 'l'],
+  ]);
+});
+
+test('a long list keeps the current change in view, stays where the person scrolls it, and follows again after a press', async ($, on) => {
+  const w = world(on);
+  await start($);
+  for (let i = 1; i <= 30; i++) await $.tool.call({ tool: 'Write', file_path: `/w/f${i}.ts`, content: `${i}\n` });
+  const numbers = async () => (await list($)).rows.map((r) => Number(/#(\d+) /.exec(r)![1]));
+
+  await press($, 'skip');
+  expect(await numbers()).toEqual([23, 24, 25, 26, 27, 28, 29, 30]);
+  await press($, 'start');
+  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+
+  await wheel($, 10);
+  expect(await numbers()).toEqual([11, 12, 13, 14, 15, 16, 17, 18]);
+  await w.clock.advance(2_000);
+  expect((await look($, 'desktop')).number).not.toBe('#1');
+  expect(await numbers()).toEqual([11, 12, 13, 14, 15, 16, 17, 18]);
+  await wheel($, -100);
+  expect((await numbers())[0]).toBe(1);
+
+  await wheel($, 15);
+  await pressRow($, 17);
+  expect(await numbers()).toEqual([15, 16, 17, 18, 19, 20, 21, 22]);
+  await w.clock.advance(60_000);
+  expect(await numbers()).toEqual([23, 24, 25, 26, 27, 28, 29, 30]);
+});
+
+test('a list that fits leaves the pane\'s scrolling to the engine', async ($, on) => {
+  const w = world(on);
+  let passed = 0;
+  on('ui.scroll', { component: 'Pane', requestId: PANE_ID }, () => (passed++, {}));
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
+  await w.clock.advance(5_000);
+  await list($);
+  await wheel($, 3);
+  expect(passed).toBe(1);
+  expect((await list($)).rows).toEqual(['✓ #1 Write a.ts +1']);
+});
+
+test('the list says how many older changes were dropped', async ($, on) => {
+  const w = world(on);
+  await start($);
+  for (let i = 1; i <= 203; i++) await $.tool.call({ tool: 'Write', file_path: `/w/f${i}.ts`, content: `${i}\n` });
+  await press($, 'start');
+  await w.clock.advance(60);
+  const { rows, dropped } = await list($);
+  expect(dropped).toBe('3 older changes were dropped to stay within the limit.');
+  expect(rows[0]).toBe('▸ #4 Write f4.ts Typing +1');
+  expect(w.saved.changes[0]?.number).toBe(4);
 });
