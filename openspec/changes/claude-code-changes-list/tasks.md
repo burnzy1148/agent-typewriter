@@ -39,6 +39,8 @@
 - [x] 6.3 *Added in implementation:* in the README, name the controls that make a scrolled list follow again. Verify by reading the section.
 - [x] 6.4 *Added in implementation:* correct the artifacts after the round-1 spec review. Restore design.md's path-cutting and scroll sentences, marked superseded, with *Corrected in implementation* notes. In the delta, add the too-large exception and scenarios, widen "Pane names the file" to a change cued after a reload, add the header number and scrolling over the code. Record these under *Corrected in implementation* in proposal.md. File at-o3z.28 for the desktop check. Verify with `openspec validate claude-code-changes-list --strict`.
 
+- [x] 6.5 *Added in implementation:* split the behaviors added to "Playback controls", "Recorded changes last for the session" and "Changes saved by an earlier version still load" into added requirements of their own, so the living spec passes `openspec validate --strict` after the archive. Record it under *Corrected in implementation* in proposal.md. Verify with `openspec validate claude-code-changes-list --strict`, and with a trial archive whose living spec passes `openspec validate claude-code-replay --type spec --strict`.
+
 ## Workflow follow-up
 
 - Record the change on the bead (`bd update at-o3z.3 --spec-id openspec/changes/claude-code-changes-list`) and remove its `needs-spec` label.

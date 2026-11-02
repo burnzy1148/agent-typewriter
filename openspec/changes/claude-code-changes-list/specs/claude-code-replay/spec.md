@@ -119,30 +119,35 @@ When more changes are kept than the pane has room to list, the list SHALL show t
 - **WHEN** the person scrolls with the pointer over the code while change 40 is typed, and change 41 then starts
 - **THEN** the list does not move for the scroll, and change 41's row is shown
 
-## MODIFIED Requirements
-
-### Requirement: Playback controls
-The pane SHALL have controls to replay from the start, to pause and resume playback, to finish the current change at once, and to skip to the latest change. Pausing SHALL stop typing at the current keystroke, and resuming SHALL continue from there. Finishing the current change SHALL show its after text, a change picked while paused included, and the change after it SHALL play next. Skipping to the latest SHALL finish every recorded change at once and show the last one's after text. While the pane holds the keyboard, the keys `r`, `p`, `f` and `l` SHALL press From start, Pause or Resume, Finish current, and Skip to latest.
-
-#### Scenario: Pause and resume
-- **WHEN** the user pauses halfway through a change and later resumes
-- **THEN** typing stops, and on resume continues from where it stopped
-
-#### Scenario: Finish current
-- **WHEN** the user finishes the current change while two more are queued
-- **THEN** the pane shows the current change's after text and the next change starts
+### Requirement: Finish current finishes a picked change
+Finish current SHALL also finish a change picked while playback is paused: the pane shows that change's after text, playback stays paused, and the change after it plays next.
 
 #### Scenario: Finish a picked change
 - **WHEN** playback is paused, the user presses the second of four changes, and then presses Finish current
 - **THEN** the pane shows the second change's after text, playback stays paused, and on resume the third change is typed
 
-#### Scenario: Skip to latest
-- **WHEN** the user skips to the latest while three changes are queued
-- **THEN** no change is left queued and the pane shows the last recorded change's after text
+### Requirement: Playback hotkeys
+While the pane holds the keyboard, the keys `r`, `p`, `f` and `l` SHALL press From start, Pause or Resume, Finish current, and Skip to latest.
 
 #### Scenario: Hotkeys
 - **WHEN** the pane holds the keyboard and the user presses `p`
 - **THEN** playback pauses, as pressing Pause does
+
+### Requirement: Numbers and tools survive a reload
+A change's number in the session and the tool that made it SHALL survive a reload of the plugin within the session, along with the change.
+
+#### Scenario: Numbers and tools
+- **WHEN** Claude writes `a.ts` and then edits it, and the plugin reloads
+- **THEN** the list still shows the two changes numbered 1 and 2, the first made by `Write` and the second by `Edit`
+
+### Requirement: Changes saved without numbers or tools still load
+A change saved by an earlier version of the plugin without its number or the tool that made it SHALL still survive a reload into this version. Changes saved without their numbers SHALL be numbered by their place, the last of them taking the number of changes recorded in the session, and a change saved without its tool SHALL show none.
+
+#### Scenario: Reload across the update that numbers changes
+- **WHEN** three changes, two of them played, were saved by a version that kept whether they had played but not their numbers or tools, five changes having been recorded in the session, and the plugin reloads into this version
+- **THEN** the two played changes stay played, the three are numbered 3, 4 and 5, and their rows show no tool
+
+## MODIFIED Requirements
 
 ### Requirement: Pane names the file
 The pane SHALL name the playing file by its path relative to the session's working directory, or by its absolute path when it is outside that directory, and beside the name SHALL show the number of the change it shows. When nothing is playing, the pane SHALL keep showing the last change's file and after text, except while playback is paused with a change cued to play next, after a pick or a reload, which it shows as it was before that change.
@@ -162,49 +167,3 @@ The pane SHALL name the playing file by its path relative to the session's worki
 #### Scenario: Change number
 - **WHEN** the third change the session recorded is being typed
 - **THEN** the pane shows `#3` beside the file's name
-
-### Requirement: Recorded changes last for the session
-Recorded changes, played or queued, SHALL survive a reload of the plugin within a session, as when an option changes, each with its texts, whether it has played, whether it created its file, when it was recorded, its number in the session, and the tool that made it. The change being typed then starts over. Changes SHALL NOT carry over to a new session. Besides the change being typed, at most 200 changes, with at most 20,000,000 characters of before and after text, SHALL be kept; past either limit, the oldest SHALL be dropped, played ones first.
-
-#### Scenario: New session
-- **WHEN** a session ends with changes queued and the user starts a new session
-- **THEN** the new session's pane starts with no recorded changes
-
-#### Scenario: Reload after changes played
-- **WHEN** two changes have played, a third is being typed and a fourth is queued, and the plugin reloads
-- **THEN** the two played changes are kept as played and do not play again, the third starts over, and the fourth plays after it
-
-#### Scenario: Reload with nothing left to play
-- **WHEN** every recorded change has played and the plugin reloads
-- **THEN** the pane names the last change's file and shows its after text, and no change plays again
-
-#### Scenario: Created file
-- **WHEN** Claude creates `notes.md` with the `Write` tool and the plugin later reloads
-- **THEN** the change to `notes.md` is still kept as creating the file, with the time it was first recorded
-
-#### Scenario: Numbers and tools
-- **WHEN** Claude writes `a.ts` and then edits it, and the plugin reloads
-- **THEN** the list still shows the two changes numbered 1 and 2, the first made by `Write` and the second by `Edit`
-
-#### Scenario: Played changes past the limit
-- **WHEN** 150 changes have played and 100 more are recorded before any of them plays
-- **THEN** the 50 oldest played changes are dropped and all 100 new ones wait to play
-
-#### Scenario: Change typed past the limit
-- **WHEN** a change is being typed and 200 more are recorded behind it
-- **THEN** the change being typed is still kept, so it finishes, or starts over after a reload, and all 200 changes recorded behind it are kept too
-
-#### Scenario: Many edits to a large file
-- **WHEN** Claude makes 100 edits to a 500 KB file faster than they can be typed
-- **THEN** every edit is recorded until the kept text passes 20,000,000 characters, after which the oldest edits are dropped, played ones first, and playback keeps going
-
-### Requirement: Changes saved by an earlier version still load
-A change saved by an earlier version of the plugin without some of what this version keeps SHALL still survive a reload into this version. A change saved without whether it had played, its kind or its time SHALL wait to play and count as modifying its file, and its time SHALL be 0, which means the time it was recorded is unknown. Changes saved without their numbers SHALL be numbered by their place, the last of them taking the number of changes recorded in the session, and a change saved without its tool SHALL show none.
-
-#### Scenario: Reload across an update
-- **WHEN** changes were queued by a version of the plugin that saved neither their kind nor their time, and the plugin reloads into this version within the same session
-- **THEN** those changes play in their recorded order, each counted as modifying its file, with time 0
-
-#### Scenario: Reload across the update that numbers changes
-- **WHEN** three changes, two of them played, were saved by a version that kept whether they had played but not their numbers or tools, five changes having been recorded in the session, and the plugin reloads into this version
-- **THEN** the two played changes stay played, the three are numbered 3, 4 and 5, and their rows show no tool

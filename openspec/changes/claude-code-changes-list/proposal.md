@@ -29,6 +29,7 @@ None.
 ### Modified Capabilities
 
 - `claude-code-replay`: adds the changes list, playing from a picked change, From start, and the list keeping up; extends "Playback controls" (From start, hotkeys, Finish current on a picked change), "Pane names the file" (a picked change while paused), "Recorded changes last for the session" (numbers, tools, a reload while paused), and "Changes saved by an earlier version still load" (numbers and tools for `saved-2` and `saved-1` state).
+  - *Superseded in implementation:* only "Pane names the file" is modified. The From start control, hotkeys, Finish current on a picked change, numbers and tools across a reload, and loading changes saved without numbers or tools are each an added requirement. See the last item under *Corrected in implementation*.
 
 ## Impact
 
@@ -48,3 +49,4 @@ All of these came out of round 1 of PR #88's review. The owner approved each fix
 - *Added in implementation:* **the header shows the change's number.** design.md and the code put `#<number>` beside the file's name, but no requirement said so. "Pane names the file" now does, with a scenario.
 - *Added in implementation:* **a wheel over the code does not move the list.** The hook took every scroll of the pane as a scroll of the list, so a wheel over the code stopped the list following playback. "The list keeps up with playback" now says scrolling over the code does not move it. design.md records how page keys and Home and End are mapped.
 - **The desktop check moved to a bead.** tasks.md listed a manual check in the desktop app as pre-merge work. Running it means installing this branch into the owner's desktop app, so it is tracked as at-o3z.28.
+- **Long modified requirements split.** I had put new behaviors into the text of three modified requirements. That took "Playback controls" to 629 characters, "Recorded changes last for the session" to 550 and "Changes saved by an earlier version still load" to 525. A trial archive showed the living spec would then fail `openspec validate --strict`, which it passed before this change. Each of the three now stays as the living spec has it. Their new behaviors are added requirements, each with the scenario it had: "Finish current finishes a picked change", "Playback hotkeys", "Numbers and tools survive a reload" and "Changes saved without numbers or tools still load". "From start" already said the pane has that control. What the spec promises is unchanged, and no code changed.
