@@ -32,10 +32,17 @@
 - [x] 5.2 Run `npm run typecheck`, `npm test`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-changes-list --strict`. All pass.
 - [x] 5.3 File a bead for grouping the changes list by file (the mockup's By file view), with `--deps discovered-from:at-o3z.3`.
 
+## 6. Review round 1
+
+- [x] 6.1 *Added in implementation:* make a too-large current row read Too large whether it is shown or cued, and test a too-large change picked while paused (`rowLabel` unit test; pane test for its row and the too-large note). Verify with `npm test` and `npm run check:claude-code`.
+- [x] 6.2 *Added in implementation:* map a `ui.scroll` of the pane by kind in `scrolledTop`: a wheel only over the list, a page key by the list's height, Home and End to its ends, an arrow by a row, anything else passed on. Record the list's first body row in render. Unit-test each kind; pane-test a wheel over the code and page, Home and End keys. Verify with `npm test` and `npm run check:claude-code`.
+- [x] 6.3 *Added in implementation:* in the README, name the controls that make a scrolled list follow again. Verify by reading the section.
+- [x] 6.4 *Added in implementation:* correct the artifacts after the round-1 spec review. Restore design.md's path-cutting and scroll sentences, marked superseded, with *Corrected in implementation* notes. In the delta, add the too-large exception and scenarios, widen "Pane names the file" to a change cued after a reload, add the header number and scrolling over the code. Record these under *Corrected in implementation* in proposal.md. File at-o3z.28 for the desktop check. Verify with `openspec validate claude-code-changes-list --strict`.
+
 ## Workflow follow-up
 
 - Record the change on the bead (`bd update at-o3z.3 --spec-id openspec/changes/claude-code-changes-list`) and remove its `needs-spec` label.
 - Open a PR into `claude-code-extension`, turn on Auto-fix, and run the review cycle.
-- Check in the desktop app that the wheel scrolls the list and a row press seeks.
+- *Superseded in implementation:* "Check in the desktop app that the wheel scrolls the list and a row press seeks" is no longer pre-merge work. It is bead at-o3z.28.
 - Archive the change on the PR branch once its tasks are done and CI is green, so `openspec/specs/claude-code-replay/spec.md` lands with the code.
 - Do not merge; the maintainer merges. Close at-o3z.3 after the merge.

@@ -43,6 +43,10 @@ The row of the change the pane shows SHALL name that change's state: Typing whil
 - **WHEN** a 2 MB file was written, the pane said it was too large to replay, and the next change has started
 - **THEN** the 2 MB file's row reads Not typed and the next change's row reads Typing
 
+#### Scenario: Too large picked while paused
+- **WHEN** playback is paused and the user presses the change that wrote a 2 MB file
+- **THEN** its row reads Too large
+
 ### Requirement: Play from a picked change
 Pressing a change in the list SHALL make it the next change typed: the change being typed stops, the picked change starts from its before text, and the changes recorded after it follow in recorded order. The changes recorded before it SHALL count as played. Picking a change SHALL NOT change whether playback is paused. Picking the change being typed SHALL start it over.
 
@@ -67,7 +71,7 @@ Pressing a change in the list SHALL make it the next change typed: the change be
 - **THEN** playback is still paused, the second change is next, the third and fourth follow it, and the first counts as played
 
 ### Requirement: A change picked while paused is shown before it plays
-When a change is picked while playback is paused, the pane SHALL name that change's file and show the file's text as it was before the change, with the change's row reading Next, until playback resumes or another change is picked. After a reload while playback is paused, the pane SHALL show the next change to play in the same way.
+When a change is picked while playback is paused, the pane SHALL name that change's file and show the file's text as it was before the change, with the change's row reading Next, until playback resumes or another change is picked. A change too large to replay SHALL instead be named as too large to replay, without its text. After a reload while playback is paused, the pane SHALL show the next change to play in the same way.
 
 #### Scenario: Picked while paused
 - **WHEN** playback is paused and the user presses a change to `src/app.ts`
@@ -81,6 +85,10 @@ When a change is picked while playback is paused, the pane SHALL name that chang
 - **WHEN** playback is paused with changes waiting and the plugin reloads
 - **THEN** the pane names the next change's file, shows the file as it was before that change, and that change's row reads Next
 
+#### Scenario: Picked too-large change
+- **WHEN** playback is paused and the user presses the change that wrote a 2 MB file `big.json`
+- **THEN** the pane says `big.json` is too large to replay and shows none of its text
+
 ### Requirement: From start
 The pane SHALL have a From start control that acts as pressing the first change in the list: that change is typed next, the rest follow in recorded order, and whether playback is paused does not change.
 
@@ -93,7 +101,7 @@ The pane SHALL have a From start control that acts as pressing the first change 
 - **THEN** playback stays paused, the pane shows the first kept change as it was before it, and that change's row reads Next
 
 ### Requirement: The list keeps up with playback
-When more changes are kept than the pane has room to list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it, until they press a change in the list or press From start, Finish current or Skip to latest, after which it keeps up with playback again.
+When more changes are kept than the pane has room to list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it, until they press a change in the list or press From start, Finish current or Skip to latest, after which it keeps up with playback again. Scrolling with the pointer over the code SHALL NOT move the list.
 
 #### Scenario: Long session
 - **WHEN** 80 changes are kept, the pane lists 10 rows, and change 40 starts
@@ -106,6 +114,10 @@ When more changes are kept than the pane has room to list, the list SHALL show t
 #### Scenario: Picking brings it back
 - **WHEN** the person has scrolled the list and presses change 5
 - **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Scrolling over the code
+- **WHEN** the person scrolls with the pointer over the code while change 40 is typed, and change 41 then starts
+- **THEN** the list does not move for the scroll, and change 41's row is shown
 
 ## MODIFIED Requirements
 
@@ -133,7 +145,7 @@ The pane SHALL have controls to replay from the start, to pause and resume playb
 - **THEN** playback pauses, as pressing Pause does
 
 ### Requirement: Pane names the file
-The pane SHALL name the playing file by its path relative to the session's working directory, or by its absolute path when it is outside that directory. When nothing is playing, the pane SHALL keep showing the last change's file and after text, except while a change picked while paused waits to play, which it shows as it was before that change.
+The pane SHALL name the playing file by its path relative to the session's working directory, or by its absolute path when it is outside that directory, and beside the name SHALL show the number of the change it shows. When nothing is playing, the pane SHALL keep showing the last change's file and after text, except while playback is paused with a change cued to play next, after a pick or a reload, which it shows as it was before that change.
 
 #### Scenario: File in the project
 - **WHEN** the session runs in `/w` and a change to `/w/src/app.ts` plays
@@ -142,6 +154,14 @@ The pane SHALL name the playing file by its path relative to the session's worki
 #### Scenario: Waiting after a pick
 - **WHEN** a change to `a.ts` has finished playing, playback is paused, and the user presses an earlier change to `b.ts`
 - **THEN** the pane names `b.ts` and shows it as it was before that change
+
+#### Scenario: Waiting after a reload
+- **WHEN** a change to `a.ts` has finished playing, a change to `b.ts` waits, playback is paused, and the plugin reloads
+- **THEN** the pane names `b.ts` and shows it as it was before that change
+
+#### Scenario: Change number
+- **WHEN** the third change the session recorded is being typed
+- **THEN** the pane shows `#3` beside the file's name
 
 ### Requirement: Recorded changes last for the session
 Recorded changes, played or queued, SHALL survive a reload of the plugin within a session, as when an option changes, each with its texts, whether it has played, whether it created its file, when it was recorded, its number in the session, and the tool that made it. The change being typed then starts over. Changes SHALL NOT carry over to a new session. Besides the change being typed, at most 200 changes, with at most 20,000,000 characters of before and after text, SHALL be kept; past either limit, the oldest SHALL be dropped, played ones first.

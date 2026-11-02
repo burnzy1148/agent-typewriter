@@ -38,3 +38,13 @@ None.
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for the list's states, From start, a pick while paused and while playing, the list keeping up, and a pick across a reload.
 - `claude-code/README.md`: the list, From start, picking a change, and the hotkeys.
 - No shared module (`src/timeline.ts` and the rest bundled into `core.mjs`) changes: the plugin uses `Timeline.seek` as the extension does.
+
+## Corrected in implementation
+
+All of these came out of round 1 of PR #88's review. The owner approved each fix as part of my response plan, which recommended it.
+
+- **A too-large change picked while paused.** The delta asked the pane to show the picked change's text as it was before. For a too-large change that contradicts "Large files are not typed", which forbids reading its text. The row also read Next, though "The shown change's row names its state" says Too large. Spec and code each had a gap. The code now shows Too large on the row of a too-large current change, cued or held. "A change picked while paused is shown before it plays" now says a too-large change is named as too large to replay, without its text. Both requirements gained a scenario.
+- **"Pane names the file" made too narrow an exception.** It let the pane leave the last change's after text only for a pick while paused. The same delta also has a reload while paused cue the next change, and the code does that. The exception now covers a change cued after a pick or a reload, and a scenario covers the reload. The code did not change.
+- *Added in implementation:* **the header shows the change's number.** design.md and the code put `#<number>` beside the file's name, but no requirement said so. "Pane names the file" now does, with a scenario.
+- *Added in implementation:* **a wheel over the code does not move the list.** The hook took every scroll of the pane as a scroll of the list, so a wheel over the code stopped the list following playback. "The list keeps up with playback" now says scrolling over the code does not move it. design.md records how page keys and Home and End are mapped.
+- **The desktop check moved to a bead.** tasks.md listed a manual check in the desktop app as pre-merge work. Running it means installing this branch into the owner's desktop app, so it is tracked as at-o3z.28.

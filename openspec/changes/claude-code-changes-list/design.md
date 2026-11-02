@@ -67,7 +67,7 @@ Alternative: put the rows in `view`. Rejected: up to 201 rows would be rewritten
 
 Top to bottom, as on the mockup's Main board: the header (file name, the current change's number, status), the code, the controls (From start, Pause or Resume, Finish current, Skip to latest, with hotkeys `r`, `p`, `f`, `l`), a "Changes" line ("Pick a change to play from it"), and the list. The list gets up to 40% of the body's rows, at least 3, and no more than it needs; the code gets the rest, at least 3. The whole tree fits the body, so the engine has nothing of its own to scroll.
 
-Each row is one plain `Button` keyed `change:<id>`: a glyph (✓ played, ▸ typing, paused or next, ○ queued, ⊘ a too-large change that has played), `#<number>`, the tool, the folder dim and the file name bold, the state word, and `+added −removed`. A pure helper cuts the folder first, then the file name, each at its end, so a row stays one line at the body's width and keeps the file name as long as it can. A later bead can add a lane dot, a reveal `Button` beside the row, or a turn header above a group of rows without changing this.
+Each row is one plain `Button` keyed `change:<id>`: a glyph (✓ played, ▸ typing, paused or next, ○ queued, ⊘ a too-large change that has played), `#<number>`, the tool, the folder dim and the file name bold, the state word, and `+added −removed`. A pure helper cuts the path at its end so a row stays one line at the body's width. A later bead can add a lane dot, a reveal `Button` beside the row, or a turn header above a group of rows without changing this.
 
 ### The list scrolls itself
 
@@ -75,11 +75,22 @@ Each row is one plain `Button` keyed `change:<id>`: a glyph (✓ played, ▸ typ
 
 Every scroll on the pane moves the list, wherever the pointer is: the code view follows the caret and cannot be scrolled, so the list is the only thing to move.
 
+### Corrected in implementation
+
+- **How a row's path is cut.** *Superseded in implementation:* "A pure helper cuts the path at its end". While writing `rowLabel` I found that cutting the whole path at its end drops the file name first, and the file name is the part that tells rows apart in a narrow pane. So `rowLabel` cuts the folder first, then the file name, each at its end. My implementation commit (24bf2ea) replaced the sentence above with the new rule and did not mark the change. The round-1 spec review found that, and the sentence is restored here, with this note recording the correction.
+- **What a scroll of the pane moves.** *Superseded in implementation:* "Every scroll on the pane moves the list, wherever the pointer is", and the hook moving `listTop` "by `e.by`". The round-1 code review pointed out that the engine reports each kind of scroll in its own unit. A page key asks for `bodyRows` and Home or End for `contentRows`, and both units are rows of the whole body, not of the list. A wheel over the code would also have stopped the list following playback, with nothing on screen to say so. `scrolledTop` now maps the kinds as the engine's `UiScrollInput` docs describe them:
+  - A wheel carries `pointer`, and it moves the list by its ticks only when `pointer.row` is at or below the list's first row. Render records that row (the header, the code's drawn rows, the controls and the "Changes" line).
+  - A page key moves the list by its own height.
+  - Home and End go to the list's ends. When the tree fills the body exactly they can't be told from a page, and move a page.
+  - An arrow moves one row.
+
+  Any other scroll goes on to the engine. In a real client this rests on the docs, until bead at-o3z.28's manual check.
+
 Alternative: draw every row and let the engine scroll the body. Rejected: a long list would push the code out of view, and keeping the current row in view would mean scrolling the code away.
 
 ## Risks / Trade-offs
 
-- **The test kit raises `ui.scroll` only as a test constructs it.** → Tests raise a person-shaped event (`by`, `bodyRows`, `contentRows`, origin `person`) on the pane, which the kit hands to the plugin's hook; a manual check in the desktop app confirms the wheel scrolls the list.
+- **The test kit raises `ui.scroll` only as a test constructs it.** → Tests raise a person-shaped event (`by`, `bodyRows`, `contentRows`, origin `person`) on the pane, which the kit hands to the plugin's hook; a manual check in the desktop app confirms the wheel scrolls the list. *Corrected in implementation:* that check is bead at-o3z.28, not a pre-merge step.
 - **Keyboard users reach only the rows drawn.** Tab walks the drawn rows; one scrolled out of the window is not drawn. → The window follows playback, From start reaches the first change, and the wheel or scroll keys move the window.
 - **A desktop draws proportional text.** A row cut to the body's cells can still wrap or leave room. → Rows are cut with a margin, and the tree's height does not depend on it, since each row is one `Button`.
 - **A rollback to an earlier version drops `saved-3` state.** → As with every tag bump, the earlier version starts the session's pane fresh.
