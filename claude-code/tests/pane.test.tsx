@@ -56,11 +56,15 @@ async function pressRow($: Engine, n: number) {
   await ui.unmount();
 }
 
-/** The person's wheel over the pane, `by` rows. */
-async function wheel($: Engine, by: number) {
+/** The person's scroll of the pane, `by` rows: a wheel with the pointer over body row `row`, or a key without one. */
+async function scrollPane($: Engine, by: number, row?: number) {
   const scroll = $.ui.scroll as unknown as (e: object) => Promise<unknown>;
-  await scroll({ component: 'Pane', requestId: PANE_ID, offset: 0, by, bodyRows: 20, contentRows: 20, origin: { kind: 'person' } });
+  const pointer = row === undefined ? {} : { pointer: { row, column: 4 } };
+  await scroll({ component: 'Pane', requestId: PANE_ID, offset: 0, by, bodyRows: 20, contentRows: 19, origin: { kind: 'person' }, ...pointer });
 }
+
+/** The person's wheel over the bottom of the pane, where the list is. */
+const wheel = ($: Engine, by: number) => scrollPane($, by, 19);
 
 const BEFORE = 'function add(a, b) {\n  return a + b;\n}\n';
 const AFTER = 'function add(a, b, c = 0) {\n  // sum\n  return a + b + c;\n}\n';
@@ -621,6 +625,45 @@ test('a long list keeps the current change in view, stays where the person scrol
   expect(await numbers()).toEqual([15, 16, 17, 18, 19, 20, 21, 22]);
   await w.clock.advance(60_000);
   expect(await numbers()).toEqual([23, 24, 25, 26, 27, 28, 29, 30]);
+});
+
+test('a wheel over the code leaves the list following playback; page keys move it by its rows, Home and End to its ends', async ($, on) => {
+  world(on);
+  // Stands in for the engine, which moves its own window for a scroll the plugin passes on.
+  let passed = 0;
+  on('ui.scroll', { component: 'Pane', requestId: PANE_ID }, () => (passed++, {}));
+  await start($);
+  for (let i = 1; i <= 30; i++) await $.tool.call({ tool: 'Write', file_path: `/w/f${i}.ts`, content: `${i}\n` });
+  const numbers = async () => (await list($)).rows.map((r) => Number(/#(\d+) /.exec(r)![1]));
+  await press($, 'start');
+  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+
+  await scrollPane($, 5, 1);
+  expect(passed).toBe(1);
+  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  await press($, 'skip');
+  expect((await numbers())[7]).toBe(30);
+
+  await scrollPane($, -20);
+  expect(await numbers()).toEqual([15, 16, 17, 18, 19, 20, 21, 22]);
+  await scrollPane($, -19);
+  expect((await numbers())[0]).toBe(1);
+  await scrollPane($, 19);
+  expect((await numbers())[7]).toBe(30);
+});
+
+test('a too-large change picked while paused reads Too large, and the pane says it is too large to replay', async ($, on) => {
+  const w = world(on);
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/big.json', content: 'x'.repeat(1_000_001) });
+  await $.tool.call({ tool: 'Write', file_path: '/w/next.ts', content: 'n\n' });
+  await w.clock.advance(60_000);
+  await press($, 'pause');
+
+  await pressRow($, 1);
+  await w.clock.advance(5_000);
+  expect((await look($, 'desktop')).note).toBe('big.json is too large to replay.');
+  expect((await list($)).rows).toEqual(['▸ #1 Write big.json Too large', '○ #2 Write next.ts +1']);
 });
 
 test('a list that fits leaves the pane\'s scrolling to the engine', async ($, on) => {

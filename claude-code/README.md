@@ -84,7 +84,7 @@ It shows the file being typed (by its path in your project) and the change's num
 - **Finish current** (`f`): show the current change done and start the next one.
 - **Skip to latest** (`l`): finish every queued change and show the last one.
 
-Below them, the pane lists the session's changes, oldest first: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press something that moves playback.
+Below them, the pane lists the session's changes, oldest first: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press a change, From start, Finish current or Skip to latest.
 
 Press a change to play from it: it is typed next and the later ones follow, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done.
 

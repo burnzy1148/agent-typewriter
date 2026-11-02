@@ -457,6 +457,33 @@ export function listWindow(count: number, current: number | undefined, height: n
   return Math.max(0, Math.min(want, count - height));
 }
 
+/** A scroll of the pane as `ui.scroll` reports it: the rows asked for, the body's and the tree's heights, and for a wheel the body row under the pointer. */
+export type PaneScroll = { by: number; bodyRows: number; contentRows: number; pointerRow?: number };
+
+/** The changes list as the pane last drew it: its first item shown, the items it shows and has, and the body row its first item is on. */
+export type ListGeometry = { top: number; height: number; count: number; firstRow: number };
+
+/**
+ * The list's first item once scroll `s` has moved it, or undefined when the
+ * scroll is not the list's: the list fits, or a wheel is over the rows above
+ * it. The engine tells the kinds apart as follows: a wheel carries the pointer
+ * and moves by its ticks; a page key asks for `bodyRows` and moves by the
+ * list's own height; Home and End ask for `contentRows` and go to its ends;
+ * an arrow moves a row. When the tree fills the body exactly, Home and End
+ * cannot be told from a page and move a page.
+ */
+export function scrolledTop(s: PaneScroll, list: ListGeometry): number | undefined {
+  const last = list.count - list.height;
+  if (last <= 0) return undefined;
+  const n = Math.abs(s.by);
+  let top = list.top + s.by;
+  if (s.pointerRow !== undefined) {
+    if (s.pointerRow < list.firstRow) return undefined;
+  } else if (n >= s.bodyRows) top = list.top + Math.sign(s.by) * list.height;
+  else if (n === s.contentRows) top = s.by < 0 ? 0 : last;
+  return Math.max(0, Math.min(top, last));
+}
+
 /** A row as the pane draws it: the lead, the path's folder and file name, and the tail, together at most the width asked for. */
 export type RowLabel = { lead: string; dir: string; file: string; tail: string };
 
@@ -465,15 +492,18 @@ export type RowLabel = { lead: string; dir: string; file: string; tail: string }
  * lead is a glyph (✓ played, ▸ typing, paused or next, ○ queued, ⊘ a
  * too-large change played), the number and the tool. The tail is the state
  * word, on the current row and on a too-large change passed, and the lines
- * added and removed. The folder is cut before the file name, each at its end.
+ * added and removed. A too-large current row reads Too large whether it is
+ * shown or cued, since the pane shows its note either way. The folder is cut
+ * before the file name, each at its end.
  */
 export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPaused: boolean }, width: number): RowLabel {
   const tooLargePlayed = row.isTooLarge && row.state === 'played';
   const glyph = row.state === 'played' ? (tooLargePlayed ? '⊘' : '✓') : row.state === 'playing' || at.isCurrent ? '▸' : '○';
   let word = '';
-  if (at.isCurrent && row.state === 'playing') word = at.isPaused ? 'Paused' : 'Typing';
+  if (at.isCurrent && row.isTooLarge) word = 'Too large';
+  else if (at.isCurrent && row.state === 'playing') word = at.isPaused ? 'Paused' : 'Typing';
   else if (at.isCurrent && row.state === 'pending') word = 'Next';
-  else if (tooLargePlayed) word = at.isCurrent ? 'Too large' : 'Not typed';
+  else if (tooLargePlayed) word = 'Not typed';
   const delta = row.isTooLarge ? '' : [row.added > 0 && `+${row.added}`, row.removed > 0 && `−${row.removed}`].filter(Boolean).join(' ');
   const lead = [glyph, `#${row.number}`, row.tool].filter(Boolean).join(' ') + ' ';
   const tail = [word, delta].filter(Boolean).join(' ');

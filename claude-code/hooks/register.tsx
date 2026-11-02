@@ -31,6 +31,7 @@ import {
   rowLabel,
   savedFrom,
   savedOf,
+  scrolledTop,
   seek,
   skipToLatest,
   tick,
@@ -38,6 +39,7 @@ import {
   viewOf,
   type Change,
   type Deck,
+  type ListGeometry,
   type NewChange,
   type PlayOptions,
   type Tool,
@@ -75,8 +77,8 @@ type Live = {
   listingJson: string;
   /** The changes list's first row once the person scrolled it; undefined while it follows playback. */
   listTop?: number;
-  /** The list as the pane last drew it: its first row, the rows it shows, and the rows it has. */
-  list?: { top: number; height: number; count: number };
+  /** The list as the pane last drew it. */
+  list?: ListGeometry;
   /** Writes to $.state, one after another, so a later state never lands first. */
   writes: Promise<void>;
 };
@@ -265,10 +267,11 @@ export const register: Register = (on, options) => {
 
   // The pane's tree fits its body, so the only thing to scroll is the changes
   // list, which the plugin draws a window of: it moves that window instead.
+  // A scroll that is not the list's goes on to the engine, which has nothing to move.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, ($, e, next) => {
     const l = live.list;
-    if (!l || l.count <= l.height) return next(e);
-    const top = Math.max(0, Math.min(l.top + e.by, l.count - l.height));
+    const top = l && scrolledTop({ by: e.by, bodyRows: e.bodyRows, contentRows: e.contentRows, pointerRow: e.pointer?.row }, l);
+    if (!l || top === undefined) return next(e);
     live.listTop = top;
     live.list = { ...l, top };
     $.ui.invalidate('ui.render');
@@ -292,7 +295,6 @@ export const register: Register = (on, options) => {
     const count = lead + l.rows.length;
     const height = count === 0 ? 0 : Math.min(count, Math.max(3, Math.floor(bodyRows * LIST_SHARE)));
     const top = listWindow(count, current === -1 ? undefined : lead + current, height, live.listTop);
-    live.list = { top, height, count };
     const rowsShown = l.rows.slice(Math.max(0, top - lead), top - lead + height);
     const isDroppedShown = lead > 0 && top === 0;
 
@@ -300,6 +302,9 @@ export const register: Register = (on, options) => {
     const rows = Math.max(3, bodyRows - 3 - (height > 0 ? height + 1 : 0));
     const columns = Math.max(10, bodyColumns - GUTTER);
     const shown = v.path !== undefined && !v.isTooLarge ? frame(v, rows, columns) : undefined;
+    // Under the header, the code (or its one-line note), the controls and the "Changes" line.
+    const firstRow = 1 + (shown ? shown.source.split('\n').length : 1) + 2;
+    live.list = { top, height, count, firstRow };
     const isPaused = v.status === 'paused';
 
     return (

@@ -19,6 +19,7 @@ import {
   restore,
   rowLabel,
   savedFrom,
+  scrolledTop,
   savedOf,
   seek,
   showControls,
@@ -806,6 +807,7 @@ test('a row label shows a glyph, number, tool, path and counts, and the state wo
   assert.equal(label({ isTooLarge: true, added: 0 }, { isCurrent: true }), '⊘ #7 Edit src/routes/signup.ts Too large');
   assert.equal(label({ isTooLarge: true, added: 0 }), '⊘ #7 Edit src/routes/signup.ts Not typed');
   assert.equal(label({ isTooLarge: true, state: 'pending', added: 0 }), '○ #7 Edit src/routes/signup.ts');
+  assert.equal(label({ isTooLarge: true, state: 'pending', added: 0 }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Too large');
   assert.equal(label({ tool: undefined }), '✓ #7 src/routes/signup.ts +4');
 });
 
@@ -820,4 +822,21 @@ test('a row label cuts the folder, then the file name, to fit', () => {
   assert.deepEqual(fit(18), { lead: '✓ #7 Edit ', dir: '', file: 'sign…', tail: ' +4' });
   assert.equal(rowLabel(ROW, 'signup.ts', AT, 80).dir, '');
   assert.equal(rowLabel(ROW, 'C:\\w\\src\\a.ts', AT, 80).file, 'a.ts');
+});
+
+test('a scroll moves the list by its kind: a wheel over the list by its ticks, a page by the list, Home and End to its ends, an arrow a row', () => {
+  const list = { top: 10, height: 8, count: 80, firstRow: 12 };
+  const key = (by: number, contentRows = 19) => scrolledTop({ by, bodyRows: 20, contentRows }, list);
+  assert.equal(scrolledTop({ by: 3, bodyRows: 20, contentRows: 19, pointerRow: 15 }, list), 13);
+  assert.equal(scrolledTop({ by: -1, bodyRows: 20, contentRows: 19, pointerRow: 12 }, list), 9);
+  assert.equal(scrolledTop({ by: 3, bodyRows: 20, contentRows: 19, pointerRow: 11 }, list), undefined, 'a wheel over the code is not the list\'s');
+  assert.equal(key(20), 18, 'page down moves by the rows the list shows');
+  assert.equal(key(-20), 2);
+  assert.equal(key(19), 72, 'End goes to the last rows');
+  assert.equal(key(-19), 0, 'Home goes to the first');
+  assert.equal(key(20, 20), 18, 'Home and End read as a page when the tree fills the body');
+  assert.equal(key(1), 11);
+  assert.equal(key(-100), 2, 'a long scroll up by keys is a page');
+  assert.equal(scrolledTop({ by: -50, bodyRows: 20, contentRows: 19, pointerRow: 15 }, list), 0);
+  assert.equal(scrolledTop({ by: 1, bodyRows: 20, contentRows: 19 }, { ...list, count: 8 }), undefined, 'a list that fits has nothing to scroll');
 });
