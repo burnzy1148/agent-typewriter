@@ -69,6 +69,8 @@ export interface Settings extends FilterSettings {
   autoIgnoreWorktrees: string[];
   /** Move playback to the lane with the oldest queued change once the followed lane is caught up and idle. */
   autoFollow: boolean;
+  /** Read Claude Code transcripts to tell what the agent was doing when it made each change. */
+  agentContext: boolean;
 }
 
 /** Values from the repository settings file; they sit between user and workspace settings. */
@@ -138,6 +140,7 @@ export function readSettings(): Settings {
     autoRecordWorktrees: oneOf(c.get<unknown>('autoRecordWorktrees', 'off'), ['off', 'fill', 'rotate'] as const, 'off'),
     autoIgnoreWorktrees: c.get('autoIgnoreWorktrees', [], isStringArray),
     autoFollow: c.get<unknown>('autoFollow', false) === true,
+    agentContext: c.get<unknown>('agentContext', true) !== false,
     ...readHighlightSettings(),
   };
 }

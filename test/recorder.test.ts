@@ -54,6 +54,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     autoRecordWorktrees: 'off',
     autoIgnoreWorktrees: [],
     autoFollow: false,
+    agentContext: false,
     ...over,
   };
 }

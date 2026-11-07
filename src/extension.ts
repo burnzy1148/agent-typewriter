@@ -23,6 +23,8 @@ import { ChangeItem, laneName, TimelineView } from './timelineView';
 import { CheckoutRow, CheckoutsView, followingHeader, ignoreWorktreesLike, LaneRow, type FolderCheckoutsModel } from './checkoutsView';
 import { LaneDecorations } from './laneDecorations';
 import { AutoFollow } from './autoFollow';
+import { Correlator } from './agentContext';
+import { TranscriptIndex } from './transcripts';
 import { onTextReadError } from './changeText';
 import { FollowedMemory } from './followedMemory';
 import { MAX_LANES } from './lanes';
@@ -67,6 +69,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const player = new Player(timeline, mirror, readSettings, log);
   const highlights = new HighlightView(timeline, player, readHighlightSettings, context.extensionUri);
   const view = new TimelineView(timeline);
+  const correlator = new Correlator({
+    timeline,
+    index: new TranscriptIndex(undefined, (file, err) => log.appendLine(`Agent context: could not read ${file} (${err instanceof Error ? err.message : String(err)}).`)),
+    roots: () => [
+      ...timeline.laneList().map((l) => l.root).filter((r) => path.isAbsolute(r)),
+      ...(vscode.workspace.workspaceFolders ?? []).filter((f) => f.uri.scheme === 'file').map((f) => f.uri.fsPath),
+    ],
+    pathOf: (uri) => {
+      const u = vscode.Uri.parse(uri);
+      return u.scheme === 'file' ? u.fsPath : undefined;
+    },
+    enabled: () => readSettings().agentContext,
+    log: (line) => log.appendLine(line),
+  });
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
   /** Every checkout of each folder, its own first, and the ones it records (or will once started). */
   const loadCheckouts = async (): Promise<FolderCheckoutsModel[]> => {
@@ -952,10 +968,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       autoFollow.check();
     }
     if (affects('autoIgnoreWorktrees')) autoFollow.check();
+    if (affects('agentContext')) correlator.settingsChanged();
     refreshStatus();
   };
 
   context.subscriptions.push(
+    correlator,
     vscode.workspace.onDidChangeConfiguration(async (e) => {
       if (!e.affectsConfiguration(SECTION)) return;
       await applySettingsChange((key) => e.affectsConfiguration(`${SECTION}.${key}`));
