@@ -25,6 +25,14 @@
 - [x] 5.1 *Added in implementation:* give `Listing` an `isPaused` flag (tag `listing-2`) so the chip reads the pause state without subscribing to `view`; unit-test it in `listingOf`'s tests. Verify with `npm test`.
 - [x] 5.2 *Added in implementation:* the plugin tests that 1.2, 2.2 and 3.2 name went into a new `claude-code/tests/links.test.tsx` rather than `recording.test.tsx` and `pane.test.tsx`, which keeps the linking tests together; `seed` moved to `tests/world.ts` so both files share it. Verify with `npm run check:claude-code`.
 
+## 6. Review round 1
+
+- [x] 6.1 *Added in implementation:* make `act()` redraw the pane when it clears the note, and test a no-op Finish current on one live mount. Verify with `npm run check:claude-code`.
+- [x] 6.2 *Added in implementation:* delete the main loop's turn on its `turn.complete` too, and test a change made between turns. Verify with `npm run check:claude-code`.
+- [x] 6.3 *Added in implementation:* say "Couldn't scroll the conversation to that call." for every failed scroll, and correct the requirement, proposal and design in place. Verify with `npm run check:claude-code` and `openspec validate claude-code-turn-links --strict`.
+- [x] 6.4 *Added in implementation:* save the agent map in an `agents` atom (`agents-1`, newest 200) and read it on load; test a reload and the bound. Verify with `npm run check:claude-code`.
+- [x] 6.5 *Added in implementation:* name the top of the chain in the fallback requirement, and add the chip to *The list keeps up with playback* under `## MODIFIED`; update the README's note text. Verify with `openspec validate claude-code-turn-links --strict`.
+
 ## Workflow follow-up
 
 - Record the change on the bead (`bd update at-o3z.12 --spec-id openspec/changes/claude-code-turn-links`) and remove its `needs-spec` label.

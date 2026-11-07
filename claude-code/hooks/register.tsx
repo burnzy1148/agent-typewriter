@@ -12,6 +12,8 @@
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, Register } from 'claude-code';
 
+import type { AgentLink } from '../types';
+
 import { normalizeEol } from './core.mjs';
 import {
   MAX_REPLAY_BYTES,
@@ -60,8 +62,10 @@ const GUTTER = 8;
 const ROW_MARGIN = 4;
 /** Columns the ↗ beside a row takes, with the gap before it and its padding. */
 const REVEAL_COLUMNS = 4;
-/** What the pane says when Show in conversation finds no row to scroll to. */
-const GONE_NOTE = 'That call is no longer in the conversation.';
+/** What the pane says when Show in conversation could not scroll the conversation, for whatever reason. */
+const SCROLL_FAILED_NOTE = "Couldn't scroll the conversation to that call.";
+/** Most agents whose links are kept across a reload; past this the oldest go first. */
+const MAX_AGENTS = 200;
 /** The share of the body's rows the changes list may take. */
 const LIST_SHARE = 0.4;
 
@@ -72,6 +76,9 @@ const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
 const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
 const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-1' });
 const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-2' });
+const agentsRef = { plugin: 'agent-typewriter', key: 'agents' } as const;
+const AGENTS_SHAPE = 'agents-1';
+const agents = atom(agentsRef, [] as AgentLink[], { shape: AGENTS_SHAPE });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -92,7 +99,11 @@ type Live = {
   writes: Promise<void>;
   /** The running turn of each loop, by its agent id, '' for the main conversation. */
   turns: Map<string, string>;
-  /** Where each agent hangs off the main conversation: the turn and the `Agent` call that started the top of its chain. */
+  /**
+   * Where each agent hangs off the main conversation: the turn and the `Agent`
+   * call that started the top of its chain. Oldest first, at most MAX_AGENTS,
+   * and kept in $.state (`agents`) so a reload keeps it.
+   */
   agents: Map<string, { mainTurnId?: string; agentCallId?: string }>;
   /** A note the pane shows on its Changes line until the next press in it. */
   note?: string;
@@ -152,6 +163,13 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     changes.push({ ...c, before, after });
   }
   live.deck = restore(was, changes, live.opts, live.cwd);
+  const stored = (await $.state.get(agentsRef)).value;
+  if (stored?.shape === AGENTS_SHAPE) {
+    // Spawns seen since the module loaded are newer than what was stored.
+    const seen = [...live.agents];
+    live.agents = new Map(stored.value.map(({ agentId, ...at }) => [agentId, at]));
+    for (const [id, at] of seen) keepAgent(live, id, at);
+  }
   sync($, live);
 }
 
@@ -170,6 +188,22 @@ function linksFor(live: Live, agentId: string | undefined): CallLinks {
   const turnId = live.turns.get(agentId ?? '');
   if (agentId === undefined) return linksOf({ turnId, mainTurnId: turnId });
   return linksOf({ turnId, agentId, ...live.agents.get(agentId) });
+}
+
+/** Notes where agent `id` hangs off the main conversation, as its newest entry, dropping the oldest past MAX_AGENTS. */
+function keepAgent(live: Live, id: string, at: { mainTurnId?: string; agentCallId?: string }): void {
+  live.agents.delete(id);
+  live.agents.set(id, at);
+  for (const oldest of live.agents.keys()) {
+    if (live.agents.size <= MAX_AGENTS) break;
+    live.agents.delete(oldest);
+  }
+}
+
+/** Queues a write of the agents' links, after any writes already queued. */
+function saveAgents($: EngineInterface, live: Live): void {
+  const next = [...live.agents].map(([agentId, at]): AgentLink => ({ agentId, ...at }));
+  live.writes = live.writes.then(() => update($, agents, () => next).then(() => undefined)).catch(() => undefined);
 }
 
 /** Runs a file tool, capturing "before" when the call starts and "after" once it succeeded. */
@@ -239,9 +273,12 @@ async function recordIfShown<R extends { deny?: string; isError?: boolean }>(
   return record($, live, tool, path, id, agentId, run);
 }
 
-/** Applies a control's action to the deck. Any press clears the pane's note. */
+/** Applies a control's action to the deck. Any press clears the pane's note, redrawing the pane even when nothing else changed. */
 function act($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
-  live.note = undefined;
+  if (live.note !== undefined) {
+    live.note = undefined;
+    $.ui.invalidate('ui.render');
+  }
   fn(live.deck);
   sync($, live);
 }
@@ -249,7 +286,9 @@ function act($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
 /**
  * Scrolls the conversation to the call that made change `id`, or for an
  * agent's change to the `Agent` call when the call's own row is not there.
- * When neither is, the pane says so. Playback does not move.
+ * When no scroll lands, whatever the reason (the engine names no reason that
+ * means only "not there"), or the change is no longer kept, the pane says it
+ * could not scroll. Playback does not move.
  */
 async function reveal($: EngineInterface, live: Live, id: string): Promise<void> {
   const hadNote = live.note !== undefined;
@@ -262,7 +301,7 @@ async function reveal($: EngineInterface, live: Live, id: string): Promise<void>
       return;
     }
   }
-  live.note = GONE_NOTE;
+  live.note = SCROLL_FAILED_NOTE;
   $.ui.invalidate('ui.render');
 }
 
@@ -310,8 +349,9 @@ export const register: Register = (on, options) => {
     live.turns.set(e.agentId ?? '', e.turnId);
     return next(e);
   });
+  // Between turns a loop has no turn: a call then (a plugin's own) is stamped with none.
   on('turn.complete', ($, e, next) => {
-    if (e.agentId !== undefined) live.turns.delete(e.agentId);
+    live.turns.delete(e.agentId ?? '');
     return next(e);
   });
   on('agent.spawn', async ($, e, next) => {
@@ -321,7 +361,10 @@ export const register: Register = (on, options) => {
         ? { mainTurnId: live.turns.get(''), agentCallId: e.tool_use_id || undefined }
         : { ...live.agents.get(e.parentAgentId) };
     const started = await next(e);
-    if (started.agentId !== undefined) live.agents.set(started.agentId, at);
+    if (started.agentId !== undefined) {
+      keepAgent(live, started.agentId, at);
+      saveAgents($, live);
+    }
     return started;
   });
 

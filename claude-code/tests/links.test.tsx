@@ -9,7 +9,14 @@ import { PANE_ID, seed, start, world } from './world';
 /** Stands in for the engine's loops: a turn starts under the id the test gives it, and a spawn starts the agent its description names. */
 function loops(on: On) {
   on('turn.start', (_, e) => ({ turnId: e.turnId }));
+  on('turn.complete', () => ({ text: '' }));
   on('agent.spawn', (_, e) => ({ model: 'm', agentId: e.description }));
+}
+
+/** Ends turn `turnId` of the loop of `agentId`, the main conversation's when absent. */
+async function endTurn($: Engine, turnId: string, agentId?: string) {
+  const complete = $.turn.complete as unknown as (e: object) => Promise<unknown>;
+  await complete({ turnId, reason: 'answer', answer: '', ...(agentId !== undefined && { agentId }) });
 }
 
 /** Starts turn `turnId` in the loop of `agentId`, the main conversation's when absent. */
@@ -90,6 +97,63 @@ test('an agent started by a subagent keeps the main turn and Agent call of the f
   expect(linksOf(w, 'toolu_d')).toEqual({ turnId: 'tb', agentId: 'ag2', mainTurnId: 't1', agentCallId: 'toolu_agent' });
 });
 
+test('a change made between turns keeps no turn, though the turn before it was seen', async ($, on) => {
+  const w = world(on);
+  loops(on);
+  await start($);
+  await turn($, 't1');
+  await endTurn($, 't1');
+  await write($, 'between.ts', 'toolu_between');
+
+  expect(linksOf(w, 'toolu_between')).toEqual({ turnId: undefined, agentId: undefined, mainTurnId: undefined, agentCallId: undefined });
+});
+
+/** Watches what the plugin writes to its `agents` state, and answers its first read with `stored` when given, as a reload finds it. */
+function agentsState(on: On, stored?: unknown) {
+  const writes: unknown[] = [];
+  let isWritten = false;
+  on('state.set', { plugin: 'agent-typewriter', key: 'agents' }, (_, e, next) => {
+    isWritten = true;
+    writes.push((e.value as { value: unknown }).value);
+    return next(e);
+  });
+  if (stored !== undefined) {
+    on('state.get', { plugin: 'agent-typewriter', key: 'agents' }, async (_, e, next) => {
+      const got = await next(e);
+      if (isWritten || got.deny !== undefined) return got;
+      return { value: { value: stored, version: got.value.version } };
+    });
+  }
+  return writes;
+}
+
+test("an agent started before a reload still gives its later changes the main turn and Agent call", async ($, on) => {
+  const w = world(on);
+  loops(on);
+  agentsState(on, { shape: 'agents-1', value: [{ agentId: 'ag1', mainTurnId: 't1', agentCallId: 'toolu_agent' }] });
+  await start($);
+  await w.clock.settle();
+  await turn($, 'ta2', 'ag1');
+  await write($, 'late.ts', 'toolu_late', 'ag1');
+
+  expect(linksOf(w, 'toolu_late')).toEqual({ turnId: 'ta2', agentId: 'ag1', mainTurnId: 't1', agentCallId: 'toolu_agent' });
+});
+
+test('the agents started are saved for a reload, the newest 200', async ($, on) => {
+  const w = world(on);
+  loops(on);
+  const writes = agentsState(on);
+  await start($);
+  await turn($, 't1');
+  for (let i = 0; i < 201; i++) await spawn($, `ag${i}`, `toolu_agent${i}`);
+  await w.clock.settle();
+
+  const last = writes.at(-1) as { agentId: string; mainTurnId?: string; agentCallId?: string }[];
+  expect(last.length).toBe(200);
+  expect(last[0]).toEqual({ agentId: 'ag1', mainTurnId: 't1', agentCallId: 'toolu_agent1' });
+  expect(last.at(-1)).toEqual({ agentId: 'ag200', mainTurnId: 't1', agentCallId: 'toolu_agent200' });
+});
+
 test('a change made before the plugin saw a turn start keeps no turn', async ($, on) => {
   const w = world(on);
   await start($);
@@ -144,7 +208,7 @@ async function pane($: Engine, surface: RenderSurface = 'desktop') {
   const buttons = await ui.findAll({ type: 'Button' });
   const header = buttons.find((b) => b.key === 'reveal')?.text;
   const reveals = buttons.filter((b) => b.key?.startsWith('reveal:')).map((b) => [b.key, b.text, b.props.label]);
-  const hint = (await ui.find({ type: 'Text', text: /Pick a change|no longer in the conversation/ }))?.text;
+  const hint = (await ui.find({ type: 'Text', text: /Pick a change|Couldn't scroll/ }))?.text;
   const status = (await ui.find({ type: 'Text', text: /^(typing|paused|idle)/ }))?.text;
   const number = (await ui.find({ type: 'Text', text: /^#\d+$/ }))?.text;
   await ui.unmount();
@@ -175,7 +239,7 @@ test('the pane has Show in conversation while it shows a change, and a ↗ besid
   }
 });
 
-test("Show in conversation changes no playback, and when the call's row is not there the pane says so until the next press", async ($, on) => {
+test("Show in conversation changes no playback, and when the scroll fails the pane says so until the next press", async ($, on) => {
   const w = world(on);
   await start($);
   await write($, 'a.ts', 'toolu_a');
@@ -184,19 +248,38 @@ test("Show in conversation changes no playback, and when the call's row is not t
   const before = await pane($);
   expect(before.hint).toBe('Pick a change to play from it');
 
-  // The test kit draws no conversation, so no scroll lands: the pane says so.
+  // The test kit cannot scroll a conversation row: a plugin's $.ui.scroll of one fails ("no implementation"), so the pane says it could not scroll.
   await pressPane($, 'reveal:toolu_b');
   const after = await pane($);
-  expect(after.hint).toBe('That call is no longer in the conversation.');
+  expect(after.hint).toBe("Couldn't scroll the conversation to that call.");
   expect([after.status, after.number]).toEqual([before.status, before.number]);
 
   await pressPane($, 'reveal');
-  expect((await pane($)).hint).toBe('That call is no longer in the conversation.');
+  expect((await pane($)).hint).toBe("Couldn't scroll the conversation to that call.");
 
   await pressPane($, 'pause');
   const paused = await pane($);
   expect(paused.hint).toBe('Pick a change to play from it');
   expect(paused.status).toBe('paused · 1 queued');
+});
+
+test('a press that changes nothing still clears the note on the pane as drawn', async ($, on) => {
+  const w = world(on);
+  await start($);
+  await write($, 'a.ts', 'toolu_a');
+  await w.clock.advance(10_000);
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as never);
+  const hint = async () => (await ui.find({ type: 'Text', text: /Pick a change|Couldn't scroll/ }))?.text;
+  await ui.press({ key: 'reveal:toolu_a' });
+  await w.clock.settle();
+  expect(await hint()).toBe("Couldn't scroll the conversation to that call.");
+
+  // Everything has played: Finish current moves nothing and writes no state.
+  await ui.press({ key: 'finish' });
+  await w.clock.settle();
+  expect(await hint()).toBe('Pick a change to play from it');
+  await ui.unmount();
 });
 
 // The conversation's side.
@@ -306,4 +389,25 @@ test('pressing a chip opens the pane and plays from its change; while paused it 
   await pressChip($, 'toolu_3');
   expect((await row($, 'toolu_3', 'Write')).chip).toBe('Next #3');
   expect((await pane($)).status).toMatch(/^paused/);
+});
+
+test('pressing a chip brings a scrolled changes list back to following playback', async ($, on) => {
+  const w = world(on);
+  engineRows(on);
+  await start($);
+  for (let i = 1; i <= 30; i++) await write($, `f${i}.ts`, `toolu_${i}`);
+  await w.clock.advance(60_000);
+  const numbers = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as never);
+    const rows = (await ui.findAll({ type: 'Button' })).filter((b) => b.key?.startsWith('change:'));
+    await ui.unmount();
+    return rows.map((b) => Number(/#(\d+) /.exec(b.text)![1]));
+  };
+  expect(await numbers()).toEqual([23, 24, 25, 26, 27, 28, 29, 30]);
+  const scroll = $.ui.scroll as unknown as (e: object) => Promise<unknown>;
+  await scroll({ component: 'Pane', requestId: PANE_ID, offset: 0, by: -100, bodyRows: 20, contentRows: 19, origin: { kind: 'person' }, pointer: { row: 19, column: 4 } });
+  expect((await numbers())[0]).toBe(1);
+
+  await pressChip($, 'toolu_17');
+  expect(await numbers()).toEqual([15, 16, 17, 18, 19, 20, 21, 22]);
 });

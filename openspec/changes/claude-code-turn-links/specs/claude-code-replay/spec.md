@@ -47,15 +47,23 @@ While the pane shows a change, its header SHALL have a Show in conversation butt
 - **THEN** the pane has no Show in conversation button
 
 ### Requirement: Show in conversation falls back to the Agent call
-When the call that made a change is not in the conversation, Show in conversation SHALL scroll to the `Agent` call that started the change's agent instead. When neither is in the conversation, the pane SHALL say that the call is no longer in the conversation, until the user next presses something in the pane.
+When the call that made a change is not in the conversation, Show in conversation SHALL scroll instead to the call in the main conversation that started the agent at the top of the change's chain, an `Agent` or `Workflow` call. When it cannot scroll to either, the pane SHALL say that it could not scroll the conversation to the call, until the user next presses something in the pane.
 
 #### Scenario: A subagent's change
 - **WHEN** the conversation does not show a subagent's own calls, and the user presses the ↗ beside a change that subagent made
 - **THEN** the conversation scrolls to the `Agent` call that started the subagent
 
-#### Scenario: The call is gone
+#### Scenario: An agent started by a subagent
+- **WHEN** the conversation shows neither the calls of an agent that a subagent started nor the subagent's own calls, and the user presses the ↗ beside a change the inner agent made
+- **THEN** the conversation scrolls to the `Agent` call in the main conversation that started the subagent
+
+#### Scenario: The scroll fails
 - **WHEN** the call that made a main conversation change is no longer in the conversation, and the user presses its ↗
-- **THEN** the pane says that the call is no longer in the conversation, and playback does not change
+- **THEN** the pane says that it could not scroll the conversation to that call, and playback does not change
+
+#### Scenario: The note clears on the next press
+- **WHEN** the pane says it could not scroll, and the user then presses Finish current with nothing left to finish
+- **THEN** the pane no longer says it
 
 ### Requirement: A chip on the call's row
 In the conversation, the row of each `Edit` or `Write` call whose change the plugin keeps SHALL keep the engine's own drawing and add a chip naming the change's state and number: Replay when it has played, Typing or Paused when it is being typed, Next when the pane shows it cued, Queued when it waits, Too large when it is the pane's current change and too large to replay, and Not typed when it is too large and has passed.
@@ -90,3 +98,28 @@ Pressing a call row's chip SHALL play from that change, as pressing its row in t
 #### Scenario: While paused
 - **WHEN** playback is paused and the user presses Queued #5 on a call row
 - **THEN** the pane shows change #5 cued as it was before, and the chip reads Next #5 until playback resumes
+
+## MODIFIED Requirements
+
+### Requirement: The list keeps up with playback
+When more changes are kept than the pane has room to list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it, until they press a change in the list or its chip in the conversation, or press From start, Finish current or Skip to latest, after which it keeps up with playback again. Scrolling with the pointer over the code SHALL NOT move the list.
+
+#### Scenario: Long session
+- **WHEN** 80 changes are kept, the pane lists 10 rows, and change 40 starts
+- **THEN** change 40's row is among the rows shown
+
+#### Scenario: The person scrolls back
+- **WHEN** the person scrolls the list up to change 3 while change 40 is typed, and change 41 then starts
+- **THEN** the list still shows change 3, and change 41's row is not brought into view
+
+#### Scenario: Picking brings it back
+- **WHEN** the person has scrolled the list and presses change 5
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: A chip brings it back
+- **WHEN** the person has scrolled the list and presses the chip on change 5's call in the conversation
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Scrolling over the code
+- **WHEN** the person scrolls with the pointer over the code while change 40 is typed, and change 41 then starts
+- **THEN** the list does not move for the scroll, and change 41's row is shown

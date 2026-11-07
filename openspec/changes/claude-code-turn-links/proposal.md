@@ -7,7 +7,7 @@ The Claude Code pane lists the session's changes (at-o3z.3), but nothing ties a 
 ## What Changes
 
 - **Each change knows where it came from.** When it records a change, the plugin keeps the tool call's id (already the change's id), the turn the call ran in, and the agent whose loop made it (none for the main conversation). For a subagent's change it also keeps the main conversation's turn that started the agent and the `Agent` call that started it. All of these survive a reload. The saved state's tag moves from `saved-3` to `saved-4`, and state saved under `saved-3` loads with these fields absent.
-- **Show in conversation.** The pane's header gets a Show in conversation button while it shows a change, and each row of the changes list gets a ↗ button beside it. Either scrolls the conversation to the `Edit` or `Write` call that made the change. When that call's row is not in the conversation, as for a subagent's call, it scrolls to the `Agent` call that started the agent instead. When neither is there, the changes list says the call is no longer in the conversation.
+- **Show in conversation.** The pane's header gets a Show in conversation button while it shows a change, and each row of the changes list gets a ↗ button beside it. Either scrolls the conversation to the `Edit` or `Write` call that made the change. When that call's row is not in the conversation, as for a subagent's call, it scrolls to the `Agent` call that started the agent instead. When neither is there, the changes list says the call is no longer in the conversation. *Superseded in implementation:* when no scroll lands, the list says it couldn't scroll the conversation to that call; see *Corrected in implementation*.
 - **A chip on the call's row.** In the conversation, the row of each `Edit` or `Write` call whose change the pane keeps gets a chip that names the change's state and number: Replay #2, Typing #2, Paused #2, Next #2, Queued #2, Too large #2 or Not typed #2. Pressing it plays from that change, as pressing its row in the list does, and opens the pane. The engine's own row stays as it is; the chip draws below it.
 - The probe the bead asks for found that a `ToolUse` render hook can keep the engine's row and add a chip, so the fallback (a chip on the turn's end row only) is not built. design.md records the probe.
 
@@ -24,7 +24,7 @@ None.
 
 ### Modified Capabilities
 
-- `claude-code-replay`: adds requirements for keeping each change's turn and agent across a reload, loading `saved-3` state, Show in conversation from the header and from each row, and the chip on a call's row in the conversation. No existing requirement's text changes.
+- `claude-code-replay`: adds requirements for keeping each change's turn and agent across a reload, loading `saved-3` state, Show in conversation from the header and from each row, and the chip on a call's row in the conversation. No existing requirement's text changes. *Superseded in implementation:* *The list keeps up with playback* is modified to add the chip to the presses that bring a scrolled list back to playback.
 
 ## Impact
 
@@ -34,3 +34,12 @@ None.
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for the fields, the reload, the buttons, and the chip on every surface but the terminal.
 - `claude-code/README.md`: Show in conversation and the chip.
 - No shared module (`core.mjs`) changes.
+
+## Corrected in implementation
+
+Round 1 of PR #93's review found each of these. The owner approved each fix as part of my response plan, which recommended it; for the first two the owner picked between the options I offered.
+
+- **The note when Show in conversation fails.** The delta said the pane says the call "is no longer in the conversation" when neither row is there. But the engine's scroll answers one `deny` for many reasons (`the window moved meanwhile`, `not person-initiated`, no surface), and none of them means only "not there"; a change dropped between drawing and the press also failed the same way. So the note claimed something the plugin could not know. It now says the plugin "couldn't scroll the conversation to that call", for any failure, and the requirement says so. I had written the original from the bead's happy path without reading `UiScrollResult`'s reasons.
+- **Agents across a reload.** design.md kept the agent map in module memory only, so a reload (an options change) left a subagent started before it with no main turn or `Agent` call for the rest of its life, against *Each change knows its turn and agent*. The map is now saved in `$.state` (`agents`, newest 200), and the requirement stands as written.
+- **The fallback names the top of the chain.** The requirement said "the `Agent` call that started the change's agent"; the code goes to the main conversation's call at the top of the chain, an `Agent` or a `Workflow` call, which is the only one in the conversation. The wording now matches, with a scenario for a nested agent.
+- *Added in implementation:* **the chip in the living *The list keeps up with playback*.** Task 3.2 had the chip make the list follow again, but the living requirement lists the presses that do, and the chip was not among them. It is now, under `## MODIFIED`, with a scenario.

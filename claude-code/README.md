@@ -90,7 +90,7 @@ Press a change to play from it: it is typed next and the later ones follow, and 
 
 ### Back and forth with the conversation
 
-**Show in conversation**, in the pane's header, scrolls the conversation to the `Edit` or `Write` call that made the change the pane shows; the ↗ beside each row of the list does the same for that change. For a change a subagent made, it goes to the subagent's call, or to the `Agent` call that started the subagent when the conversation doesn't show the subagent's own calls. If the call is no longer in the conversation, the list says so. Neither moves playback.
+**Show in conversation**, in the pane's header, scrolls the conversation to the `Edit` or `Write` call that made the change the pane shows; the ↗ beside each row of the list does the same for that change. For a change a subagent made, it goes to the subagent's call, or to the `Agent` call that started the subagent when the conversation doesn't show the subagent's own calls. If it can't scroll there, say because the call is no longer in the conversation, the list says so until your next press in the pane. Neither moves playback.
 
 In the conversation, each `Edit` or `Write` call whose change the pane keeps has a chip under it naming the change and where playback is with it: **Replay #2** once it has played, **Typing #2** or **Paused #2** while it is typed, **Next #2** when you picked it while paused, **Queued #2** while it waits, and **Too large #2**, then **Not typed #2**, for a file too large to type. Press the chip to play from that change, as pressing its row does; it opens the pane if it is closed.
 

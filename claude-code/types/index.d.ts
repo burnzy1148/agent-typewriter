@@ -78,12 +78,22 @@ export type Row = {
  */
 export type Listing = { rows: Row[]; dropped: number; current?: string; isPaused: boolean };
 
+/**
+ * Where an agent hangs off the main conversation, as `agent.spawn` showed it:
+ * the main conversation's turn and the `Agent` (or `Workflow`) call that
+ * started the agent at the top of its chain. Kept so a change an agent makes
+ * after a reload still gets them.
+ */
+export type AgentLink = { agentId: string; mainTurnId?: string; agentCallId?: string };
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-typewriter': {
       saved: Shaped<Saved>;
       view: Shaped<View>;
       listing: Shaped<Listing>;
+      /** The agents started this session, oldest first, at most the newest 200. */
+      agents: Shaped<AgentLink[]>;
       /** Member `<change id>:before` or `<change id>:after`; '' once the change is gone. */
       text: StateFamily<string>;
     };

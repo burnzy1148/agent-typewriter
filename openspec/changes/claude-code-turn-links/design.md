@@ -53,9 +53,9 @@ Alternative: keep only `turnId` and `agentId`, as the bead lists, and let at-o3z
 
 ### Tracking turns and agents
 
-Module memory (not `$.state`) keeps two maps:
+Module memory (not `$.state`) keeps two maps: *Superseded in implementation:* `agents` is also saved in `$.state`; see *Corrected in implementation*.
 
-- `turns`: loop key (`agentId`, or `''` for main) → the running turn's id, set on `turn.start` (the hook calls `next(e)` and returns its result, observing only). `turn.complete` of an agent deletes its key, so the map stays as small as the live loops.
+- `turns`: loop key (`agentId`, or `''` for main) → the running turn's id, set on `turn.start` (the hook calls `next(e)` and returns its result, observing only). `turn.complete` of an agent deletes its key, so the map stays as small as the live loops. *Superseded in implementation:* `turn.complete` of any loop, the main one included, deletes its key; see *Corrected in implementation*.
 - `agents`: `agentId` → `{ mainTurnId, agentCallId }`, set on `agent.spawn` once `next(e)` resolves with an `agentId`. With no `parentAgentId` the spawn is the main loop's: `{ mainTurnId: turns.get(''), agentCallId: e.tool_use_id }`. With one, it inherits the parent agent's entry, so a nested agent resolves to the top-level spawn. A resume re-spawns under the same id and overwrites the entry with the resuming turn, which is where its new changes belong.
 
 `record()` reads both when the call starts, beside "before".
@@ -70,7 +70,7 @@ Alternative: keep the tag, since every new field is optional. Rejected: the modu
 
 ### Show in conversation
 
-A pure helper, `scrollTargets(change)`, answers `[id]` for a main-loop change and `[id, agentCallId]` for an agent's. The press tries each with `$.ui.scroll({ to: { requestId } })` in order and stops at the first that answers without `deny`. If none does, or the call throws, the pane keeps a one-line note, "That call is no longer in the conversation.", in place of the Changes line's hint; any later press in the pane clears it. The press does not move playback or the list.
+A pure helper, `scrollTargets(change)`, answers `[id]` for a main-loop change and `[id, agentCallId]` for an agent's. The press tries each with `$.ui.scroll({ to: { requestId } })` in order and stops at the first that answers without `deny`. If none does, or the call throws, the pane keeps a one-line note, "That call is no longer in the conversation.", in place of the Changes line's hint; any later press in the pane clears it. *Superseded in implementation:* the note reads "Couldn't scroll the conversation to that call.", and a press that clears it redraws the pane; see *Corrected in implementation*. The press does not move playback or the list.
 
 The header gains the button at its right, so the header stays one row and the list's geometry (`firstRow`) does not change. Each row becomes a `Box` holding the row's `Button` and a plain `Button` `↗` keyed `reveal:<id>`; the row label's width shrinks by the ↗'s columns. A `Button` holds only strings and `Text`, so the ↗ cannot sit inside the row's own `Button`.
 
@@ -103,3 +103,7 @@ The plugin test kit answers a test's own `$.ui.scroll` call through the test's `
 ## Corrected in implementation
 
 - *Added in implementation:* **`listing` carries the pause state.** The chip needs to tell Typing from Paused. Reading `view` for that while drawing would subscribe every `Edit` and `Write` row to `view`, which changes on every tick while a change types, and redraw them all twenty times a second. So `Listing` gains `isPaused`, written only when pause toggles, and its tag moves from `listing-1` to `listing-2`. The pane's own status line still reads `view`.
+- **The note when a scroll fails.** "That call is no longer in the conversation." claimed the row was gone, but `$.ui.scroll`'s `deny` has several reasons that leave the row in place (`the window moved meanwhile`, `not person-initiated`, `no-surface`), and none that means only "not there". The note now reads "Couldn't scroll the conversation to that call." for every failure, including a change no longer kept. I wrote the first text without reading `UiScrollResult`.
+- **The note clears on screen.** `act()` cleared the note in memory and relied on a state write to redraw; a press that moves nothing (Finish current with nothing left) writes nothing, so the note stayed drawn. `act()` now calls `$.ui.invalidate('ui.render')` when it clears a note.
+- **The main turn ends with its `turn.complete`.** Only an agent's key was deleted, so a main-loop call between turns (a plugin's own `$.tool.call`) took the finished turn's id, which at-o3z.13 would file under the wrong chapter. Every loop's key is now deleted on its `turn.complete`, so such a change has no turn.
+- **Agents survive a reload.** In module memory only, the agent map was lost on a reload, so an agent started before it gave its later changes no `mainTurnId` or `agentCallId`. The map is saved as an `agents` atom (shape `agents-1`): a list of `{ agentId, mainTurnId?, agentCallId? }`, oldest first, the newest 200 kept, written after each spawn through the same write queue as `saved`, and read back on load (spawns seen since the module loaded stay newer). A teammate that outlives 200 later spawns loses its entry; that is the bound's price.
