@@ -6,10 +6,11 @@ import { pickLayer, REPO_SETTING_KINDS, type RepoValues } from './repoSettings';
 import { isFiniteNumber, numberSetting } from './numberSetting';
 import { resolveCharsPerMinute } from './pace';
 import { resolveReadPauseSeconds } from './readPause';
+import { asRecord, resolvePlaybackSettings, type PlaybackSettings, type SettingGetter } from './playbackSettings';
 
 export const SECTION = 'agentTypewriter';
 
-export interface Settings extends FilterSettings {
+export interface Settings extends FilterSettings, PlaybackSettings {
   /** Also skip paths git reports as ignored. */
   respectGitignore: boolean;
   /** Raw `activeProfile`; it may name no profile (see activeProfileOf). */
@@ -20,26 +21,10 @@ export interface Settings extends FilterSettings {
   charsPerMinute: number;
   /** The base speed came from the deprecated `charsPerSecond` setting. */
   speedFromDeprecatedSetting: boolean;
-  /** Language id → base chars per minute. Raw from settings; pace.ts ignores bad entries. */
-  languageSpeeds: Record<string, unknown>;
-  jitter: number;
-  catchUpFactor: number;
-  maxSpeedup: number;
-  maxAnimatedChars: number;
-  /** Beat on the new file's mirror before its first edit. */
-  fileSwitchDelayMs: number;
-  /** Scroll to the next edit in the same file instead of jumping. */
-  smoothScroll: boolean;
   /** Least time since the last edit before the view leaves it: an off-screen edit or another file. */
   readPauseSeconds: number;
   /** The read pause came from the deprecated `scrollPauseMs` setting. */
   readPauseFromDeprecatedSetting: boolean;
-  scrollLinesPerSecond: number;
-  /** Walk the caret to nearby edits with arrow keys instead of clicking there. */
-  arrowNavigation: boolean;
-  arrowKeysPerSecond: number;
-  /** Type blocks outside in (closing line before the body) instead of top to bottom. */
-  naturalOrder: boolean;
   debounceMs: number;
   /** Resolved reorder window in ms ("auto" already mapped to the platform default). */
   reorderWindowMs: number;
@@ -110,19 +95,9 @@ export function readSettings(): Settings {
     profiles,
     charsPerMinute: speed.charsPerMinute,
     speedFromDeprecatedSetting: speed.fromDeprecated,
-    languageSpeeds: asRecord(c.get<unknown>('languageSpeeds', {})),
-    jitter: num('jitter', 0.6, 0, 1),
-    catchUpFactor: num('catchUpFactor', 0.5, 0),
-    maxSpeedup: num('maxSpeedup', 8, 1),
-    maxAnimatedChars: num('maxAnimatedChars', 6000),
-    fileSwitchDelayMs: num('fileSwitchDelayMs', 1000, 0, 15000),
-    smoothScroll: c.get('smoothScroll', true),
+    ...resolvePlaybackSettings(c.get),
     readPauseSeconds: readPause.readPauseSeconds,
     readPauseFromDeprecatedSetting: readPause.fromDeprecated,
-    scrollLinesPerSecond: num('scrollLinesPerSecond', 60, 1),
-    arrowNavigation: c.get('arrowNavigation', true),
-    arrowKeysPerSecond: num('arrowKeysPerSecond', 15, 1),
-    naturalOrder: c.get('naturalOrder', true),
     debounceMs: num('debounceMs', 200, 0),
     reorderWindowMs: resolveReorderWindow(c.get<unknown>('reorderWindowMs', 'auto'), process.platform),
     maxFileSizeKB: num('maxFileSizeKB', 512, 1),
@@ -184,7 +159,7 @@ export function storedProfiles(): Record<string, unknown> {
  * With `valid`, a value that fails it is treated as unset and the next layer
  * applies, down to `fallback`.
  */
-function layered(cfg: vscode.WorkspaceConfiguration, profile?: FilterProfile) {
+function layered(cfg: vscode.WorkspaceConfiguration, profile?: FilterProfile): { get: SettingGetter } {
   const above = (profile ?? {}) as Record<string, unknown>;
   return {
     get: <T>(key: string, fallback: T, valid?: (v: unknown) => v is T): T => {
@@ -236,10 +211,6 @@ function resolveProfiles(cfg: vscode.WorkspaceConfiguration): Profiles {
     repoValues.profiles as Profiles | undefined,
     parseProfiles(i?.workspaceValue).profiles,
   );
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 /** The type check readSettings applies to a setting, if any. */

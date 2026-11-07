@@ -225,6 +225,40 @@ declare function baselines(events: readonly ChangeEvent[], through: number, clea
     paths: readonly string[];
 }, read?: ReadText): Map<string, string>;
 
+// src/numberSetting.ts
+
+declare function isFiniteNumber(v: unknown): v is number;
+/**
+ * A numeric setting's value: anything that is not a finite number (a string,
+ * an object, null, NaN, Infinity) gives `fallback`, then the result is clamped.
+ */
+declare function numberSetting(value: unknown, fallback: number, min?: number, max?: number): number;
+
+// src/pace.ts
+
+/** Base speed when no settings layer sets one. */
+declare const DEFAULT_CHARS_PER_MINUTE = 1000;
+/** One settings layer's speed keys, raw. `charsPerSecond` is the deprecated one. */
+interface SpeedLayer {
+    charsPerMinute?: unknown;
+    charsPerSecond?: unknown;
+}
+/**
+ * The base speed from the first layer (highest priority first) that sets a
+ * finite number in either key. Within a layer charsPerMinute wins; a
+ * charsPerSecond value counts times 60 and marks the result deprecated.
+ */
+declare function resolveCharsPerMinute(layers: readonly SpeedLayer[], fallback?: number): {
+    charsPerMinute: number;
+    fromDeprecated: boolean;
+};
+/**
+ * Base typing speed for a document, in characters per minute: its language's
+ * entry in languageSpeeds when that is a positive number, otherwise
+ * charsPerMinute. Catch-up and manual speed multiply on top of this.
+ */
+declare function baseCharsPerMinute(languageId: string, charsPerMinute: number, languageSpeeds: Record<string, unknown>): number;
+
 // src/planner.ts
 
 /**
@@ -283,6 +317,117 @@ declare function countChanges(before: string, after: string): {
     added: number;
     removed: number;
 };
+
+// src/playbackSettings.ts
+
+/**
+ * Reads one setting: its value, or `fallback` when it is unset. With `valid`,
+ * a value that fails the check counts as unset, and a layered source tries
+ * its next layer before giving `fallback`.
+ */
+type SettingGetter = <T>(key: string, fallback: T, valid?: (v: unknown) => v is T) => T;
+/** A numeric setting's default and the range its value is clamped to. */
+interface NumberSpec {
+    readonly default: number;
+    readonly min?: number;
+    readonly max?: number;
+}
+/** Defaults and limits of the numeric playback settings, the same as package.json declares. */
+declare const PLAYBACK_NUMBERS: {
+    readonly jitter: {
+        readonly default: 0.6;
+        readonly min: 0;
+        readonly max: 1;
+    };
+    readonly catchUpFactor: {
+        readonly default: 0.5;
+        readonly min: 0;
+    };
+    readonly maxSpeedup: {
+        readonly default: 8;
+        readonly min: 1;
+    };
+    readonly maxAnimatedChars: {
+        readonly default: 6000;
+    };
+    readonly fileSwitchDelayMs: {
+        readonly default: 1000;
+        readonly min: 0;
+        readonly max: 15000;
+    };
+    readonly scrollLinesPerSecond: {
+        readonly default: 60;
+        readonly min: 1;
+    };
+    readonly arrowKeysPerSecond: {
+        readonly default: 15;
+        readonly min: 1;
+    };
+};
+/** Defaults of the on/off playback settings. */
+declare const PLAYBACK_SWITCHES: {
+    readonly smoothScroll: true;
+    readonly arrowNavigation: true;
+    readonly naturalOrder: true;
+};
+interface PlaybackSettings {
+    /** Language id → base chars per minute. Raw from settings; pace.ts ignores bad entries. */
+    languageSpeeds: Record<string, unknown>;
+    jitter: number;
+    catchUpFactor: number;
+    maxSpeedup: number;
+    maxAnimatedChars: number;
+    /** Beat on the new file's mirror before its first edit. */
+    fileSwitchDelayMs: number;
+    /** Scroll to the next edit in the same file instead of jumping. */
+    smoothScroll: boolean;
+    scrollLinesPerSecond: number;
+    /** Walk the caret to nearby edits with arrow keys instead of clicking there. */
+    arrowNavigation: boolean;
+    arrowKeysPerSecond: number;
+    /** Type blocks outside in (closing line before the body) instead of top to bottom. */
+    naturalOrder: boolean;
+}
+/**
+ * The playback settings `get` reads, with defaults for unset ones. A number
+ * that is not finite and an on/off setting that is not a boolean count as
+ * unset; numbers are then clamped to their limits. The base speed and read
+ * pause have their own resolvers, in pace.ts and readPause.ts.
+ */
+declare function resolvePlaybackSettings(get: SettingGetter): PlaybackSettings;
+/** A numeric setting: a value that is not a finite number counts as unset, then the result is clamped. */
+declare function resolveNumber(get: SettingGetter, key: string, spec: NumberSpec): number;
+/** A getter over one flat set of values, such as a frontend's own settings object. */
+declare function recordGetter(values: Readonly<Record<string, unknown>>): SettingGetter;
+declare function asRecord(v: unknown): Record<string, unknown>;
+
+// src/readPause.ts
+
+/** Read pause when no settings layer sets one, in seconds. */
+declare const DEFAULT_READ_PAUSE_SECONDS = 1.5;
+/** The longest read pause, in seconds; longer values are clamped to it. */
+declare const MAX_READ_PAUSE_SECONDS = 15;
+/** One settings layer's read-pause keys, raw. `scrollPauseMs` is the deprecated one. */
+interface ReadPauseLayer {
+    readPauseSeconds?: unknown;
+    scrollPauseMs?: unknown;
+}
+/**
+ * The read pause from the first layer (highest priority first) that sets a
+ * finite number in either key, clamped to 0 to 15 s. Within a layer
+ * readPauseSeconds wins; a scrollPauseMs value counts divided by 1000 and
+ * marks the result deprecated.
+ */
+declare function resolveReadPauseSeconds(layers: readonly ReadPauseLayer[]): {
+    readPauseSeconds: number;
+    fromDeprecated: boolean;
+};
+/**
+ * Milliseconds still to wait before the view may leave what was typed at
+ * `lastEditAt`: the read pause divided by the speed multiplier, less the time
+ * already passed. 0 once it has passed.
+ */
+declare function readPauseLeft(lastEditAt: number, now: number, seconds: number, speed: number): number;
 
 // src/timeline.ts
 
@@ -588,3 +733,6 @@ declare function backspaceStep(deleted: string, remaining: number, step: number)
 export { planHunks, authoringOrder, normalizeEol, countChanges, type Hunk };
 export { typingChunkEnd, backspaceStep };
 export { Timeline, type ChangeEvent, type NewChangeEvent };
+export { resolvePlaybackSettings, resolveNumber, recordGetter, PLAYBACK_NUMBERS, PLAYBACK_SWITCHES, type PlaybackSettings, type SettingGetter, type NumberSpec };
+export { resolveCharsPerMinute, DEFAULT_CHARS_PER_MINUTE };
+export { resolveReadPauseSeconds, DEFAULT_READ_PAUSE_SECONDS, MAX_READ_PAUSE_SECONDS };
