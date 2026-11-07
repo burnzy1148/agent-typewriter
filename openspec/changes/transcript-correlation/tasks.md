@@ -1,0 +1,25 @@
+# Tasks
+
+## 1. Transcript index
+
+- [ ] 1.1 `src/transcripts.ts`: `projectsDir`, `encodeProjectPath`, `candidateDirs` (root, ancestors, prefix). Verify: unit tests for POSIX and Windows paths, ancestor and inside-root folders, and an unrelated folder left out.
+- [ ] 1.2 `TranscriptIndex` line parsing: prompts (system reminders stripped, 1000 chars), narration, edit and `Bash` tool calls with start and end, skipped non-message lines, bad JSON skipped. Verify: unit tests on fixture lines in the shapes in design.md.
+- [ ] 1.3 Incremental reads (offset plus partial line, appended bytes only, mtime cutoff) and subagent transcripts with `meta.json`. Verify: unit tests that append to a temp transcript between refreshes and check a subagent call gets the parent's turn.
+
+## 2. Matching and correlator
+
+- [ ] 2.1 `src/agentContext.ts`: `AgentContext` type and `matchChange` with the edit and command rules. Verify: unit tests for each spec scenario: edit, two edits, rename, later user edit, command, two sessions, parallel commands, the 10-minute running cap.
+- [ ] 2.2 `ChangeEvent.agent`, `Timeline.annotate`, and `toSession` dropping `agent`. Verify: timeline unit tests. Annotate emits once and keeps text and order. A saved session has no `agent`.
+- [ ] 2.3 `Correlator`: debounce, 2 s retries for 30 s, settled keys, one try for restored changes, claimed set from annotated changes, on/off. Verify: unit tests with a fake clock and a temp projects folder, including a transcript line written after the change.
+
+## 3. Wiring and UI
+
+- [ ] 3.1 `agentTypewriter.agentContext` in `package.json`, `config.ts`, and `README.md`. Verify: typecheck. The setting appears in the settings UI. The site settings page generator picks it up (`npm run build` in `site/` if needed).
+- [ ] 3.2 Wire the correlator in `extension.ts` (lane roots plus workspace folders, the output channel, settings changes). Verify: `npm run it` passes.
+- [ ] 3.3 Changes view tooltip shows the prompt, tool and narration. Verify: `test/timelineView.test.ts` case.
+- [ ] 3.4 Full check: `npm run typecheck`, `npm test`, `npm run it`. Then a manual check: a real Claude Code session editing a recorded file shows the context in the tooltip.
+
+## Workflow follow-up
+
+- File a bead (discovered-from at-3hc.2) for persisting agent context in the log and session files.
+- Archive this change on the PR branch once CI is green and review is done.
