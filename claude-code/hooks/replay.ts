@@ -6,9 +6,9 @@
 // what the hooks write to $.state.
 
 import { Timeline, authoringOrder, backspaceStep, countChanges, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
-import type { Listing, Row, Saved, SavedChange, Tool, View } from '../types';
+import type { CallLinks, Listing, Row, Saved, SavedChange, Tool, View } from '../types';
 
-export type { Listing, Row, Saved, SavedChange, Tool, View };
+export type { CallLinks, Listing, Row, Saved, SavedChange, Tool, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
@@ -35,7 +35,8 @@ export const VIEW_COLUMNS = 400;
  * text. `number` is its place in the session's recording order, from 1, and
  * `tool` the tool that made it, unknown for a change an earlier version saved.
  * `kind` says whether the file was new, and `time` is when the change was
- * recorded, in epoch milliseconds.
+ * recorded, in epoch milliseconds. Its links name the turn and agent that made
+ * it (CallLinks).
  */
 export type Change = {
   id: string;
@@ -47,7 +48,13 @@ export type Change = {
   kind: 'create' | 'modify';
   time: number;
   isTooLarge?: boolean;
-};
+} & CallLinks;
+
+/** The links `x` has, leaving out the ones it lacks. */
+export function linksOf(x: CallLinks): CallLinks {
+  const { turnId, agentId, mainTurnId, agentCallId } = x;
+  return { ...(turnId && { turnId }), ...(agentId && { agentId }), ...(mainTurnId && { mainTurnId }), ...(agentCallId && { agentCallId }) };
+}
 
 /** A change as recorded, before enqueue numbers it. */
 export type NewChange = Omit<Change, 'number'>;
@@ -72,7 +79,7 @@ function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
 
 function changeOf(e: ChangeEvent): Change {
   const { id, number, tool, path, before, after, kind, time, isTooLarge } = e as Event;
-  return { id, number, ...(tool && { tool }), path, before, after, kind, time, ...(isTooLarge && { isTooLarge }) };
+  return { id, number, ...(tool && { tool }), path, before, after, kind, time, ...(isTooLarge && { isTooLarge }), ...linksOf(e as Event) };
 }
 
 export type Playback = {
@@ -165,14 +172,15 @@ export function savedOf(deck: Deck): Saved {
   const changes = [...done, ...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
   return {
     changes: changes.map(
-      ({ id, number, tool, path, kind, time, isTooLarge }): SavedChange => ({
-        id,
-        number,
-        ...(tool && { tool }),
-        path,
-        kind,
-        time,
-        ...(isTooLarge && { isTooLarge }),
+      (c): SavedChange => ({
+        id: c.id,
+        number: c.number,
+        ...(c.tool && { tool: c.tool }),
+        path: c.path,
+        kind: c.kind,
+        time: c.time,
+        ...(c.isTooLarge && { isTooLarge: c.isTooLarge }),
+        ...linksOf(c),
       }),
     ),
     played: done.length,
@@ -205,7 +213,7 @@ export function restore(saved: Saved, changes: Change[], opts: PlayOptions, cwd?
 }
 
 /** The tag `saved` is kept under. savedFrom also reads the tags before it. */
-export const SAVED_SHAPE = 'saved-3';
+export const SAVED_SHAPE = 'saved-4';
 
 /** `saved` as the `saved-2` tag kept it: no change's number or tool. */
 type SavedV2 = { changes: Omit<SavedChange, 'number' | 'tool'>[]; played: number; recorded: number; isPaused: boolean };
@@ -214,14 +222,15 @@ type SavedV2 = { changes: Omit<SavedChange, 'number' | 'tool'>[]; played: number
 type SavedV1 = { changes: { id: string; path: string; isTooLarge?: boolean }[]; recorded: number; isPaused: boolean };
 
 /**
- * The Saved a stored `saved` value holds: as stored under SAVED_SHAPE; under
+ * The Saved a stored `saved` value holds: as stored under SAVED_SHAPE and
+ * under `saved-3`, which kept no links, so its changes have none; under
  * `saved-2`, which kept no numbers or tools, as stored and numbered by place;
  * under `saved-1`, which kept neither kind nor time either, every change
  * waiting, each a modify at time 0, numbered by place; under any other tag,
  * or none, nothing.
  */
 export function savedFrom(stored: { shape: string; value: unknown } | undefined): Saved {
-  if (stored?.shape === SAVED_SHAPE) return stored.value as Saved;
+  if (stored?.shape === SAVED_SHAPE || stored?.shape === 'saved-3') return stored.value as Saved;
   if (stored?.shape === 'saved-2') return numbered(stored.value as SavedV2);
   if (stored?.shape !== 'saved-1') return savedOf(newDeck());
   const was = stored.value as SavedV1;
@@ -437,14 +446,15 @@ function rowOf(e: Event, state: Row['state']): Row {
 /**
  * The pane's list: a row per kept change, oldest first, the change being typed
  * included once the timeline has dropped it; how many changes recorded before
- * the oldest kept one are gone; and the id of the change the pane shows.
+ * the oldest kept one are gone; the id of the change the pane shows; and
+ * whether playback is paused.
  */
 export function listingOf(deck: Deck): Listing {
   const { timeline, playing } = deck;
   // A change being typed that the timeline dropped is older than every change it keeps.
   const outside = playing && !timeline.get(playing.seq) ? [rowOf({ ...eventOf(playing.change, undefined), seq: playing.seq }, 'playing')] : [];
   const rows = [...outside, ...timeline.all().map((e) => rowOf(e as Event, timeline.stateOf(e.seq)))];
-  return { rows, dropped: Math.max(0, (rows[0]?.number ?? 1) - 1), ...(deck.shown && { current: deck.shown.id }) };
+  return { rows, dropped: Math.max(0, (rows[0]?.number ?? 1) - 1), ...(deck.shown && { current: deck.shown.id }), isPaused: deck.isPaused };
 }
 
 /**
@@ -516,6 +526,39 @@ export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPau
     if (file.length > room) file = file.slice(0, Math.max(0, room - 1)) + '…';
   }
   return { lead, dir, file, tail: tail ? ' ' + tail : '' };
+}
+
+/**
+ * The words a chip on a change's call row in the conversation shows: its
+ * state, then `#<number>`. The state follows rowLabel's: Too large for the
+ * current too-large change, Typing or Paused for the one being typed, Next
+ * for one cued, Not typed for a too-large one passed, Replay for one played,
+ * and Queued for one waiting.
+ */
+export function chipLabel(row: Row, at: { isCurrent: boolean; isPaused: boolean }): string {
+  let word: string;
+  if (at.isCurrent && row.isTooLarge) word = 'Too large';
+  else if (row.state === 'playing') word = at.isPaused ? 'Paused' : 'Typing';
+  else if (at.isCurrent && row.state === 'pending') word = 'Next';
+  else if (row.state === 'played') word = row.isTooLarge ? 'Not typed' : 'Replay';
+  else word = 'Queued';
+  return `${word} #${row.number}`;
+}
+
+/** The kept change `id`: one the timeline holds, or the change being typed once it has dropped it. */
+export function changeById(deck: Deck, id: string): Change | undefined {
+  const e = deck.timeline.all().find((x) => (x as Event).id === id);
+  if (e) return changeOf(e);
+  return deck.playing?.change.id === id ? deck.playing.change : undefined;
+}
+
+/**
+ * The conversation rows Show in conversation tries for `change`, in order: the
+ * call that made it, then, for an agent's change, the `Agent` call that
+ * started the agent.
+ */
+export function scrollTargets(change: { id: string } & CallLinks): string[] {
+  return change.agentCallId && change.agentCallId !== change.id ? [change.id, change.agentCallId] : [change.id];
 }
 
 /** `path` relative to the session's working directory, or as given when outside it. */

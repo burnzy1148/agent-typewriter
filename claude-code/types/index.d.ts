@@ -12,7 +12,21 @@ export type Tool = 'Edit' | 'Write';
  * whether the file was new, and `time` is when the change was recorded, in
  * epoch milliseconds.
  */
-export type SavedChange = { id: string; number: number; tool?: Tool; path: string; kind: 'create' | 'modify'; time: number; isTooLarge?: boolean };
+export type SavedChange = { id: string; number: number; tool?: Tool; path: string; kind: 'create' | 'modify'; time: number; isTooLarge?: boolean } & CallLinks;
+
+/**
+ * Where a change came from in the conversation, beside its id, which is the
+ * `tool_use_id` of the call that made it. `turnId` is the turn that call ran
+ * in, of whichever loop made it; `agentId` the subagent or teammate whose loop
+ * made it, absent for the main conversation. For an agent's change,
+ * `mainTurnId` is the main conversation's turn that started the agent at the
+ * top of its chain, and `agentCallId` the `tool_use_id` of the `Agent` (or
+ * `Workflow`) call that started it; for a main conversation change
+ * `mainTurnId` is `turnId` and `agentCallId` is absent. Each is absent when
+ * the plugin did not see it (a change saved by an earlier version, a turn
+ * that began before a reload).
+ */
+export type CallLinks = { turnId?: string; agentId?: string; mainTurnId?: string; agentCallId?: string };
 
 /**
  * Every change the deck keeps, oldest first (the played ones, the one being
@@ -57,10 +71,12 @@ export type Row = {
 
 /**
  * The pane's list of kept changes, oldest first; how many changes recorded
- * before the oldest of them were dropped; and the id of the change the pane
- * shows, which is being typed, cued to play next, or done.
+ * before the oldest of them were dropped; the id of the change the pane
+ * shows, which is being typed, cued to play next, or done; and whether
+ * playback is paused, which the chips on the conversation's call rows read
+ * here rather than from `view`, which changes on every tick while typing.
  */
-export type Listing = { rows: Row[]; dropped: number; current?: string };
+export type Listing = { rows: Row[]; dropped: number; current?: string; isPaused: boolean };
 
 declare module 'claude-code' {
   interface PluginState {

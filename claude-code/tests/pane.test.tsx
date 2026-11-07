@@ -1,6 +1,6 @@
 import { expect, test, type Engine } from 'claude-code/testing';
 
-import { PANE_ID, start, world } from './world';
+import { PANE_ID, seed, start, world } from './world';
 
 // The plugin draws nothing on the terminal; that is the VS Code extension's.
 const SURFACES = ['desktop', 'vscode', 'mobile'] as const;
@@ -284,41 +284,13 @@ test('a file too large to replay is named and skipped', async ($, on) => {
   expect((await look($, 'desktop')).code?.source).toBe('n\n');
 });
 
-/**
- * Answers the plugin's reads of `saved` and of its `text` members with what an
- * earlier load stored, until it writes them itself, as a reload finds them.
- */
-function seed(on: Parameters<typeof world>[0], saved: unknown, texts: Record<string, string> = {}) {
-  let isSavedWritten = false;
-  const written = new Set<string>();
-  on('state.set', { plugin: 'agent-typewriter', key: 'saved' }, (_, e, next) => {
-    isSavedWritten = true;
-    return next(e);
-  });
-  on('state.set', { plugin: 'agent-typewriter', key: 'text' }, (_, e, next) => {
-    written.add(String(e.id));
-    return next(e);
-  });
-  on('state.get', { plugin: 'agent-typewriter', key: 'saved' }, async (_, e, next) => {
-    const stored = await next(e);
-    if (isSavedWritten || stored.deny !== undefined) return stored;
-    return { value: { value: saved, version: stored.value.version } };
-  });
-  on('state.get', { plugin: 'agent-typewriter', key: 'text' }, async (_, e, next) => {
-    const stored = await next(e);
-    const id = String(e.id);
-    if (written.has(id) || stored.deny !== undefined || !(id in texts)) return stored;
-    return { value: { value: texts[id], version: stored.value.version } };
-  });
-}
-
 const R = { id: 'r', number: 1, tool: 'Write', path: '/w/r.ts', kind: 'create', time: 1_000 } as const;
 const S = { id: 's', number: 2, tool: 'Edit', path: '/w/s.ts', kind: 'modify', time: 2_000 } as const;
 const RS_TEXTS = { 'r:before': '', 'r:after': 'kept\n', 's:before': 'old\n', 's:after': 'new\n' };
 
 test('after a reload, the saved changes play, the one that was being typed from its start', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-3', value: { changes: [R, S], played: 0, recorded: 2, isPaused: false } }, RS_TEXTS);
+  seed(on, { shape: 'saved-4', value: { changes: [R, S], played: 0, recorded: 2, isPaused: false } }, RS_TEXTS);
   await start($);
   await w.clock.advance(60);
   expect((await look($, 'desktop')).name).toBe('r.ts');
@@ -332,7 +304,7 @@ test('after a reload, the saved changes play, the one that was being typed from 
 test('after a reload, played changes stay played with their texts, kind and time, and only the waiting ones play', async ($, on) => {
   const w = world(on);
   const saved = { changes: [R, S], played: 1, recorded: 2, isPaused: false };
-  seed(on, { shape: 'saved-3', value: saved }, RS_TEXTS);
+  seed(on, { shape: 'saved-4', value: saved }, RS_TEXTS);
   await start($);
   await w.clock.settle();
   expect(w.saved).toEqual(saved);
@@ -349,7 +321,7 @@ test('after a reload, played changes stay played with their texts, kind and time
 
 test('after a reload with every change played, the pane shows the last one done and types nothing', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-3', value: { changes: [R, S], played: 2, recorded: 2, isPaused: false } }, RS_TEXTS);
+  seed(on, { shape: 'saved-4', value: { changes: [R, S], played: 2, recorded: 2, isPaused: false } }, RS_TEXTS);
   await start($);
   await w.clock.advance(5_000);
 
@@ -380,7 +352,7 @@ test('after a reload, changes saved by the earlier saved-1 shape play', async ($
 
 test('after a reload, a pause is kept and the next change is shown before it plays, marked Next', async ($, on) => {
   const w = world(on);
-  seed(on, { shape: 'saved-3', value: { changes: [R, S], played: 1, recorded: 2, isPaused: true } }, RS_TEXTS);
+  seed(on, { shape: 'saved-4', value: { changes: [R, S], played: 1, recorded: 2, isPaused: true } }, RS_TEXTS);
   await start($);
   await w.clock.advance(5_000);
 

@@ -2,23 +2,23 @@
 
 ## 1. Turns and agents on each change
 
-- [ ] 1.1 In `claude-code/hooks/replay.ts`, add optional `turnId`, `agentId`, `mainTurnId` and `agentCallId` to `Change`, and copy them in `changeOf()`. In `claude-code/types/index.d.ts`, add them to `SavedChange` with their meaning. Make `savedOf()` save them, move `SAVED_SHAPE` to `saved-4`, and make `savedFrom()` read `saved-3` as stored. Unit-test in `test/claudeCodeReplay.test.ts` that the fields survive enqueue, `savedOf`, `restore`, and a `saved-3` value loads without them. Verify with `npm test`.
-- [ ] 1.2 In `claude-code/hooks/register.tsx`, track each loop's running turn on `turn.start` (dropping an agent's on `turn.complete`) and each agent's main turn and `Agent` call on `agent.spawn`, a nested agent inheriting its parent's. Make `record()` stamp the four fields. Add plugin tests in `claude-code/tests/recording.test.tsx`: a main-loop change, a subagent's change, a nested agent's change, and a reload keeping the fields. Verify with `npm run check:claude-code`.
+- [x] 1.1 In `claude-code/hooks/replay.ts`, add optional `turnId`, `agentId`, `mainTurnId` and `agentCallId` to `Change`, and copy them in `changeOf()`. In `claude-code/types/index.d.ts`, add them to `SavedChange` with their meaning. Make `savedOf()` save them, move `SAVED_SHAPE` to `saved-4`, and make `savedFrom()` read `saved-3` as stored. Unit-test in `test/claudeCodeReplay.test.ts` that the fields survive enqueue, `savedOf`, `restore`, and a `saved-3` value loads without them. Verify with `npm test`.
+- [x] 1.2 In `claude-code/hooks/register.tsx`, track each loop's running turn on `turn.start` (dropping an agent's on `turn.complete`) and each agent's main turn and `Agent` call on `agent.spawn`, a nested agent inheriting its parent's. Make `record()` stamp the four fields. Add plugin tests in `claude-code/tests/recording.test.tsx`: a main-loop change, a subagent's change, a nested agent's change, and a reload keeping the fields. Verify with `npm run check:claude-code`.
 
 ## 2. Show in conversation
 
-- [ ] 2.1 In `replay.ts`, add `scrollTargets(change)` (the call, then the `Agent` call for an agent's change) and a lookup of a kept change by id. Unit-test both. Verify with `npm test`.
-- [ ] 2.2 In `register.tsx`, add a Show in conversation button to the header while a change is shown, and a ↗ button keyed `reveal:<id>` beside each list row, narrowing the row label to fit. A press scrolls to the first target that lands and changes no playback; when none lands, the Changes line shows "That call is no longer in the conversation." until the next press in the pane. Add plugin tests in `claude-code/tests/pane.test.tsx`: the header button only while a change is shown, a ↗ per row on every surface but the terminal, a press leaves playback and the list as they were, the note when the scroll does not land and its clearing. Verify with `npm run check:claude-code`.
+- [x] 2.1 In `replay.ts`, add `scrollTargets(change)` (the call, then the `Agent` call for an agent's change) and a lookup of a kept change by id. Unit-test both. Verify with `npm test`.
+- [x] 2.2 In `register.tsx`, add a Show in conversation button to the header while a change is shown, and a ↗ button keyed `reveal:<id>` beside each list row, narrowing the row label to fit. A press scrolls to the first target that lands and changes no playback; when none lands, the Changes line shows "That call is no longer in the conversation." until the next press in the pane. Add plugin tests in `claude-code/tests/pane.test.tsx`: the header button only while a change is shown, a ↗ per row on every surface but the terminal, a press leaves playback and the list as they were, the note when the scroll does not land and its clearing. Verify with `npm run check:claude-code`.
 
 ## 3. The chip
 
-- [ ] 3.1 In `replay.ts`, add `chipLabel(row, at)`: Replay, Typing, Paused, Next, Queued, Too large or Not typed, then `#<number>`. Unit-test each state. Verify with `npm test`.
-- [ ] 3.2 In `register.tsx`, add a `ui.render` hook on `ToolUse` that wraps the engine's row with a chip keyed `chip:<id>` for an `Edit` or `Write` call whose change is kept, and passes the event on untouched otherwise and on the terminal. Pressing the chip seeks to the change, makes the list follow again, and opens the pane. Add plugin tests: the chip's label through played, typing, paused, next, queued and too-large states; the engine's row kept beside it; no chip for a failed call, a dropped change, a `Bash` call, or on the terminal; pressing it opens the pane and plays from the change, and while paused cues it. Verify with `npm run check:claude-code`.
+- [x] 3.1 In `replay.ts`, add `chipLabel(row, at)`: Replay, Typing, Paused, Next, Queued, Too large or Not typed, then `#<number>`. Unit-test each state. Verify with `npm test`.
+- [x] 3.2 In `register.tsx`, add a `ui.render` hook on `ToolUse` that wraps the engine's row with a chip keyed `chip:<id>` for an `Edit` or `Write` call whose change is kept, and passes the event on untouched otherwise and on the terminal. Pressing the chip seeks to the change, makes the list follow again, and opens the pane. Add plugin tests: the chip's label through played, typing, paused, next, queued and too-large states; the engine's row kept beside it; no chip for a failed call, a dropped change, a `Bash` call, or on the terminal; pressing it opens the pane and plays from the change, and while paused cues it. Verify with `npm run check:claude-code`.
 
 ## 4. Docs and integration
 
-- [ ] 4.1 In `claude-code/README.md`, describe Show in conversation and the chip. Check `site/` for pages that describe the plugin's pane and update them to match. Verify by reading the sections.
-- [ ] 4.2 Run `npm run typecheck`, `npm test`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-turn-links --strict`. All pass.
+- [x] 4.1 In `claude-code/README.md`, describe Show in conversation and the chip. Check `site/` for pages that describe the plugin's pane and update them to match. Verify by reading the sections.
+- [x] 4.2 Run `npm run typecheck`, `npm test`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-turn-links --strict`. All pass.
 
 ## Workflow follow-up
 

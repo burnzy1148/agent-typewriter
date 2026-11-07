@@ -17,10 +17,13 @@ import {
   MAX_REPLAY_BYTES,
   SAVED_SHAPE,
   TICK_MS,
+  changeById,
+  chipLabel,
   enqueue,
   finish,
   frame,
   isUnchanged,
+  linksOf,
   listWindow,
   listingOf,
   newDeck,
@@ -31,12 +34,14 @@ import {
   rowLabel,
   savedFrom,
   savedOf,
+  scrollTargets,
   scrolledTop,
   seek,
   skipToLatest,
   tick,
   togglePause,
   viewOf,
+  type CallLinks,
   type Change,
   type Deck,
   type ListGeometry,
@@ -53,6 +58,10 @@ const TERMINAL_POINTER =
 const GUTTER = 8;
 /** Columns a row keeps free of its label, for a desktop's button padding. */
 const ROW_MARGIN = 4;
+/** Columns the ↗ beside a row takes, with the gap before it and its padding. */
+const REVEAL_COLUMNS = 4;
+/** What the pane says when Show in conversation finds no row to scroll to. */
+const GONE_NOTE = 'That call is no longer in the conversation.';
 /** The share of the body's rows the changes list may take. */
 const LIST_SHARE = 0.4;
 
@@ -62,7 +71,7 @@ const LIST_SHARE = 0.4;
 const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
 const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
 const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-1' });
-const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-1' });
+const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-2' });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -81,6 +90,12 @@ type Live = {
   list?: ListGeometry;
   /** Writes to $.state, one after another, so a later state never lands first. */
   writes: Promise<void>;
+  /** The running turn of each loop, by its agent id, '' for the main conversation. */
+  turns: Map<string, string>;
+  /** Where each agent hangs off the main conversation: the turn and the `Agent` call that started the top of its chain. */
+  agents: Map<string, { mainTurnId?: string; agentCallId?: string }>;
+  /** A note the pane shows on its Changes line until the next press in it. */
+  note?: string;
 };
 
 const text = { plugin: 'agent-typewriter', key: 'text' } as const;
@@ -150,6 +165,13 @@ async function snapshot($: EngineInterface, path: string, shouldRead: boolean): 
   return { text: normalizeEol(await $.fs.read(path)) };
 }
 
+/** The turn and agent a call in the loop of `agentId` (none for the main conversation) belongs to, as far as the plugin saw them. */
+function linksFor(live: Live, agentId: string | undefined): CallLinks {
+  const turnId = live.turns.get(agentId ?? '');
+  if (agentId === undefined) return linksOf({ turnId, mainTurnId: turnId });
+  return linksOf({ turnId, agentId, ...live.agents.get(agentId) });
+}
+
 /** Runs a file tool, capturing "before" when the call starts and "after" once it succeeded. */
 async function record<R extends { deny?: string; isError?: boolean }>(
   $: EngineInterface,
@@ -157,8 +179,10 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   tool: Tool,
   path: string,
   id: string,
+  agentId: string | undefined,
   run: () => Promise<R>,
 ): Promise<R> {
+  const links = linksFor(live, agentId);
   const before = await snapshot($, path, true);
   const ran = await run();
   if (ran.deny !== undefined || ran.isError) return ran;
@@ -166,7 +190,7 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   const after = await snapshot($, path, !before || 'text' in before);
   if (!after) return ran;
 
-  const recorded = { id, tool, path, kind: before ? 'modify' : 'create', time: await $.clock.now() } as const;
+  const recorded = { id, tool, path, kind: before ? 'modify' : 'create', time: await $.clock.now(), ...links } as const;
   let change: NewChange;
   if ('text' in after && (!before || 'text' in before)) {
     change = { ...recorded, before: before?.text ?? '', after: after.text };
@@ -208,16 +232,38 @@ async function recordIfShown<R extends { deny?: string; isError?: boolean }>(
   tool: Tool,
   path: string,
   id: string,
+  agentId: string | undefined,
   run: () => Promise<R>,
 ): Promise<R> {
   if (await isTerminalOnly($)) return run();
-  return record($, live, tool, path, id, run);
+  return record($, live, tool, path, id, agentId, run);
 }
 
-/** Applies a control's action to the deck. */
+/** Applies a control's action to the deck. Any press clears the pane's note. */
 function act($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
+  live.note = undefined;
   fn(live.deck);
   sync($, live);
+}
+
+/**
+ * Scrolls the conversation to the call that made change `id`, or for an
+ * agent's change to the `Agent` call when the call's own row is not there.
+ * When neither is, the pane says so. Playback does not move.
+ */
+async function reveal($: EngineInterface, live: Live, id: string): Promise<void> {
+  const hadNote = live.note !== undefined;
+  live.note = undefined;
+  const change = changeById(live.deck, id);
+  for (const requestId of change ? scrollTargets(change) : []) {
+    const r = await $.ui.scroll({ to: { requestId }, block: 'center' }).catch(() => undefined);
+    if (r && r.deny === undefined) {
+      if (hadNote) $.ui.invalidate('ui.render');
+      return;
+    }
+  }
+  live.note = GONE_NOTE;
+  $.ui.invalidate('ui.render');
 }
 
 /** Applies a control's action that moves playback; the changes list follows playback again. */
@@ -240,6 +286,8 @@ export const register: Register = (on, options) => {
     viewJson: '',
     listingJson: '',
     writes: Promise.resolve(),
+    turns: new Map(),
+    agents: new Map(),
   };
 
   on('session.start', async ($, e, next) => {
@@ -256,14 +304,65 @@ export const register: Register = (on, options) => {
     return { text: 'Agent Typewriter pane opened.' };
   });
 
+  // Which turn each loop is in, and where each agent hangs off the main
+  // conversation, so a change can name both. Observed only.
+  on('turn.start', ($, e, next) => {
+    live.turns.set(e.agentId ?? '', e.turnId);
+    return next(e);
+  });
+  on('turn.complete', ($, e, next) => {
+    if (e.agentId !== undefined) live.turns.delete(e.agentId);
+    return next(e);
+  });
+  on('agent.spawn', async ($, e, next) => {
+    // Read before the agent runs: a nested agent takes the entry of the agent it was started in.
+    const at =
+      e.parentAgentId === undefined
+        ? { mainTurnId: live.turns.get(''), agentCallId: e.tool_use_id || undefined }
+        : { ...live.agents.get(e.parentAgentId) };
+    const started = await next(e);
+    if (started.agentId !== undefined) live.agents.set(started.agentId, at);
+    return started;
+  });
+
   // A failure while recording never blocks the tool: the handler runs it, or
   // hands back the result it already has.
-  on('tool.call', { tool: 'Edit' }, ($, e, next) => recordIfShown($, live, 'Edit', e.file_path, e.tool_use_id, () => next(e))).catch(
-    ($, e, next) => next(e),
-  );
-  on('tool.call', { tool: 'Write' }, ($, e, next) => recordIfShown($, live, 'Write', e.file_path, e.tool_use_id, () => next(e))).catch(
-    ($, e, next) => next(e),
-  );
+  on('tool.call', { tool: 'Edit' }, ($, e, next) =>
+    recordIfShown($, live, 'Edit', e.file_path, e.tool_use_id, e.agentId, () => next(e)),
+  ).catch(($, e, next) => next(e));
+  on('tool.call', { tool: 'Write' }, ($, e, next) =>
+    recordIfShown($, live, 'Write', e.file_path, e.tool_use_id, e.agentId, () => next(e)),
+  ).catch(($, e, next) => next(e));
+
+  // In the conversation, a kept change's call row keeps the engine's drawing
+  // and gains a chip that plays from the change. Every other row, and the
+  // terminal, are left as the engine draws them.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.surface === 'terminal' || (e.props.tool !== 'Edit' && e.props.tool !== 'Write')) return next(e);
+    const l = await read($, listing);
+    const row = l.rows.find((r) => r.id === e.props.tool_use_id);
+    if (!row) return next(e);
+    const drawn = await next(e);
+    const { Box, Button } = $.ui.resolve(e);
+    const label = chipLabel(row, { isCurrent: row.id === l.current, isPaused: l.isPaused });
+    return (
+      <Box flexDirection="column">
+        {drawn}
+        <Box flexDirection="row">
+          <Button
+            key={`chip:${row.id}`}
+            label={`Play from #${row.number} in the typewriter pane`}
+            onPress={async () => {
+              move($, live, (d) => seek(d, row.id, live.opts));
+              await $.ui.open({ id: PANE, title: TITLE });
+            }}
+          >
+            {label}
+          </Button>
+        </Box>
+      </Box>
+    );
+  });
 
   // The pane's tree fits its body, so the only thing to scroll is the changes
   // list, which the plugin draws a window of: it moves that window instead.
@@ -316,6 +415,11 @@ export const register: Register = (on, options) => {
             {v.status}
             {queued}
           </Text>
+          {current !== -1 && (
+            <Button key="reveal" onPress={() => reveal($, live, l.rows[current]!.id)}>
+              Show in conversation
+            </Button>
+          )}
         </Box>
         {shown ? (
           <Code source={shown.source} path={v.path} startLine={shown.startLine} wrap="truncate-end" />
@@ -342,26 +446,32 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             <Box flexDirection="row" gap={1}>
               <Text bold>Changes</Text>
-              <Text dimColor>Pick a change to play from it</Text>
+              <Text dimColor>{live.note ?? 'Pick a change to play from it'}</Text>
             </Box>
             {isDroppedShown && (
               <Text dimColor>{`${l.dropped} older ${l.dropped === 1 ? 'change was' : 'changes were'} dropped to stay within the limit.`}</Text>
             )}
             {rowsShown.map((row) => {
               const isCurrent = row.id === l.current;
-              const label = rowLabel(row, relativePath(row.path, live.cwd), { isCurrent, isPaused }, bodyColumns - ROW_MARGIN);
+              const width = bodyColumns - ROW_MARGIN - REVEAL_COLUMNS;
+              const label = rowLabel(row, relativePath(row.path, live.cwd), { isCurrent, isPaused }, width);
               return (
-                <Button
-                  key={`change:${row.id}`}
-                  plain
-                  dimColor={row.state === 'pending' && !isCurrent}
-                  onPress={() => move($, live, (d) => seek(d, row.id, live.opts))}
-                >
-                  {label.lead}
-                  {label.dir !== '' && <Text dimColor>{label.dir}</Text>}
-                  <Text bold>{label.file}</Text>
-                  {label.tail}
-                </Button>
+                <Box key={`row:${row.id}`} flexDirection="row" gap={1}>
+                  <Button
+                    key={`change:${row.id}`}
+                    plain
+                    dimColor={row.state === 'pending' && !isCurrent}
+                    onPress={() => move($, live, (d) => seek(d, row.id, live.opts))}
+                  >
+                    {label.lead}
+                    {label.dir !== '' && <Text dimColor>{label.dir}</Text>}
+                    <Text bold>{label.file}</Text>
+                    {label.tail}
+                  </Button>
+                  <Button key={`reveal:${row.id}`} plain dimColor label={`Show #${row.number} in the conversation`} onPress={() => reveal($, live, row.id)}>
+                    ↗
+                  </Button>
+                </Box>
               );
             })}
           </Box>
