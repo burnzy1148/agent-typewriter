@@ -1,4 +1,5 @@
 import { readSide, rebind, textChars, type ReadText } from './changeText';
+import type { AgentContext } from './agentContext';
 import type { HighlightClear, HighlightClears } from './highlights';
 
 export type ChangeKind = 'create' | 'modify' | 'delete' | 'rename';
@@ -28,6 +29,12 @@ export interface ChangeEvent {
   linesRemoved: number;
   /** The lane (recorded checkout) it belongs to; absent for the default lane ''. */
   lane?: string;
+  /**
+   * What the agent was doing when it made the change, attached after it was
+   * recorded (see agentContext.ts). Kept in memory only: not in the saved log
+   * or session files.
+   */
+  agent?: AgentContext;
 }
 
 export type NewChangeEvent = Omit<ChangeEvent, 'seq'>;
@@ -136,6 +143,21 @@ export class Timeline {
     this.trim();
     this.emit();
     return event;
+  }
+
+  /**
+   * Attaches agent context to changes in the buffer, by seq, and tells
+   * listeners once. Their text, order and playback state stay as they are.
+   */
+  annotate(entries: ReadonlyArray<{ seq: number; agent: AgentContext }>): void {
+    let changed = false;
+    for (const { seq, agent } of entries) {
+      const idx = this.indexOfSeq(seq);
+      if (idx < 0) continue;
+      this.events[idx] = rebind(this.events[idx], { agent });
+      changed = true;
+    }
+    if (changed) this.emit();
   }
 
   // ------------------------------------------------------------- lanes
@@ -636,6 +658,13 @@ export interface Session {
 
 export class SessionFormatError extends Error {}
 
+function withoutAgent(e: ChangeEvent): ChangeEvent {
+  if (e.agent === undefined) return e;
+  const out = rebind(e, {});
+  delete out.agent;
+  return out;
+}
+
 const KINDS: readonly ChangeKind[] = ['create', 'modify', 'delete', 'rename'];
 
 /**
@@ -661,7 +690,8 @@ export function toSession(timeline: Timeline, maxTextChars = Infinity): { sessio
       version: SESSION_VERSION,
       savedAt: Date.now(),
       cursor: timeline.cursor,
-      events: kept,
+      // Agent context is rebuilt from the transcripts, not saved.
+      events: kept.map(withoutAgent),
       ...(timeline.highlightClears.length > 0 && { highlightsFrom: [...timeline.highlightClears] }),
       ...(lanes && {
         lanes: ids.filter((id) => id !== '').map((id) => savedLane(timeline.laneInfo(id) ?? { id, label: id, root: '', color: 0, recording: false })),
