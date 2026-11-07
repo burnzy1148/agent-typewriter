@@ -14,7 +14,7 @@ The extension replays what changed but not why. When Claude Code made the change
 - **Where transcripts are found.** In `$CLAUDE_CONFIG_DIR/projects`, or `~/.claude/projects` when that variable is not set. Only project folders for a recorded checkout, a folder above it, or a folder inside it are read, plus their subagent transcripts. The extension only reads them, and only files written to around the time of a change it has not matched yet.
 - **The Changes view shows it.** A change's tooltip shows the turn's prompt, the tool call and what the agent said.
 - **Context is rebuilt after a reload.** It is kept in memory, not in the saved timeline or in saved session files. After a reload, restored changes are matched again from the transcripts that still exist.
-- **New setting `agentTypewriter.agentContext`**, on by default. Turning it off stops all transcript reading.
+- **New setting `agentTypewriter.agentContext`**, on by default. Turning it off stops all transcript reading. Like every other setting, it can also be set in `.agent-typewriter.json`.
 
 Out of scope:
 - Captions and chapters themselves (at-3hc.3, at-3hc.4). This change only provides the data they read.
@@ -38,5 +38,6 @@ None. Recording, the timeline, playback and persistence behave as before; the co
 - New `src/agentContext.ts`: the `AgentContext` type, the matching rules (pure), and the correlator that watches the timeline and attaches context.
 - `src/timeline.ts`: an optional `agent` field on `ChangeEvent`, a method to attach context to recorded changes, and `toSession` leaving the field out.
 - `src/timelineView.ts`: the tooltip.
-- `src/config.ts`, `src/extension.ts`, `package.json`, `README.md`: the setting and the wiring.
+- `src/config.ts`, `src/repoSettings.ts`, `schemas/agent-typewriter.schema.json`, `src/extension.ts`, `package.json`: the setting and the wiring.
+- `site/src/content/docs/docs/panels.md`: the tooltip and the setting in the Changes view docs.
 - Tests: unit tests for transcript parsing, project-folder selection, matching, and the correlator; a Changes view tooltip test.

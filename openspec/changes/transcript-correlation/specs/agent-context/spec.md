@@ -101,7 +101,7 @@ A change's tooltip in the Changes view SHALL show, when it has agent context, th
 - **THEN** its tooltip shows the turn's prompt, `Edit`, and what the agent said before the call
 
 ### Requirement: Agent context setting
-The setting `agentTypewriter.agentContext` SHALL turn agent context on or off, on by default, and SHALL apply without a restart. While it is off, no transcript SHALL be read.
+The setting `agentTypewriter.agentContext` SHALL turn agent context on or off, on by default, SHALL apply without a restart, and SHALL be accepted in the repository settings file. While it is off, no transcript SHALL be read.
 
 #### Scenario: Turned off
 - **WHEN** `agentTypewriter.agentContext` is `false` and Claude Code edits a recorded file
