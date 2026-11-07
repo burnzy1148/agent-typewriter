@@ -2755,9 +2755,10 @@ async function edits(c: Context): Promise<void> {
     assert.equal(event.agent!.turn.prompt, 'Add the agent context fixture');
     assert.deepEqual([event.agent!.tool?.id, event.agent!.tool?.name, event.agent!.via], ['toolu_it1', 'Write', 'edit']);
     assert.equal(event.agent!.narration, 'Writing the fixture.');
-    const tip = new ChangeItem(event, 'played').tooltip as vscode.MarkdownString;
-    assert.match(tip.value, /Add the agent context fixture/);
-    assert.match(tip.value, /Writing the fixture/);
+    const tip = (new ChangeItem(event, 'played').tooltip as vscode.MarkdownString).value;
+    assert.doesNotMatch(tip, /&nbsp;/);
+    assert.match(tip, /\*\*Prompt:\*\* Add the agent context fixture/);
+    assert.match(tip, /\*\*Agent:\*\* Writing the fixture/);
     await until('agent context playback', idle);
     console.log('[it] agent context ok');
   }

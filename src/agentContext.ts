@@ -228,8 +228,10 @@ export class Correlator {
       }
     }
     timeline.annotate(found);
-    index.prune(now - FORGET_MS);
+    // Not while changes wait: after a restore they are old, and pruning would drop the
+    // transcripts the next retry reads again.
     if (left) this.schedule(RETRY_MS);
+    else index.prune(now - FORGET_MS);
   }
 
   private settle(key: string): void {

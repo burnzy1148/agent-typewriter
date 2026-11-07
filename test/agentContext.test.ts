@@ -138,6 +138,7 @@ test('the Changes view tooltip shows the prompt, tool and narration', () => {
   t.push(ev('a.ts', T));
   t.annotate([{ seq: 1, agent: { ...ctx, subagent: { id: 'x', type: 'helper' } } }]);
   const tip = (new ChangeItem(t.get(1)!, 'pending').tooltip as { value: string }).value;
+  assert.doesNotMatch(tip, /&nbsp;/);
   assert.match(tip, /\*\*Prompt:\*\* Fix it/);
   assert.match(tip, /\*\*Tool:\*\* Edit · a\\\.ts \\\(subagent helper\\\)/);
   assert.match(tip, /\*\*Agent:\*\* Renaming\\\./);
@@ -287,6 +288,19 @@ test('the 30 seconds count from when the change reached the timeline, not from i
   source.list = [bash('b1', T - 100, T + 500)];
   await clock.advance(RETRY_MS, correlator);
   assert.equal(timeline.get(1)!.agent?.tool?.id, 'b1');
+  correlator.dispose();
+});
+
+test('transcripts are pruned only once no change is waiting', async () => {
+  const { clock, timeline, source, correlator } = harness();
+  timeline.push(ev('a.ts', T));
+  await clock.advance(300 + RETRY_MS * 3, correlator);
+  assert.ok(source.refreshes.length >= 3);
+  assert.deepEqual(source.pruned, []);
+  source.list = [edit('e1', '/w/a.ts', T - 100, T + 50)];
+  await clock.advance(RETRY_MS, correlator);
+  assert.equal(timeline.get(1)!.agent?.tool?.id, 'e1');
+  assert.equal(source.pruned.length, 1);
   correlator.dispose();
 });
 

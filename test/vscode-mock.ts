@@ -281,8 +281,9 @@ export class MarkdownString {
     this.value += text;
     return this;
   }
+  /** Like VS Code's: markdown characters escaped, and each space or tab as &nbsp;. */
   appendText(text: string): this {
-    this.value += text.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, '\\$&');
+    this.value += text.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, '\\$&').replace(/[ \t]/g, '&nbsp;');
     return this;
   }
   appendCodeblock(code: string, language = ''): this {

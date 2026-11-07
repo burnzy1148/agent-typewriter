@@ -50,18 +50,21 @@ function shorten(s: string, max = TOOLTIP_TEXT): string {
   return flat.length <= max ? flat : flat.slice(0, max - 1) + '\u2026';
 }
 
+/**
+ * Agent text as literal markdown. Not `appendText`: VS Code's writes each space as `&nbsp;`,
+ * so a long prompt would never wrap in the hover.
+ */
+function literal(s: string): string {
+  return shorten(s).replace(/[\\`*_{}[\]()#+\-.!|<>~&]/g, '\\$&');
+}
+
 /** The prompt, tool call and narration behind a change, under its summary. */
 function appendAgent(md: vscode.MarkdownString, agent: AgentContext): void {
-  md.appendMarkdown('\n\n---\n\n**Prompt:** ');
-  md.appendText(shorten(agent.turn.prompt));
   const tool = agent.tool ? [agent.tool.name, agent.tool.detail].filter(Boolean).join(' · ') : 'a command';
   const by = agent.subagent ? ` (subagent${agent.subagent.type ? ` ${agent.subagent.type}` : ''})` : '';
-  md.appendMarkdown('  \n**Tool:** ');
-  md.appendText(shorten(tool + by));
-  if (agent.narration) {
-    md.appendMarkdown('  \n**Agent:** ');
-    md.appendText(shorten(agent.narration));
-  }
+  md.appendMarkdown(`\n\n---\n\n**Prompt:** ${literal(agent.turn.prompt)}`);
+  md.appendMarkdown(`  \n**Tool:** ${literal(tool + by)}`);
+  if (agent.narration) md.appendMarkdown(`  \n**Agent:** ${literal(agent.narration)}`);
 }
 
 /** A lane's icon: a dot in its color, or an outline for the default lane, which has none. */
