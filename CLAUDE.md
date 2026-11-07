@@ -31,7 +31,7 @@ A VS Code extension that watches files change on disk and replays each change as
 
 ### Shared core
 
-The Claude Code plugin reuses `src/planner.ts`, `src/typingChunks.ts` and `src/timeline.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes, with its declarations in `core.d.mts`, generated from the ones tsc emits. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit both files; CI fails on a stale bundle. To share another module, add it to the bundle's entry.
+The Claude Code plugin reuses `src/planner.ts`, `src/typingChunks.ts`, `src/timeline.ts`, and the playback settings resolvers in `src/playbackSettings.ts`, `src/pace.ts` and `src/readPause.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes, with its declarations in `core.d.mts`, generated from the ones tsc emits. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit both files; CI fails on a stale bundle. To share another module, add it to the bundle's entry.
 
 ## Rules that must not break
 
