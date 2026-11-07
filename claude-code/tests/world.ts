@@ -116,3 +116,31 @@ export function kept(w: World) {
 export async function start($: Engine, surface: 'terminal' | 'desktop' | 'vscode' = 'desktop') {
   await $.session.start({ cwd: '/w', surface, isInteractive: true });
 }
+
+/**
+ * Answers the plugin's reads of `saved` and of its `text` members with what an
+ * earlier load stored, until it writes them itself, as a reload finds them.
+ */
+export function seed(on: On, saved: unknown, texts: Record<string, string> = {}) {
+  let isSavedWritten = false;
+  const written = new Set<string>();
+  on('state.set', { plugin: 'agent-typewriter', key: 'saved' }, (_, e, next) => {
+    isSavedWritten = true;
+    return next(e);
+  });
+  on('state.set', { plugin: 'agent-typewriter', key: 'text' }, (_, e, next) => {
+    written.add(String(e.id));
+    return next(e);
+  });
+  on('state.get', { plugin: 'agent-typewriter', key: 'saved' }, async (_, e, next) => {
+    const stored = await next(e);
+    if (isSavedWritten || stored.deny !== undefined) return stored;
+    return { value: { value: saved, version: stored.value.version } };
+  });
+  on('state.get', { plugin: 'agent-typewriter', key: 'text' }, async (_, e, next) => {
+    const stored = await next(e);
+    const id = String(e.id);
+    if (written.has(id) || stored.deny !== undefined || !(id in texts)) return stored;
+    return { value: { value: texts[id], version: stored.value.version } };
+  });
+}

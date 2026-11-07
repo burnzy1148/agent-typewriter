@@ -5,6 +5,9 @@ import {
   MAX_WAITING,
   MAX_WAITING_CHARS,
   SAVED_SHAPE,
+  changeById,
+  chipLabel,
+  scrollTargets,
   TICK_MS,
   enqueue,
   finish,
@@ -396,7 +399,7 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
   const d = deckOf({ ...change('a', '', 'a\n'), tool: 'Write', kind: 'create', time: 5 });
   playOut(d);
   const saved = savedOf(d);
-  assert.equal(SAVED_SHAPE, 'saved-3');
+  assert.equal(SAVED_SHAPE, 'saved-4');
   assert.deepEqual(savedFrom({ shape: SAVED_SHAPE, value: saved }), saved);
   const v2 = {
     changes: [
@@ -738,6 +741,7 @@ test('a seek while paused survives a reload: still paused, the picked change cue
     rows: listingOf(d).rows,
     dropped: 0,
     current: 'b',
+    isPaused: true,
   });
   togglePause(back);
   assert.deepEqual(startOrder(back), ['b', 'c', 'd']);
@@ -766,8 +770,11 @@ test('the listing has a row per kept change with its state, counts and the chang
     ],
     dropped: 0,
     current: 'c',
+    isPaused: false,
   });
-  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0 });
+  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0, isPaused: false });
+  togglePause(d);
+  assert.equal(listingOf(d).isPaused, true);
 });
 
 test('the listing counts the changes dropped before the oldest kept one', () => {
@@ -839,4 +846,71 @@ test('a scroll moves the list by its kind: a wheel over the list by its ticks, a
   assert.equal(key(-100), 2, 'a long scroll up by keys is a page');
   assert.equal(scrolledTop({ by: -50, bodyRows: 20, contentRows: 19, pointerRow: 15 }, list), 0);
   assert.equal(scrolledTop({ by: 1, bodyRows: 20, contentRows: 19 }, { ...list, count: 8 }), undefined, 'a list that fits has nothing to scroll');
+});
+
+const MAIN = { turnId: 't1', mainTurnId: 't1' } as const;
+const AGENT = { turnId: 'ta', agentId: 'ag', mainTurnId: 't1', agentCallId: 'toolu_agent' } as const;
+
+test('a change keeps its turn and agent through the timeline, saved state and a reload', () => {
+  const changes = [{ ...change('a', '', 'a\n'), ...MAIN }, { ...change('b', 'b\n', 'B\n'), ...AGENT }, change('c', 'c\n', 'C\n')];
+  const d = deckOf(...changes);
+  tick(d, FAST);
+  const saved = savedOf(d);
+  assert.deepEqual(
+    saved.changes.map(({ id, turnId, agentId, mainTurnId, agentCallId }) => ({ id, turnId, agentId, mainTurnId, agentCallId })),
+    [
+      { id: 'a', ...MAIN, agentId: undefined, agentCallId: undefined },
+      { id: 'b', ...AGENT },
+      { id: 'c', turnId: undefined, agentId: undefined, mainTurnId: undefined, agentCallId: undefined },
+    ],
+  );
+  assert.equal('agentId' in saved.changes[0]!, false, 'a link a change lacks is left out, not saved as undefined');
+  assert.equal('turnId' in saved.changes[2]!, false);
+  const back = restore(saved, withTexts(saved, changes), FAST);
+  assert.deepEqual(savedOf(back), saved);
+  assert.deepEqual(changeById(back, 'b'), { ...changes[1], number: 2 });
+  assert.deepEqual(changeById(d, 'a'), { ...changes[0], number: 1 }, 'the change being typed is found too');
+  assert.equal(changeById(d, 'nope'), undefined);
+});
+
+test('state saved under saved-3, which kept no links, loads as stored', () => {
+  const v3 = {
+    changes: [
+      { id: 'p', number: 1, tool: 'Write', path: '/w/p.ts', kind: 'create', time: 4 },
+      { id: 'q', number: 2, tool: 'Edit', path: '/w/q.ts', kind: 'modify', time: 6 },
+    ],
+    played: 1,
+    recorded: 2,
+    isPaused: false,
+  };
+  assert.deepEqual(savedFrom({ shape: 'saved-3', value: v3 }), v3);
+});
+
+test('changeById finds the change being typed once the timeline has dropped it', () => {
+  const d = deckOf({ ...change('first', '', 'x\n'), ...AGENT });
+  tick(d, FAST);
+  for (let i = 0; i < MAX_WAITING + 1; i++) enqueue(d, change(`n${i}`, '', `${i}\n`));
+  assert.equal(d.timeline.all().some((e) => (e as unknown as Change).id === 'first'), false);
+  assert.equal(changeById(d, 'first')?.agentCallId, 'toolu_agent');
+});
+
+test('show in conversation tries the call, then the Agent call for an agent\'s change', () => {
+  assert.deepEqual(scrollTargets({ id: 'toolu_1', ...MAIN }), ['toolu_1']);
+  assert.deepEqual(scrollTargets({ id: 'toolu_2', ...AGENT }), ['toolu_2', 'toolu_agent']);
+  assert.deepEqual(scrollTargets({ id: 'toolu_3' }), ['toolu_3']);
+});
+
+test('a chip names the change\'s state and number', () => {
+  const row = (state: Row['state'], extra: Partial<Row> = {}): Row => ({ id: 'x', number: 2, path: '/w/x.ts', state, added: 1, removed: 0, ...extra });
+  const at = (isCurrent: boolean, isPaused = false) => ({ isCurrent, isPaused });
+  assert.equal(chipLabel(row('played'), at(false)), 'Replay #2');
+  assert.equal(chipLabel(row('played'), at(true)), 'Replay #2', 'the last change played, shown done');
+  assert.equal(chipLabel(row('playing'), at(true)), 'Typing #2');
+  assert.equal(chipLabel(row('playing'), at(true, true)), 'Paused #2');
+  assert.equal(chipLabel(row('pending'), at(true, true)), 'Next #2');
+  assert.equal(chipLabel(row('pending'), at(false)), 'Queued #2');
+  assert.equal(chipLabel(row('pending', { isTooLarge: true }), at(true)), 'Too large #2');
+  assert.equal(chipLabel(row('played', { isTooLarge: true }), at(true)), 'Too large #2', 'shown during its hold');
+  assert.equal(chipLabel(row('played', { isTooLarge: true }), at(false)), 'Not typed #2');
+  assert.equal(chipLabel(row('pending', { isTooLarge: true }), at(false)), 'Queued #2');
 });
