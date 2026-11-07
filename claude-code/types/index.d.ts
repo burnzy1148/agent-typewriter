@@ -93,15 +93,16 @@ export type AgentLink = { agentId: string; mainTurnId?: string; agentCallId?: st
 /**
  * A main conversation turn the plugin saw start: its id, its number in the
  * session from 1, the prompt that started it on one line (whitespace runs as
- * single spaces, at most 200 characters, '' when it had none), and whether it
- * has ended.
+ * single spaces, other control characters as visible stand-ins, at most 200
+ * characters with a cut one ending in `…`, '' when it had none), and whether
+ * it has ended.
  */
 export type TurnInfo = { turnId: string; number: number; prompt: string; isEnded?: boolean };
 
 /**
  * The main conversation's turns as a reload needs them: the number the next
- * turn takes, and the running turn and every turn a kept change names, oldest
- * first.
+ * turn takes, and the running turn, every turn a kept change names and every
+ * turn that started an agent the plugin still knows, oldest first.
  */
 export type Turns = { next: number; turns: TurnInfo[] };
 

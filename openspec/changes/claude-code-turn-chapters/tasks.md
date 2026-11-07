@@ -7,7 +7,7 @@
 
 ## 2. Keeping turns
 
-- [x] 2.1 In `register.tsx`, on a main-loop `turn.start` record `{ turnId, number, prompt }` (whitespace collapsed, cut to 200 characters) and mark the previous main turn ended; on a main-loop `turn.complete` mark its turn ended. Save them in a `turns` atom (`turns-1`) written through a queue that waits for the load's merge, as `agents` is, keeping only the running turn and turns a kept change or a known agent names. Add plugin tests in `claude-code/tests/chapters.test.tsx`: numbering across turns with and without changes, an agent's turn not numbered, a reload keeping numbers and prompts and numbering on, a turn starting during the load, a turn running at a reload ending at the next `turn.start`, and pruning once a turn's changes are dropped. Verify with `npm run check:claude-code`.
+- [x] 2.1 In `register.tsx`, on a main-loop `turn.start` record `{ turnId, number, prompt }` (whitespace collapsed, cut to 200 characters) and mark the previous main turn ended; on a main-loop `turn.complete` mark its turn ended. Save them in a `turns` atom (`turns-1`) written through a queue that waits for the load's merge, as `agents` is, keeping only the running turn and turns a kept change names. Add plugin tests in `claude-code/tests/chapters.test.tsx`: numbering across turns with and without changes, an agent's turn not numbered, a reload keeping numbers and prompts and numbering on, a turn starting during the load, a turn running at a reload ending at the next `turn.start`, and pruning once a turn's changes are dropped. Verify with `npm run check:claude-code`.
 
 ## 3. Chapters in the pane
 
@@ -22,6 +22,13 @@
 
 - [x] 5.1 In `claude-code/README.md`, describe chapters, Play turn and the Play turn chip, including that the chip sits on the turn's last row because the end row is not drawn outside the terminal. Check `site/` for pages describing the plugin's pane and update them to match. Verify by reading the sections.
 - [x] 5.2 Run `npm run typecheck`, `npm test`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-turn-chapters --strict`. All pass.
+
+## 6. Review round 1
+
+- [x] 6.1 *Added in implementation:* keep the turns a known agent names as well, and test a background agent started in a turn with no changes of its own that records after the next turn starts; add the scenario and widen *Turns survive a reload*. Verify with `npm run check:claude-code` and `openspec validate claude-code-turn-chapters --strict`.
+- [x] 6.2 *Added in implementation:* keep a prompt over 200 characters as its first 199 and `…`, name the cap in *A chapter's header* with a scenario, and unit-test it at 240 and 300 columns. Verify with `npm test`.
+- [x] 6.3 *Added in implementation:* show a prompt's control characters as visible stand-ins when it is kept and when it is drawn; unit-test it and add a plugin test that the pane still draws. Verify with `npm test` and `npm run check:claude-code`.
+- [x] 6.4 *Added in implementation:* say in `claude-code/README.md` that every main conversation turn takes a number, and that only turns with changes get a chapter. Verify by reading the section.
 
 ## Workflow follow-up
 

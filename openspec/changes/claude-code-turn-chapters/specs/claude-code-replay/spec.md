@@ -16,7 +16,7 @@ The list SHALL group the kept changes into one chapter per main conversation tur
 - **THEN** change 7 is listed in turn 1's chapter, after turn 1's earlier changes, and turn 2's chapter still follows turn 1's
 
 ### Requirement: A chapter's header
-Each chapter of a turn SHALL open with a header naming the turn: `Turn` and its number, the prompt that started the turn on one line with its whitespace runs shown as single spaces and cut to fit the pane with an ellipsis, how many of its changes the pane keeps, and a Play turn button. A turn started with no prompt text SHALL show no prompt. Turns SHALL be numbered from 1 in the order the plugin saw the main conversation's turns start, counting turns that made no change.
+Each turn's chapter SHALL open with a header: `Turn` and its number, the prompt that started the turn on one line, whitespace runs as single spaces, kept to 200 characters, cut with an ellipsis where longer or where the pane ends, how many of its changes the pane keeps, and a Play turn button. A turn started with no prompt text SHALL show no prompt. Turns SHALL be numbered from 1 in the order the plugin saw the main conversation's turns start, counting turns that made no change.
 
 #### Scenario: What the header shows
 - **WHEN** the session's second turn began with the prompt "Cover it with tests and update the other callers." and made four kept changes
@@ -25,6 +25,10 @@ Each chapter of a turn SHALL open with a header naming the turn: `Turn` and its 
 #### Scenario: Long prompt
 - **WHEN** a turn began with a prompt of several lines, longer than the pane is wide
 - **THEN** the header shows the prompt on one line, cut with an ellipsis where the pane ends
+
+#### Scenario: Prompt over 200 characters on a wide pane
+- **WHEN** a turn began with a prompt of 500 characters, on one line, and the pane has room for more than 200 of them
+- **THEN** the header shows the prompt's first 199 characters followed by an ellipsis
 
 #### Scenario: One change
 - **WHEN** a turn made one kept change
@@ -40,6 +44,10 @@ A change made by a subagent SHALL go in the chapter of the main conversation's t
 #### Scenario: Agent started by a subagent
 - **WHEN** in turn 3 a subagent starts another agent, and that agent edits `c.ts`
 - **THEN** the change to `c.ts` is listed in turn 3's chapter
+
+#### Scenario: Background agent from a turn with no changes of its own
+- **WHEN** in turn 1 Claude starts a background subagent and makes no change itself, turn 2 starts and makes a change, and the subagent then writes `c.ts`
+- **THEN** the change to `c.ts` is listed in a chapter headed `Turn 1` with turn 1's prompt, after turn 2's chapter
 
 ### Requirement: Changes outside a known turn
 Changes the plugin cannot place in a turn, because they were saved by a version that did not keep turns or were made outside any turn, SHALL be listed together in one chapter headed `Outside a turn`, with their count and a Play from first button that acts as Play turn does. A turn the plugin knows by id only, with no number or prompt, SHALL have a chapter headed `Earlier turn`, with its count and Play turn.
@@ -98,7 +106,7 @@ Pressing a Play turn chip in the conversation SHALL act as pressing Play turn on
 - **THEN** playback stays paused and turn 2's first kept change's row reads Next
 
 ### Requirement: Turns survive a reload
-Each turn's number and prompt, and whether it has ended, SHALL survive a reload of the plugin within the session for every turn that still has a kept change, and the turns after a reload SHALL be numbered on from the last number given. A turn that was running when the plugin reloaded SHALL count as ended when the next main conversation turn starts.
+Each turn's number and prompt, and whether it has ended, SHALL survive a reload of the plugin within the session for every turn that still has a kept change or started an agent the plugin still knows, and the turns after a reload SHALL be numbered on from the last number given. A turn that was running when the plugin reloaded SHALL count as ended when the next main conversation turn starts.
 
 #### Scenario: Reload
 - **WHEN** turns 1 and 2 made changes, and the plugin reloads

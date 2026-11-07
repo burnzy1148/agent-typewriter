@@ -11,7 +11,7 @@ The Claude Code pane lists every kept change as one flat run of rows (at-o3z.3).
 - **Play turn.** Pressing Play turn plays from the turn's first kept change, exactly as pressing that change's row does: later changes follow in recorded order and whether playback is paused does not change.
 - **Changes with no known turn.** Changes saved before turns were kept, or made outside any turn, form a chapter of their own with no number or prompt.
 - **A Play turn chip in the conversation.** Once a turn has ended, the conversation shows a `Play turn · <n> changes` chip on the last row in the main conversation that belongs to the turn's changes: the last such `Edit` or `Write` call, or the `Agent` call that started a subagent whose changes come last. Pressing it plays the turn and opens the pane. The mockup draws the chip on the turn's end row ("Worked for 52 s"), but the engine raises that row (`TurnDuration`) on the terminal only, where the plugin draws nothing; design.md records the check and the choice.
-- **Turns survive a reload.** The plugin keeps each turn's number and prompt for the turns that still have kept changes, and their numbers do not change for the rest of the session.
+- **Turns survive a reload.** The plugin keeps each turn's number and prompt for the turns that still have kept changes, and their numbers do not change for the rest of the session. *Superseded in implementation:* also for the turns that started an agent the plugin still knows; see design.md, *Corrected in implementation*.
 
 Out of scope, and kept possible:
 - The By file grouping and the By turn / By file switch (at-o3z.27). The list's grouping is built so a second grouping drops in beside it; this change draws no switch.

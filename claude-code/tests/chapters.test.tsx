@@ -248,6 +248,26 @@ test("a turn is no longer kept once its changes are dropped", async ($, on) => {
   expect(writes.at(-1)?.turns.map((t) => t.turnId)).toEqual(['t2']);
 });
 
+test("a turn with no changes of its own is kept while an agent it started is known, so the agent's later change sits under its number and prompt", async ($, on) => {
+  const w = world(on);
+  loops(on);
+  const writes = turnsState(on);
+  await start($);
+  await turn($, 't1', 'Start a background agent.');
+  await spawn($, 'ag1', 'toolu_agent');
+  await turn($, 'ta', '', 'ag1');
+  await endTurn($, 't1');
+  await turn($, 't2', 'Something else.');
+  await write($, 'b.ts', 'toolu_b');
+  await w.clock.settle();
+  expect(writes.at(-1)?.turns.map((t) => t.turnId)).toEqual(['t1', 't2']);
+
+  // The background agent turn 1 started writes after turn 2's change.
+  await write($, 'c.ts', 'toolu_c', 'ag1');
+  await w.clock.settle();
+  expect(await headers($)).toEqual(['Turn 2 | Something else. | 1 change | Play turn', 'Turn 1 | Start a background agent. | 1 change | Play turn']);
+});
+
 // Chapters in the pane.
 
 test("the list groups changes under each turn's header, a subagent's change under the turn that started it", async ($, on) => {
@@ -347,6 +367,20 @@ test('Play turn brings a scrolled list back to following playback', async ($, on
   expect(await lines($)).toEqual(['#15', 'header t2', '#16', '#17', '#18', '#19', '#20', '#21']);
   await w.clock.advance(60_000);
   expect((await lines($)).at(-1)).toBe('#30');
+});
+
+test("a prompt with control characters draws them as stand-ins, and the pane still draws", async ($, on) => {
+  const w = world(on);
+  loops(on);
+  const writes = turnsState(on);
+  await start($);
+  await turn($, 't1', 'fix \x1b[31merror\x1b[0m please');
+  await write($, 'a.ts', 'toolu_a');
+  await w.clock.settle();
+
+  expect(writes.at(-1)?.turns[0]?.prompt).toBe('fix \u241b[31merror\u241b[0m please');
+  expect(await headers($)).toEqual(['Turn 1 | fix \u241b[31merror\u241b[0m please | 1 change | Play turn']);
+  expect(await lines($)).toEqual(['header t1', '#1']);
 });
 
 test('the dropped note sits above the first chapter', async ($, on) => {

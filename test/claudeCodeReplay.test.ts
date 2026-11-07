@@ -1019,13 +1019,21 @@ test('a header names the turn, its prompt cut to fit, its count and Play turn', 
   assert.equal(headerLabel({ ...ch, rows: [turnRow(1, 't2')] }, 120).count, '1 change');
   assert.equal(headerLabel({ ...ch, prompt: '' }, 120).prompt, '');
   assert.equal(headerLabel({ ...ch, prompt: 'two\n\n  lines\tand tabs' }, 120).prompt, 'two lines and tabs');
+  assert.equal(headerLabel({ ...ch, prompt: 'fix \x1b[31merror\x07' }, 120).prompt, 'fix \u241b[31merror\u2407', 'control characters drawn as stand-ins');
 });
 
-test('a prompt is kept on one line, whitespace runs as single spaces, at most 200 characters', () => {
+test('a prompt kept to 200 characters shows its ellipsis on a pane wide enough for all of it', () => {
+  const ch = { key: 't1', kind: 'turn' as const, number: 1, prompt: promptOf('x'.repeat(500)), rows: [turnRow(1, 't1')] };
+  for (const width of [240, 300]) assert.equal(headerLabel(ch, width).prompt, 'x'.repeat(MAX_PROMPT - 1) + '…', `${width} columns`);
+});
+
+test('a prompt is kept on one line, whitespace runs as single spaces, control characters shown, at most 200 characters', () => {
   assert.equal(promptOf('  Fix the\n\nlogin   bug.\t '), 'Fix the login bug.');
   assert.equal(promptOf(''), '');
-  assert.equal(promptOf('x'.repeat(500)).length, MAX_PROMPT);
-  assert.equal(promptOf('x'.repeat(MAX_PROMPT - 1) + '😀'), 'x'.repeat(MAX_PROMPT - 1), 'never half a surrogate pair');
+  assert.equal(promptOf('fix \x1b[31merror\x1b[0m please\x07'), 'fix \u241b[31merror\u241b[0m please\u2407');
+  assert.equal(promptOf('x'.repeat(MAX_PROMPT)), 'x'.repeat(MAX_PROMPT), 'exactly 200 is kept whole');
+  assert.equal(promptOf('x'.repeat(500)), 'x'.repeat(MAX_PROMPT - 1) + '…');
+  assert.equal(promptOf('x'.repeat(MAX_PROMPT - 2) + '😀x'), 'x'.repeat(MAX_PROMPT - 2) + '…', 'never half a surrogate pair');
 });
 
 test("a turn's chip sits on its last kept change's call, or on the Agent call that started it", () => {

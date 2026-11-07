@@ -459,13 +459,22 @@ export function listingOf(deck: Deck): Listing {
   return { rows, dropped: Math.max(0, (rows[0]?.number ?? 1) - 1), ...(deck.shown && { current: deck.shown.id }), isPaused: deck.isPaused };
 }
 
-/** Longest prompt a turn keeps, in characters; the pane cuts it again to fit. */
+/** Longest prompt a turn keeps, in characters, its ellipsis included; the pane cuts it again to fit. */
 export const MAX_PROMPT = 200;
 
-/** `text` on one line, whitespace runs as single spaces and trimmed, cut to MAX_PROMPT characters. */
+/**
+ * `text` on one line as a header draws it: whitespace runs as single spaces
+ * and trimmed, other control characters as visible stand-ins, and cut with `…`
+ * to MAX_PROMPT characters.
+ */
 export function promptOf(text: string): string {
-  const line = text.replace(/\s+/g, ' ').trim();
-  return cutAt(line, MAX_PROMPT);
+  const line = oneLine(text);
+  return line.length > MAX_PROMPT ? cutAt(line, MAX_PROMPT - 1) + '…' : line;
+}
+
+/** `text` on one line: whitespace runs as single spaces, trimmed, and other control characters as visible stand-ins. */
+function oneLine(text: string): string {
+  return showControls(text.replace(/\s+/g, ' ').trim());
 }
 
 /** `s` at most `n` code units long, never ending on half a surrogate pair. */
@@ -536,7 +545,7 @@ export function headerLabel(ch: Chapter, width: number): HeaderLabel {
   const title = ch.kind === 'turn' ? `Turn ${ch.number}` : ch.kind === 'earlier' ? 'Earlier turn' : 'Outside a turn';
   const count = changeCount(ch.rows.length);
   const play = ch.kind === 'outside' ? 'Play from first' : 'Play turn';
-  const line = (ch.prompt ?? '').replace(/\s+/g, ' ').trim();
+  const line = oneLine(ch.prompt ?? '');
   // The title, prompt and count are each a gap apart.
   const room = width - title.length - count.length - 2 - play.length - PLAY_PADDING;
   let prompt = line;
