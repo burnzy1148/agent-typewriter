@@ -10,7 +10,7 @@
 // `listing`, which changes far less often).
 
 import { atom, read, update } from 'claude-code';
-import type { EngineInterface, Register } from 'claude-code';
+import type { EngineInterface, Register, UiOpenResult } from 'claude-code';
 
 import type { AgentLink } from '../types';
 
@@ -56,6 +56,10 @@ const PANE = 'agent-typewriter';
 const TITLE = 'Agent Typewriter';
 const TERMINAL_POINTER =
   "Agent Typewriter for Claude Code doesn't replay in the terminal. To watch Claude's edits typed out, use the Agent Typewriter extension for VS Code (https://marketplace.visualstudio.com/items?itemName=burnzy1148.agent-typewriter), or run Claude Code in the desktop app.";
+/** Where the pane can be shown, for a session where it can't. */
+const LOCAL_POINTER = "To watch Claude's edits typed out, use a local session in the Claude Code desktop app or in VS Code.";
+/** What the plugin says when no surface is attached to show the pane, as in a cloud session or a -p run. */
+const NO_SURFACE = `Agent Typewriter can't show its pane in this session: no app is showing it here. Cloud sessions, claude.ai/code and the mobile app don't draw plugin panes. ${LOCAL_POINTER}`;
 /** Columns the Code element's line-number gutter takes. */
 const GUTTER = 8;
 /** Columns a row keeps free of its label, for a desktop's button padding. */
@@ -263,9 +267,30 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   if (!change.isTooLarge) live.texts.add(id);
   sync($, live);
   // Unasked, the engine places the pane only where it docks beside the
-  // conversation; elsewhere it waits for /typewriter.
-  if (isFirst) void $.ui.open({ id: PANE, title: TITLE });
+  // conversation; elsewhere it waits for /typewriter, quietly. With no surface
+  // at all nothing will draw it, so the transcript says so. The tool call does
+  // not wait for the open.
+  if (isFirst) {
+    void $.ui.open({ id: PANE, title: TITLE }).then(
+      (opened) => {
+        if (isNoSurface(opened)) $.ui.log(NO_SURFACE);
+      },
+      () => undefined,
+    );
+  }
   return ran;
+}
+
+/** Whether an open left the pane undrawn because no surface is attached, the engine's `no-surface` reason. */
+function isNoSurface(opened: UiOpenResult): boolean {
+  return !opened.isPlaced && opened.reason.startsWith('no-surface');
+}
+
+/** What /typewriter answers for an open: opened only when the pane is placed. */
+function openedText(opened: UiOpenResult): string {
+  if (opened.isPlaced) return 'Agent Typewriter pane opened.';
+  if (isNoSurface(opened)) return NO_SURFACE;
+  return `Agent Typewriter can't show its pane here (${opened.reason}). ${LOCAL_POINTER}`;
 }
 
 /** Whether the session draws only on the terminal. An empty list (a -p run, a cloud session) is not. */
@@ -362,8 +387,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'typewriter' }, async ($) => {
     if (await isTerminalOnly($)) return { text: TERMINAL_POINTER };
-    await $.ui.open({ id: PANE, title: TITLE });
-    return { text: 'Agent Typewriter pane opened.' };
+    return { text: openedText(await $.ui.open({ id: PANE, title: TITLE })) };
   });
 
   // Which turn each loop is in, and where each agent hangs off the main
