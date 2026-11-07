@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A `smoothScroll`, `arrowNavigation` or `naturalOrder` setting that is not `true` or `false` (a string such as `"false"`, say) now counts as unset, so the next settings layer or the default applies, as for numeric settings. It used to read as on.
+- A `smoothScroll`, `arrowNavigation` or `naturalOrder` setting that is not `true` or `false` now counts as unset, so the next settings layer or the default (on) applies, as for numeric settings. It used to be read by truthiness: `"false"` turned the setting on, and `0` or `""` turned it off.
 
 ## 0.6.0 (2026-10-27)
 
