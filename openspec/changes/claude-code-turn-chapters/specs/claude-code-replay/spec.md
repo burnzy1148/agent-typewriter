@@ -145,7 +145,7 @@ When older changes have been dropped to stay within the limits on kept changes, 
 - **THEN** the list begins by saying 12 older changes were dropped, and its first change row is numbered 13
 
 ### Requirement: The list keeps up with playback
-When more changes are kept than the pane has room to list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it, until they press a change in the list or its chip in the conversation, press Play turn or a Play turn chip, or press From start, Finish current or Skip to latest, after which it keeps up with playback again. Scrolling with the pointer over the code SHALL NOT move the list.
+When more changes are kept than the pane can list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it until they press a change in the list or its chip in the conversation, Play turn or a Play turn chip, or From start, Finish current or Skip to latest, after which it keeps up with playback again. Scrolling with the pointer over the code SHALL NOT move the list.
 
 #### Scenario: Long session
 - **WHEN** 80 changes are kept, the pane lists 10 rows, and change 40 starts
