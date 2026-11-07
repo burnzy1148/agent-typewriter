@@ -281,6 +281,10 @@ export class MarkdownString {
     this.value += text;
     return this;
   }
+  appendText(text: string): this {
+    this.value += text.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, '\\$&');
+    return this;
+  }
   appendCodeblock(code: string, language = ''): this {
     this.value += '\n```' + language + '\n' + code + '\n```\n';
     return this;

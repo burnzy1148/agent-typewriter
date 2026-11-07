@@ -20,5 +20,6 @@ Agent Typewriter has its own icon in the Activity Bar, with three views: **Check
 **Changes** lists recorded changes, newest first, with their state (pending, typing, played) and line counts. With several lanes in the buffer, each lane gets a node in its color holding its changes, the followed lane first.
 
 - Click an entry to see its diff.
+- Hover an entry to see the Claude Code prompt and tool call that made the change, and what the agent said just before it. The extension finds these in Claude Code's session transcripts for the recorded checkouts. A change Claude Code did not make, or one it made through a command while another session was also running one, shows nothing extra. The extension rebuilds this after a reload from the transcripts that still exist, and never saves it. Set `agentContext` to `false` to stop reading transcripts.
 - Inline **Replay From Here** restarts playback at that change.
 - Title bar: start/stop watching. The `...` menu has filters, base speed, and clear. Pause, finish current, skip to latest, and replay all are also commands in the Command Palette.

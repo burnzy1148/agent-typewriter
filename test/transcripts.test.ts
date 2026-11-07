@@ -1,0 +1,206 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { candidateDirs, encodeProjectPath, projectsDir, promptText, selfAndAncestors, TEXT_MAX, TranscriptIndex } from '../src/transcripts';
+import { SessionLines, tempDir, writeLines } from './transcriptFixture';
+
+test('project folders are named by replacing every non-alphanumeric character', () => {
+  assert.equal(encodeProjectPath('/Users/me/repo/.claude/worktrees/sad-x1'), '-Users-me-repo--claude-worktrees-sad-x1');
+  assert.equal(encodeProjectPath('C:\\work\\my_repo'), 'C--work-my-repo');
+});
+
+test('the projects folder honors CLAUDE_CONFIG_DIR', () => {
+  assert.equal(projectsDir({}, '/home/me'), path.join('/home/me', '.claude', 'projects'));
+  assert.equal(projectsDir({ CLAUDE_CONFIG_DIR: '/cfg' }, '/home/me'), path.join('/cfg', 'projects'));
+  assert.equal(projectsDir({ CLAUDE_CONFIG_DIR: '  ' }, '/home/me'), path.join('/home/me', '.claude', 'projects'));
+});
+
+test('a root and the folders above it, without the filesystem root', () => {
+  assert.deepEqual(selfAndAncestors('/a/b/c/'), ['/a/b/c', '/a/b', '/a']);
+  assert.deepEqual(selfAndAncestors('C:\\a\\b'), ['C:\\a\\b', 'C:\\a']);
+});
+
+test('candidate folders: the root, folders above it, and folders inside it', () => {
+  const names = ['-work-repo', '-work', '-work-repo--claude-worktrees-x', '-work-repo-other', '-elsewhere', '-work-repository'];
+  const got = candidateDirs(names, ['/work/repo']);
+  assert.deepEqual(got, ['-work-repo', '-work', '-work-repo--claude-worktrees-x', '-work-repo-other']);
+  assert.deepEqual(candidateDirs(['C--work-repo', 'C--work', 'C--other'], ['C:\\work\\repo']), ['C--work-repo', 'C--work']);
+});
+
+test('prompt text drops system reminders, tool results and empty prompts', () => {
+  assert.equal(promptText('<system-reminder>\nnoise\n</system-reminder>\n\nFix the parser'), 'Fix the parser');
+  assert.equal(promptText([{ type: 'text', text: 'one' }, { type: 'image' }, { type: 'text', text: 'two' }]), 'one\ntwo');
+  assert.equal(promptText([{ type: 'tool_result', tool_use_id: 't', content: 'x' }]), undefined);
+  assert.equal(promptText('<system-reminder>only</system-reminder>'), undefined);
+  assert.equal(promptText(42), undefined);
+  const long = promptText('x'.repeat(5000))!;
+  assert.equal(long.length, TEXT_MAX);
+  assert.ok(long.endsWith('\u2026'));
+});
+
+function setup() {
+  const projects = tempDir('at-projects-');
+  const root = '/work/repo';
+  const dir = path.join(projects, encodeProjectPath(root));
+  return { projects, root, dir, index: new TranscriptIndex(() => projects) };
+}
+
+test('reads turns, narration, edit and command calls, and skips everything else', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('s1');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  writeLines(path.join(dir, 's1.jsonl'), [
+    JSON.stringify({ type: 'queue-operation', sessionId: 's1', content: 'x' }),
+    s.prompt(t0, '<system-reminder>r</system-reminder>Rename the helper', 'p1'),
+    s.text(t0 + 100, 'Renaming the helper.'),
+    s.use(t0 + 200, 'tu1', 'Edit', { file_path: '/work/repo/src/a.ts', old_string: 'a', new_string: 'b' }),
+    s.blob('tu-blob', 'Edit', { file_path: '/work/repo/src/z.ts' }),
+    '{ not json',
+    s.result(t0 + 300, 'tu1'),
+    s.use(t0 + 400, 'tu2', 'Bash', { command: 'npm run format\nnext line', description: 'Format the code' }),
+    s.use(t0 + 450, 'tu3', 'Read', { file_path: '/work/repo/src/a.ts' }),
+    s.use(t0 + 500, 'tu4', 'Bash', { command: 'ls -la' }),
+  ]);
+  await index.refresh([root], t0);
+  const calls = new Map(index.calls().map((c) => [c.id, c]));
+  assert.deepEqual([...calls.keys()].sort(), ['tu1', 'tu2', 'tu4']);
+  const edit = calls.get('tu1')!;
+  assert.deepEqual(edit.turn, { id: 'p1', time: t0, prompt: 'Rename the helper' });
+  assert.equal(edit.file, '/work/repo/src/a.ts');
+  assert.equal(edit.detail, 'a.ts');
+  assert.equal(edit.narration, 'Renaming the helper.');
+  assert.equal(edit.session, 's1');
+  assert.equal(edit.start, t0 + 200);
+  assert.equal(edit.end, t0 + 300);
+  assert.equal(calls.get('tu2')!.detail, 'Format the code');
+  assert.equal(calls.get('tu2')!.end, undefined);
+  assert.equal(calls.get('tu4')!.detail, 'ls -la');
+});
+
+test('a prompt without promptId uses its line uuid, and meta lines start no turn', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('s2');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  writeLines(path.join(dir, 's2.jsonl'), [
+    s.prompt(t0, 'First'),
+    JSON.stringify({ type: 'user', isMeta: true, sessionId: 's2', uuid: 'meta', timestamp: new Date(t0 + 50).toISOString(), message: { role: 'user', content: 'Caveat' } }),
+    s.use(t0 + 100, 'e1', 'Write', { file_path: '/work/repo/b.ts', content: 'x' }),
+  ]);
+  await index.refresh([root], t0);
+  const [call] = index.calls();
+  assert.equal(call.turn!.id, 's2-u1');
+  assert.equal(call.turn!.prompt, 'First');
+});
+
+test('reads only what was appended, across a line split between writes', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('s3');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const file = path.join(dir, 's3.jsonl');
+  writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' })]);
+  await index.refresh([root], t0);
+  assert.equal(index.calls().length, 1);
+  const next = s.use(t0 + 20, 'b', 'Edit', { file_path: '/work/repo/é.ts' });
+  // Split inside the multi-byte character.
+  const bytes = Buffer.from(next + '\n', 'utf8');
+  const cut = bytes.indexOf(Buffer.from('é', 'utf8')) + 1;
+  fs.appendFileSync(file, bytes.subarray(0, cut));
+  await index.refresh([root], t0);
+  assert.equal(index.calls().length, 1);
+  fs.appendFileSync(file, bytes.subarray(cut));
+  fs.appendFileSync(file, s.result(t0 + 30, 'a') + '\n');
+  await index.refresh([root], t0);
+  const calls = new Map(index.calls().map((c) => [c.id, c]));
+  assert.equal(calls.get('b')!.file, '/work/repo/é.ts');
+  assert.equal(calls.get('a')!.end, t0 + 30);
+});
+
+test('files last written before the oldest waiting change are not read', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('old');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const file = path.join(dir, 'old.jsonl');
+  writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' })]);
+  fs.utimesSync(file, new Date(t0 + 20), new Date(t0 + 20));
+  await index.refresh([root], t0 + 60_000);
+  assert.equal(index.calls().length, 0);
+  await index.refresh([root], t0);
+  assert.equal(index.calls().length, 1);
+});
+
+test('transcripts of unrelated projects are not read', async () => {
+  const { projects, index } = setup();
+  const s = new SessionLines('x');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  writeLines(path.join(projects, encodeProjectPath('/elsewhere'), 'x.jsonl'), [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' })]);
+  await index.refresh(['/work/repo'], t0);
+  assert.equal(index.calls().length, 0);
+});
+
+test("a subagent's calls get the turn of the call that started it", async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('s4');
+  const sub = new SessionLines('s4');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const agentFile = path.join(dir, 's4', 'subagents', 'agent-abc.jsonl');
+  writeLines(agentFile, [
+    sub.prompt(t0 + 110, 'Subagent task'),
+    sub.text(t0 + 150, 'Editing c.'),
+    sub.use(t0 + 200, 'sub1', 'Edit', { file_path: '/work/repo/c.ts' }, { agentId: 'abc', isSidechain: true }),
+  ]);
+  fs.writeFileSync(agentFile.replace(/\.jsonl$/, '.meta.json'), JSON.stringify({ agentType: 'helper', description: 'Fix c', toolUseId: 'spawn' }));
+  writeLines(path.join(dir, 's4.jsonl'), [s.prompt(t0, 'Do it', 'p4'), s.use(t0 + 100, 'spawn', 'Agent', { prompt: 'Subagent task' })]);
+  await index.refresh([root], t0);
+  const [call] = index.calls();
+  assert.equal(call.id, 'sub1');
+  assert.equal(call.turn!.id, 'p4');
+  assert.equal(call.narration, 'Editing c.');
+  assert.deepEqual(call.subagent, { id: 'abc', type: 'helper', description: 'Fix c' });
+});
+
+test('old sidechain lines in the session transcript belong to the current turn', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('s5');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  writeLines(path.join(dir, 's5.jsonl'), [
+    s.prompt(t0, 'Main prompt', 'p5'),
+    JSON.stringify({ type: 'user', isSidechain: true, sessionId: 's5', uuid: 'sc', timestamp: new Date(t0 + 10).toISOString(), message: { role: 'user', content: 'Sub prompt' } }),
+    s.use(t0 + 20, 'sc1', 'Edit', { file_path: '/work/repo/d.ts' }, { isSidechain: true, agentId: 'old' }),
+  ]);
+  await index.refresh([root], t0);
+  const [call] = index.calls();
+  assert.equal(call.turn!.prompt, 'Main prompt');
+  assert.deepEqual(call.subagent, { id: 'old' });
+});
+
+test('prune forgets files not written to since a time, and a refresh reads them again', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('s6');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const file = path.join(dir, 's6.jsonl');
+  writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' })]);
+  fs.utimesSync(file, new Date(t0 + 20), new Date(t0 + 20));
+  await index.refresh([root], t0);
+  assert.equal(index.calls().length, 1);
+  index.prune(t0 + 1000);
+  assert.equal(index.calls().length, 0);
+  await index.refresh([root], t0);
+  assert.equal(index.calls().length, 1);
+});
+
+test('a read error is reported once per file', async () => {
+  const { root, dir } = setup();
+  const errors: string[] = [];
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'bad.jsonl');
+  fs.writeFileSync(file, '');
+  const index = new TranscriptIndex(
+    () => path.dirname(dir),
+    (f) => errors.push(f),
+    { ...fs.promises, open: (async () => { throw new Error('denied'); }) as unknown as typeof fs.promises.open },
+  );
+  await index.refresh([root], 0);
+  await index.refresh([root], 0);
+  assert.deepEqual(errors, [file]);
+});
