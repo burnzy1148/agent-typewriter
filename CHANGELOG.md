@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Each recorded change's tooltip in the Changes view shows the Claude Code prompt and tool call that made it, and what the agent said just before. They come from Claude Code's session transcripts for the recorded checkouts (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`), which the extension only reads. This is rebuilt after a reload and never saved. Set `agentContext` to `false` to turn it off.
+- Each recorded change's tooltip in the Changes view shows the Claude Code prompt and tool call that made it, and what the agent said just before. They come from the transcripts of Claude Code sessions started in a recorded checkout, a folder above it or a folder inside it (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`), which the extension only reads. A change made while such a session runs a command is credited to that command, even one you made yourself. This is rebuilt after a reload and never saved. Set `agentContext` to `false` to turn it off.
 
 ## 0.6.0 (2026-10-27)
 

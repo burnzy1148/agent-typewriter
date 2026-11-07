@@ -259,7 +259,7 @@ test('a call already given to a change is not given to the next one', async () =
   correlator.dispose();
 });
 
-test('restored changes are matched again, once', async () => {
+test('restored changes are matched again, and retried for 30 seconds like new ones', async () => {
   const { clock, timeline, source, correlator } = harness();
   clock.now = T + 3_600_000;
   source.list = [edit('e1', '/w/a.ts', T - 100, T + 50)];
@@ -270,8 +270,23 @@ test('restored changes are matched again, once', async () => {
   await clock.advance(300, correlator);
   assert.equal(timeline.get(timeline.all()[0].seq)!.agent?.tool?.id, 'e1');
   assert.equal(timeline.all()[1].agent, undefined);
+  assert.equal(clock.pending, 1);
+  await clock.advance(SETTLE_MS + RETRY_MS, correlator);
+  assert.equal(timeline.all()[1].agent, undefined);
   assert.equal(clock.pending, 0);
-  assert.equal(source.refreshes.length, 1);
+  correlator.dispose();
+});
+
+test('the 30 seconds count from when the change reached the timeline, not from its write', async () => {
+  const { clock, timeline, source, correlator } = harness();
+  clock.now = T + 25_000;
+  // A held change: written at T, recorded 25 s later.
+  timeline.push(ev('gone.ts', T, { kind: 'delete' }));
+  await clock.advance(10_000, correlator);
+  assert.equal(timeline.get(1)!.agent, undefined);
+  source.list = [bash('b1', T - 100, T + 500)];
+  await clock.advance(RETRY_MS, correlator);
+  assert.equal(timeline.get(1)!.agent?.tool?.id, 'b1');
   correlator.dispose();
 });
 

@@ -1,4 +1,6 @@
-import { COMMAND_TOOLS, EDIT_TOOLS, type SubagentInfo, type ToolCall, type Turn } from './transcripts';
+import { COMMAND_TOOLS, EDIT_TOOLS, RUNNING_MAX_MS, type SubagentInfo, type ToolCall, type Turn } from './transcripts';
+
+export { RUNNING_MAX_MS };
 import type { ChangeEvent, Timeline } from './timeline';
 
 /**
@@ -24,8 +26,6 @@ export interface AgentContext {
 export const START_SLACK_MS = 1000;
 /** A write may be recorded this long after its call ended. */
 export const END_SLACK_MS = 2000;
-/** A call with no result counts as running for this long at most. */
-export const RUNNING_MAX_MS = 10 * 60 * 1000;
 
 /** A recorded change as matching sees it: its absolute paths (the old one too, for a rename) and write time. */
 export interface ChangeRef {
@@ -93,7 +93,7 @@ export interface CallSource {
   prune(before: number): void;
 }
 
-/** A change is retried for this long after it was written, then left without context. */
+/** A change is retried for this long after the correlator first sees it, then left without context. */
 export const SETTLE_MS = 30_000;
 /** Wait after the timeline changes before a pass. */
 export const DEBOUNCE_MS = 250;
@@ -128,6 +128,8 @@ function keyOf(e: ChangeEvent): string {
 export class Correlator {
   /** Changes matched or given up on. */
   private settled = new Set<string>();
+  /** When each change still waiting was first seen: it reaches the timeline after its write, sometimes long after. */
+  private seen = new Map<string, number>();
   private timer: unknown;
   private running = false;
   private again = false;
@@ -195,8 +197,11 @@ export class Correlator {
     let events = timeline.all();
     const present = new Set(events.map(keyOf));
     for (const k of this.settled) if (!present.has(k)) this.settled.delete(k);
+    for (const k of this.seen.keys()) if (!present.has(k)) this.seen.delete(k);
     const open = this.waiting(events);
     if (open.length === 0) return;
+    const firstSeen = this.now();
+    for (const e of open) if (!this.seen.has(keyOf(e))) this.seen.set(keyOf(e), firstSeen);
     const since = open.reduce((m, e) => Math.min(m, e.time), Infinity);
     await index.refresh(this.o.roots(), since);
     if (this.disposed || !this.o.enabled()) return;
@@ -211,16 +216,25 @@ export class Correlator {
     for (const e of this.waiting(events)) {
       const paths = [this.o.pathOf(e.uri), e.fromUri !== undefined ? this.o.pathOf(e.fromUri) : undefined].filter((p): p is string => p !== undefined);
       const agent = paths.length > 0 ? matchChange({ paths, time: e.time }, calls, claimed, now) : undefined;
+      const key = keyOf(e);
       if (agent) {
         found.push({ seq: e.seq, agent });
         if (agent.via === 'edit' && agent.tool) claimed.add(agent.tool.id);
-        this.settled.add(keyOf(e));
-      } else if (now - e.time >= SETTLE_MS) this.settled.add(keyOf(e));
-      else left = true;
+        this.settle(key);
+      } else if (now - (this.seen.get(key) ?? now) >= SETTLE_MS) this.settle(key);
+      else {
+        if (!this.seen.has(key)) this.seen.set(key, now);
+        left = true;
+      }
     }
     timeline.annotate(found);
     index.prune(now - FORGET_MS);
     if (left) this.schedule(RETRY_MS);
+  }
+
+  private settle(key: string): void {
+    this.settled.add(key);
+    this.seen.delete(key);
   }
 
   private schedule(ms: number): void {

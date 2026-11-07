@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { candidateDirs, encodeProjectPath, projectsDir, promptText, selfAndAncestors, TEXT_MAX, TranscriptIndex } from '../src/transcripts';
+import { candidateDirs, encodeProjectPath, projectsDir, promptText, READ_BACK_MS, selfAndAncestors, TEXT_MAX, TranscriptIndex } from '../src/transcripts';
 import { SessionLines, tempDir, writeLines } from './transcriptFixture';
 
 test('project folders are named by replacing every non-alphanumeric character', () => {
@@ -28,11 +28,20 @@ test('candidate folders: the root, folders above it, and folders inside it', () 
   assert.deepEqual(candidateDirs(['C--work-repo', 'C--work', 'C--other'], ['C:\\work\\repo']), ['C--work-repo', 'C--work']);
 });
 
+test("candidate folders ignore case: VS Code's lowercase drive letter finds Claude Code's uppercase one", () => {
+  assert.deepEqual(candidateDirs(['C--work-repo', 'C--work', 'C--work-repo--claude-worktrees-x', 'C--other'], ['c:\\work\\repo']), [
+    'C--work-repo',
+    'C--work',
+    'C--work-repo--claude-worktrees-x',
+  ]);
+});
+
 test('prompt text drops system reminders, tool results and empty prompts', () => {
   assert.equal(promptText('<system-reminder>\nnoise\n</system-reminder>\n\nFix the parser'), 'Fix the parser');
   assert.equal(promptText([{ type: 'text', text: 'one' }, { type: 'image' }, { type: 'text', text: 'two' }]), 'one\ntwo');
   assert.equal(promptText([{ type: 'tool_result', tool_use_id: 't', content: 'x' }]), undefined);
   assert.equal(promptText('<system-reminder>only</system-reminder>'), undefined);
+  assert.equal(promptText('<task-notification>\n<task-id>x</task-id>\n</task-notification>'), undefined);
   assert.equal(promptText(42), undefined);
   const long = promptText('x'.repeat(5000))!;
   assert.equal(long.length, TEXT_MAX);
@@ -78,6 +87,28 @@ test('reads turns, narration, edit and command calls, and skips everything else'
   assert.equal(calls.get('tu4')!.detail, 'ls -la');
 });
 
+test('task notifications do not start a turn', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('tn');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const note = (at: number, extra: Record<string, unknown>) =>
+    JSON.stringify({ type: 'user', sessionId: 'tn', uuid: `tn-n${at}`, promptId: `n${at}`, timestamp: new Date(at).toISOString(), ...extra, message: { role: 'user', content: '<task-notification>\n<task-id>b1</task-id>\n</task-notification>' } });
+  writeLines(path.join(dir, 'tn.jsonl'), [
+    s.prompt(t0, 'Run the build in the background', 'p1'),
+    // Marked by origin, as recent versions write it.
+    note(t0 + 100, { origin: { kind: 'task-notification', producer: 'session-task' } }),
+    // Unmarked, as older versions write it.
+    note(t0 + 200, {}),
+    s.use(t0 + 300, 'e1', 'Edit', { file_path: '/work/repo/a.ts' }),
+    JSON.stringify({ type: 'user', sessionId: 'tn', uuid: 'h', promptId: 'p2', origin: { kind: 'human' }, timestamp: new Date(t0 + 400).toISOString(), message: { role: 'user', content: 'Now fix it' } }),
+    s.use(t0 + 500, 'e2', 'Edit', { file_path: '/work/repo/b.ts' }),
+  ]);
+  await index.refresh([root], t0);
+  const calls = new Map(index.calls().map((c) => [c.id, c]));
+  assert.equal(calls.get('e1')!.turn!.prompt, 'Run the build in the background');
+  assert.equal(calls.get('e2')!.turn!.prompt, 'Now fix it');
+});
+
 test('a prompt without promptId uses its line uuid, and meta lines start no turn', async () => {
   const { root, dir, index } = setup();
   const s = new SessionLines('s2');
@@ -116,17 +147,64 @@ test('reads only what was appended, across a line split between writes', async (
   assert.equal(calls.get('a')!.end, t0 + 30);
 });
 
-test('files last written before the oldest waiting change are not read', async () => {
+test('files last written long before the oldest waiting change are not read', async () => {
   const { root, dir, index } = setup();
   const s = new SessionLines('old');
   const t0 = Date.parse('2026-11-01T10:00:00Z');
   const file = path.join(dir, 'old.jsonl');
   writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' })]);
   fs.utimesSync(file, new Date(t0 + 20), new Date(t0 + 20));
-  await index.refresh([root], t0 + 60_000);
+  await index.refresh([root], t0 + READ_BACK_MS + 1000);
   assert.equal(index.calls().length, 0);
   await index.refresh([root], t0);
   assert.equal(index.calls().length, 1);
+});
+
+test('a transcript quiet since a long command started is still read for a write late in the command', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('long');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const file = path.join(dir, 'long.jsonl');
+  writeLines(file, [s.prompt(t0, 'Build it', 'p'), s.use(t0 + 10, 'b', 'Bash', { command: 'npm run build' })]);
+  fs.utimesSync(file, new Date(t0 + 10), new Date(t0 + 10));
+  await index.refresh([root], t0 + 60_000);
+  assert.deepEqual(index.calls().map((c) => c.id), ['b']);
+});
+
+test("a subagent's parent transcript is read even when it has been quiet since the subagent started", async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('quiet');
+  const sub = new SessionLines('quiet');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const parent = path.join(dir, 'quiet.jsonl');
+  writeLines(parent, [s.prompt(t0, 'Delegate it', 'pq'), s.use(t0 + 100, 'spawn', 'Agent', { prompt: 'x' })]);
+  fs.utimesSync(parent, new Date(t0 + 100), new Date(t0 + 100));
+  const agentFile = path.join(dir, 'quiet', 'subagents', 'agent-q.jsonl');
+  const tw = t0 + 20 * 60_000;
+  writeLines(agentFile, [sub.use(tw - 50, 'subq', 'Edit', { file_path: '/work/repo/c.ts' }, { agentId: 'q' })]);
+  fs.writeFileSync(agentFile.replace(/\.jsonl$/, '.meta.json'), JSON.stringify({ toolUseId: 'spawn' }));
+  fs.utimesSync(agentFile, new Date(tw), new Date(tw));
+  await index.refresh([root], tw);
+  const [call] = index.calls();
+  assert.equal(call?.id, 'subq');
+  assert.equal(call.turn!.id, 'pq');
+});
+
+test('prune keeps a file whose call is still running', async () => {
+  const { root, dir, index } = setup();
+  const s = new SessionLines('run');
+  const t0 = Date.parse('2026-11-01T10:00:00Z');
+  const file = path.join(dir, 'run.jsonl');
+  writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'spawn', 'Agent', { prompt: 'x' }), s.use(t0 + 20, 'b', 'Bash', { command: 'sleep' })]);
+  fs.utimesSync(file, new Date(t0 + 20), new Date(t0 + 20));
+  await index.refresh([root], t0);
+  index.prune(t0 + 3_600_000);
+  assert.equal(index.calls().length, 1);
+  writeLines(file, [s.result(t0 + 30, 'b'), s.result(t0 + 40, 'spawn')], true);
+  fs.utimesSync(file, new Date(t0 + 40), new Date(t0 + 40));
+  await index.refresh([root], t0);
+  index.prune(t0 + 3_600_000);
+  assert.equal(index.calls().length, 0);
 });
 
 test('transcripts of unrelated projects are not read', async () => {
@@ -179,7 +257,7 @@ test('prune forgets files not written to since a time, and a refresh reads them 
   const s = new SessionLines('s6');
   const t0 = Date.parse('2026-11-01T10:00:00Z');
   const file = path.join(dir, 's6.jsonl');
-  writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' })]);
+  writeLines(file, [s.prompt(t0, 'Go', 'p'), s.use(t0 + 10, 'a', 'Edit', { file_path: '/work/repo/a.ts' }), s.result(t0 + 15, 'a')]);
   fs.utimesSync(file, new Date(t0 + 20), new Date(t0 + 20));
   await index.refresh([root], t0);
   assert.equal(index.calls().length, 1);

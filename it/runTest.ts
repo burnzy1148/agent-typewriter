@@ -18,6 +18,8 @@ const PARTS = ['recording', 'playback', 'reload', 'edits'];
 async function main() {
   // Launches get IT_PART only from suiteLaunches; one left in the shell would reach them all.
   delete process.env.IT_PART;
+  // Agent context reads Claude Code transcripts from here, never the real ~/.claude; suite.ts writes one.
+  process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'atclaude-'));
   for (const group of process.env.IT_GROUP?.split(',') ?? ['suite', 'workspaces']) {
     if (group === 'workspaces') await workspaceLaunches();
     else if (group === 'suite') await suiteLaunches();

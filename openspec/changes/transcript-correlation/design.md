@@ -65,7 +65,7 @@ Alternative: correlate inside the recorder before `timeline.push`. That needs a 
 - `encodeProjectPath(p)`: replace `[^A-Za-z0-9]` with `-`.
 - `candidateDirs(names, roots)`: a project folder is a candidate when its name equals the encoding of a root or one of its ancestors, or starts with a root's encoding followed by `-`. The prefix rule can include unrelated folders (`/a/b-c` for root `/a/b`). That is harmless, because matching is by absolute file path.
 - `TranscriptIndex` keeps per transcript file a byte offset and a partial last line, and reads only what was appended (in chunks, decoding UTF-8 at line boundaries). Parsed lines fill per-session state: the current turn, the last narration of the turn, tool calls `{ id, name, file?, detail, start, end?, turn, narration, agentId? }`, and the time of the file's last line. A line that is not valid JSON is skipped. Subagent files resolve their turn from the main session's call named in `meta.json`. Until that call is indexed, their calls wait in the index and get the turn on the next refresh.
-- `refresh(dirs, since)` lists `*.jsonl` in each candidate dir and `<session>/subagents/*.jsonl`, and reads files whose mtime is at least `since - 5 s`. The projects folder listing is cached for 10 s.
+- `refresh(dirs, since)` lists `*.jsonl` in each candidate dir and `<session>/subagents/*.jsonl`, and reads files whose mtime is at least `since - 5 s` (superseded in implementation, see below). The projects folder listing is cached for 10 s.
 
 ### Matching (`src/agentContext.ts`, pure)
 
@@ -80,7 +80,7 @@ Alternative: correlate inside the recorder before `timeline.push`. That needs a 
 
 - Debounced 250 ms after a timeline change that leaves an unmatched, unsettled change.
 - While any unmatched change is under 30 s old, again every 2 s.
-- A change settles once it is matched, or once it is 30 s old and has been tried at least once. Restored changes are old, so they are tried once. Settled keys are `seq:time:uri`, pruned to what is still in the timeline.
+- A change settles once it is matched, or once it is 30 s old and has been tried at least once. Restored changes are old, so they are tried once. (Superseded in implementation, see below.) Settled keys are `seq:time:uri`, pruned to what is still in the timeline.
 - Roots are the recording lanes' roots plus the workspace folders. Off when `agentTypewriter.agentContext` is false. Turning it on runs a pass.
 - Errors reading a file are logged once per file to the output channel and do not stop the pass.
 
@@ -92,3 +92,17 @@ Alternative: correlate inside the recorder before `timeline.push`. That needs a 
 - [Background commands] `Bash` with `run_in_background` ends at once, so files it writes later get no context.
 - [Symlinked paths] A transcript path through a symlink does not equal the recorded path, so the change gets no context.
 - [Not persisted] Context is lost after reload once Claude Code has cleaned up the transcript (30 days by default). A follow-up bead covers persisting it.
+
+## Corrected in implementation
+
+Review round 1 found these. Each line above that one contradicts is marked superseded.
+
+- **How far back transcripts are read.** The 5 s mtime cutoff assumed a transcript is written around the time its call writes a file. It is not. Claude Code writes the `tool_use` line when a call starts and nothing more until the result. So the transcript behind a write late in a long `Bash` call is old. A parent transcript holding the `Agent` call stays silent for the whole of a subagent's run. Now:
+  - Files written since `since - (RUNNING_MAX_MS + 5 s)` are read. Reads are incremental, so the cost is the first read of a few more files.
+  - Reading a subagent transcript also reads its session's own transcript, whatever its mtime.
+  - `prune` keeps a file that has a call with no result.
+  - Subagent folders are looked at for sessions written to in the last 24 h, not 1 h.
+- **Windows.** `candidateDirs` compared folder names with case. VS Code's `fsPath` lowercases the drive letter (`c:\repo`), but Claude Code's folders keep it in upper case (`C--repo`), so Windows found no transcripts. Names are now compared without case on every platform. The encoding already loses information, and matching is by absolute path anyway.
+- **Background-task notifications.** Claude Code writes them as `user` lines (`origin.kind: "task-notification"`, text starting `<task-notification>`), and they were starting turns. Only a line with no `origin.kind`, or with `"human"`, can start a turn now, and never one that starts with `<task-notification>`.
+- **When a change settles.** The 30 s counted from the write time. The spec counts from the recording, and a held delete or a change during a git operation reaches the timeline well after its write. The correlator now notes when it first sees each change and settles it 30 s after that. Restored changes are first seen at the restore, so they get the same 30 s of retries instead of one try. This costs a few incremental refreshes after a reload.
+

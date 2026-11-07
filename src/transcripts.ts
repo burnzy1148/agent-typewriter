@@ -11,10 +11,20 @@ export const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash']);
 export const TEXT_MAX = 1000;
 /** A tool call's detail is cut to this many characters. */
 export const DETAIL_MAX = 200;
-/** Files last written this long before the oldest change waiting for a match are not read. */
-export const MTIME_SLACK_MS = 5000;
-/** A session's subagent transcripts are looked at while the session's own transcript was written this recently. */
-const SUBAGENT_WINDOW_MS = 60 * 60 * 1000;
+/** A call with no result counts as running for this long at most. */
+export const RUNNING_MAX_MS = 10 * 60 * 1000;
+/**
+ * Files last written this long before the oldest change waiting for a match
+ * are not read. A transcript is not written while its call runs, so a write
+ * late in a long call has an old transcript behind it.
+ */
+export const READ_BACK_MS = RUNNING_MAX_MS + 5000;
+/**
+ * A session's subagent transcripts are looked at while the session's own
+ * transcript was written this recently. It is not written while a subagent
+ * runs, so this is generous.
+ */
+const SUBAGENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** How long the list of project folders is reused. */
 const LIST_TTL_MS = 10_000;
 const CHUNK = 1024 * 1024;
@@ -85,13 +95,15 @@ export function selfAndAncestors(p: string): string[] {
  * like it, which costs a read but never a wrong match).
  */
 export function candidateDirs(names: readonly string[], roots: readonly string[]): string[] {
+  // Without case: VS Code gives Windows drive letters in lower case and Claude Code in upper.
+  const key = (s: string) => s.toLowerCase();
   const exact = new Set<string>();
   const prefixes: string[] = [];
   for (const root of roots) {
-    for (const dir of selfAndAncestors(root)) exact.add(encodeProjectPath(dir));
-    prefixes.push(encodeProjectPath(root.replace(/[\\/]+$/, '')) + '-');
+    for (const dir of selfAndAncestors(root)) exact.add(key(encodeProjectPath(dir)));
+    prefixes.push(key(encodeProjectPath(root.replace(/[\\/]+$/, ''))) + '-');
   }
-  return names.filter((n) => exact.has(n) || prefixes.some((p) => n.startsWith(p)));
+  return names.filter((n) => exact.has(key(n)) || prefixes.some((p) => key(n).startsWith(p)));
 }
 
 /** A prompt's text, or undefined when the line does not start a turn. */
@@ -106,6 +118,8 @@ export function promptText(content: unknown): string | undefined {
       .join('\n');
   } else return undefined;
   const stripped = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+  // A background task reporting back, not something the user asked.
+  if (stripped.startsWith('<task-notification>')) return undefined;
   return stripped ? cut(stripped, TEXT_MAX) : undefined;
 }
 
@@ -132,6 +146,8 @@ interface FileState {
   narration?: string;
   /** Ids of the calls read from this file. */
   calls: string[];
+  /** Ids of its tool calls with no result yet. */
+  open: Set<string>;
 }
 
 type Fs = Pick<typeof fs.promises, 'readdir' | 'stat' | 'open' | 'readFile'>;
@@ -187,16 +203,20 @@ export class TranscriptIndex {
         const file = path.join(dir, e.name);
         const mtime = await this.mtimeOf(file);
         if (mtime === undefined) continue;
-        if (mtime >= since - MTIME_SLACK_MS) await this.read(file, mtime);
-        if (mtime >= since - SUBAGENT_WINDOW_MS) await this.refreshSubagents(path.join(dir, e.name.slice(0, -'.jsonl'.length), 'subagents'), since);
+        if (mtime >= since - READ_BACK_MS) await this.read(file, mtime);
+        if (mtime >= since - SUBAGENT_WINDOW_MS) await this.refreshSubagents(path.join(dir, e.name.slice(0, -'.jsonl'.length), 'subagents'), since, file);
       }
     }
   }
 
-  /** Forgets files not written to since `before`, and their calls; a later refresh reads them again from the start. */
+  /**
+   * Forgets files not written to since `before`, and their calls; a later
+   * refresh reads them again from the start. A file with a call still
+   * running is kept: it is quiet because of that call.
+   */
   prune(before: number): void {
     for (const [file, st] of this.files) {
-      if (st.mtime >= before) continue;
+      if (st.mtime >= before || st.open.size > 0) continue;
       this.forgetCalls(st);
       this.files.delete(file);
     }
@@ -223,19 +243,26 @@ export class TranscriptIndex {
     return names;
   }
 
-  private async refreshSubagents(dir: string, since: number): Promise<void> {
+  /** Reads a session's subagent transcripts, and then the session's own, which holds the calls that started them. */
+  private async refreshSubagents(dir: string, since: number, parent: string): Promise<void> {
     let entries: fs.Dirent[];
     try {
       entries = await this.fsp.readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
+    let read = false;
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
       const file = path.join(dir, e.name);
       const mtime = await this.mtimeOf(file);
-      if (mtime !== undefined && mtime >= since - MTIME_SLACK_MS) await this.read(file, mtime, true);
+      if (mtime === undefined || mtime < since - READ_BACK_MS) continue;
+      await this.read(file, mtime, true);
+      read = true;
     }
+    // Quiet while its subagents run, so it may be older than any cutoff.
+    const mtime = read ? await this.mtimeOf(parent) : undefined;
+    if (mtime !== undefined) await this.read(parent, mtime);
   }
 
   private async mtimeOf(file: string): Promise<number | undefined> {
@@ -250,7 +277,7 @@ export class TranscriptIndex {
     let st = this.files.get(file);
     try {
       if (!st) {
-        st = { offset: 0, partial: Buffer.alloc(0), mtime, calls: [] };
+        st = { offset: 0, partial: Buffer.alloc(0), mtime, calls: [], open: new Set() };
         if (subagent) await this.readMeta(file, st);
         this.files.set(file, st);
       }
@@ -261,7 +288,7 @@ export class TranscriptIndex {
         if (size < st.offset) {
           // Rewritten from the start: read it again.
           this.forgetCalls(st);
-          Object.assign(st, { offset: 0, partial: Buffer.alloc(0), turn: undefined, narration: undefined, calls: [] });
+          Object.assign(st, { offset: 0, partial: Buffer.alloc(0), turn: undefined, narration: undefined, calls: [], open: new Set() });
         }
         while (st.offset < size) {
           const buf = Buffer.allocUnsafe(Math.min(CHUNK, size - st.offset));
@@ -330,12 +357,15 @@ export class TranscriptIndex {
       if (Array.isArray(content)) {
         for (const b of content) {
           if (isObject(b) && b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+            st.open.delete(b.tool_use_id);
             const call = this.byId.get(b.tool_use_id);
             if (call && call.end === undefined) call.end = time;
           }
         }
       }
       if (st.subagent || sidechain || o.isMeta === true || o.isCompactSummary === true) return;
+      // Recent versions mark what a line is; only a human's prompt starts a turn.
+      if (isObject(o.origin) && typeof o.origin.kind === 'string' && o.origin.kind !== 'human') return;
       const prompt = promptText(content);
       if (prompt === undefined) return;
       const id = typeof o.promptId === 'string' ? o.promptId : typeof o.uuid === 'string' ? o.uuid : `${session}:${time}`;
@@ -351,6 +381,7 @@ export class TranscriptIndex {
         if (said) st.narration = cut(said, TEXT_MAX);
       } else if (b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
         const known = this.byId.has(b.id) || this.turnOfCall.has(b.id);
+        st.open.add(b.id);
         if (!st.subagent && st.turn) this.turnOfCall.set(b.id, st.turn);
         const call = toolCall(b.id, b.name, b.input, session, time);
         if (call) {

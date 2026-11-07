@@ -872,7 +872,7 @@
         "agentTypewriter.agentContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Read the Claude Code session transcripts of the recorded checkouts (in `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`) to tell which prompt and tool call made each change. The Changes view shows it in each change's tooltip. Transcripts are only read, never written, and nothing from them is saved."
+          "markdownDescription": "Read the transcripts of Claude Code sessions started in a recorded checkout, a folder above it or a folder inside it (in `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`) to tell which prompt and tool call made each change. The Changes view shows it in each change's tooltip. A change made while one of those sessions runs a command is credited to that command, even one you made yourself. Transcripts are only read, never written, and nothing from them is saved."
         }
       }
     }
