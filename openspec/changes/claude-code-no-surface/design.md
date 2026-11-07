@@ -6,6 +6,7 @@
 
 - `/typewriter` (`command.run`): after the terminal-only check it awaits `$.ui.open({ id: PANE, title: TITLE })`, ignores the answer and returns `{ text: 'Agent Typewriter pane opened.' }`.
 - `record`, on the session's first recorded change: `void $.ui.open(...)`, answer ignored. A rejection would go unhandled.
+- The play-from chip on a change's call row in the conversation (at-o3z.12) opens the pane too. It is pressed on a row a surface drew, so a surface is attached and `no-surface` cannot come back there; this change leaves it alone.
 
 What the engine says (the 2.1.309 types laid in `claude-code/.claude-plugin/types/`, checked on 2.1.312 by spike at-o3z.10):
 

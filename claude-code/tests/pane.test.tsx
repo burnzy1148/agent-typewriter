@@ -251,6 +251,83 @@ test('/typewriter in a terminal session points to the VS Code extension and open
   expect(w.opens).toEqual([]);
 });
 
+const NO_SURFACE = { isPlaced: false, reason: 'no-surface: no surface is attached' } as const;
+
+/** Runs /typewriter as the person would type it, and returns its answer. */
+async function typewriter($: Engine): Promise<string | undefined> {
+  const ran = await $.command.run({
+    command: 'typewriter',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  });
+  return ran.text;
+}
+
+test('/typewriter with no surface attached says the pane cannot be shown here and where it can', async ($, on) => {
+  const w = world(on);
+  w.surfaces = [];
+  w.openAnswer = NO_SURFACE;
+  await start($);
+  const text = await typewriter($);
+  expect(text).toContain("can't show its pane in this session");
+  expect(text).toContain('desktop app');
+  expect(text).toContain('VS Code');
+  expect(text).not.toContain('opened');
+  // The pane stays open, so a surface that attaches later draws it.
+  expect(w.opens).toEqual([PANE_ID]);
+});
+
+test('/typewriter left unplaced for another reason gives that reason and where the pane can be shown', async ($, on) => {
+  const w = world(on);
+  w.openAnswer = { isPlaced: false, reason: 'the attached surfaces place no panes' };
+  await start($);
+  const text = await typewriter($);
+  expect(text).toContain('the attached surfaces place no panes');
+  expect(text).toContain('desktop app');
+  expect(text).not.toContain('opened');
+});
+
+test('the first change with no surface attached adds one transcript notice and is recorded; later ones add none', async ($, on) => {
+  const w = world(on);
+  w.surfaces = [];
+  w.openAnswer = NO_SURFACE;
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
+  await w.clock.settle();
+  expect(w.saved.changes.map((c) => c.path)).toEqual(['/w/a.ts']);
+  expect(w.logs).toHaveLength(1);
+  expect(w.logs[0]).toContain("can't show its pane in this session");
+  expect(w.logs[0]).toContain('desktop app');
+  await $.tool.call({ tool: 'Write', file_path: '/w/b.ts', content: 'b\n' });
+  await w.clock.settle();
+  expect(w.saved.changes).toHaveLength(2);
+  expect(w.logs).toHaveLength(1);
+});
+
+test('the first change on a window too narrow for an unasked pane adds no notice', async ($, on) => {
+  const w = world(on);
+  w.openAnswer = { isPlaced: false, reason: 'unrequested panes need 144 columns; the terminal has 120' };
+  await start($);
+  await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
+  await w.clock.settle();
+  expect(w.saved.changes).toHaveLength(1);
+  expect(w.opens).toEqual([PANE_ID]);
+  expect(w.logs).toEqual([]);
+});
+
+test('a refused open on the first change leaves the tool call and the recording as they are', async ($, on) => {
+  const w = world(on);
+  w.openAnswer = { reject: 'refused by another plugin' };
+  await start($);
+  const result = await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
+  await w.clock.settle();
+  expect(result.isError).toBeFalsy();
+  expect(w.files.get('/w/a.ts')).toBe('a\n');
+  expect(w.saved.changes).toHaveLength(1);
+  expect(w.logs).toEqual([]);
+});
+
 test('a session on the terminal and the desktop records and draws on the desktop, and draws nothing on the terminal', async ($, on) => {
   const w = world(on, { '/w/src/app.ts': BEFORE });
   w.surfaces = ['terminal', 'desktop'];
