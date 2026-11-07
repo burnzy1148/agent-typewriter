@@ -105,6 +105,11 @@ type Live = {
    * and kept in $.state (`agents`) so a reload keeps it.
    */
   agents: Map<string, { mainTurnId?: string; agentCallId?: string }>;
+  /** Settles once the load has read and merged the stored `agents`, or failed; `agents` is not written before. */
+  loaded: Promise<void>;
+  settleLoaded: () => void;
+  /** Writes of `agents`, one after another. */
+  agentWrites: Promise<void>;
   /** A note the pane shows on its Changes line until the next press in it. */
   note?: string;
 };
@@ -169,6 +174,8 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     const seen = [...live.agents];
     live.agents = new Map(stored.value.map(({ agentId, ...at }) => [agentId, at]));
     for (const [id, at] of seen) keepAgent(live, id, at);
+    // A spawn during the load queued a write that waits for this one's list.
+    if (seen.length > 0) saveAgents($, live);
   }
   sync($, live);
 }
@@ -200,10 +207,18 @@ function keepAgent(live: Live, id: string, at: { mainTurnId?: string; agentCallI
   }
 }
 
-/** Queues a write of the agents' links, after any writes already queued. */
+/**
+ * Queues a write of the agents' links as they are when it runs, after the
+ * load has read the stored ones: written earlier, it would replace them.
+ */
 function saveAgents($: EngineInterface, live: Live): void {
-  const next = [...live.agents].map(([agentId, at]): AgentLink => ({ agentId, ...at }));
-  live.writes = live.writes.then(() => update($, agents, () => next).then(() => undefined)).catch(() => undefined);
+  live.agentWrites = live.agentWrites
+    .then(() => live.loaded)
+    .then(async () => {
+      const next = [...live.agents].map(([agentId, at]): AgentLink => ({ agentId, ...at }));
+      await update($, agents, () => next);
+    })
+    .catch(() => undefined);
 }
 
 /** Runs a file tool, capturing "before" when the call starts and "after" once it succeeded. */
@@ -327,12 +342,20 @@ export const register: Register = (on, options) => {
     writes: Promise.resolve(),
     turns: new Map(),
     agents: new Map(),
+    loaded: Promise.resolve(),
+    settleLoaded: () => undefined,
+    agentWrites: Promise.resolve(),
   };
+  live.loaded = new Promise((resolve) => (live.settleLoaded = resolve));
 
   on('session.start', async ($, e, next) => {
     live.cwd = e.cwd;
-    await $.command.register({ name: 'typewriter', description: 'Open the Agent Typewriter pane' });
-    await load($, live).catch(() => undefined);
+    try {
+      await $.command.register({ name: 'typewriter', description: 'Open the Agent Typewriter pane' });
+      await load($, live).catch(() => undefined);
+    } finally {
+      live.settleLoaded();
+    }
     $.clock.every(TICK_MS, () => step($, live));
     return next(e);
   });

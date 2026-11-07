@@ -139,6 +139,24 @@ test("an agent started before a reload still gives its later changes the main tu
   expect(linksOf(w, 'toolu_late')).toEqual({ turnId: 'ta2', agentId: 'ag1', mainTurnId: 't1', agentCallId: 'toolu_agent' });
 });
 
+test('an agent started while a reload is still loading keeps the stored agents, in memory and saved', async ($, on) => {
+  const w = world(on);
+  loops(on);
+  const writes = agentsState(on, { shape: 'agents-1', value: [{ agentId: 'old', mainTurnId: 't0', agentCallId: 'toolu_old' }] });
+  const starting = start($);
+  await spawn($, 'new', 'toolu_new');
+  await starting;
+  await w.clock.settle();
+
+  expect(writes.at(-1)).toEqual([
+    { agentId: 'old', mainTurnId: 't0', agentCallId: 'toolu_old' },
+    { agentId: 'new', agentCallId: 'toolu_new' },
+  ]);
+  await turn($, 'tx', 'old');
+  await write($, 'old.ts', 'toolu_oldwrite', 'old');
+  expect(linksOf(w, 'toolu_oldwrite')).toEqual({ turnId: 'tx', agentId: 'old', mainTurnId: 't0', agentCallId: 'toolu_old' });
+});
+
 test('the agents started are saved for a reload, the newest 200', async ($, on) => {
   const w = world(on);
   loops(on);

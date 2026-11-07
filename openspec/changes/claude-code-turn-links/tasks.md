@@ -33,6 +33,10 @@
 - [x] 6.4 *Added in implementation:* save the agent map in an `agents` atom (`agents-1`, newest 200) and read it on load; test a reload and the bound. Verify with `npm run check:claude-code`.
 - [x] 6.5 *Added in implementation:* name the top of the chain in the fallback requirement, and add the chip to *The list keeps up with playback* under `## MODIFIED`; update the README's note text. Verify with `openspec validate claude-code-turn-links --strict`.
 
+## 7. Review round 2
+
+- [x] 7.1 *Added in implementation:* hold `agents` writes until the load has read and merged the stored list, write the list as it is then, and save after the merge; test a spawn during the load. Verify with `npm run check:claude-code`.
+
 ## Workflow follow-up
 
 - Record the change on the bead (`bd update at-o3z.12 --spec-id openspec/changes/claude-code-turn-links`) and remove its `needs-spec` label.
