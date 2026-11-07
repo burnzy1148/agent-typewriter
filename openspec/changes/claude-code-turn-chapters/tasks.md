@@ -7,7 +7,7 @@
 
 ## 2. Keeping turns
 
-- [x] 2.1 In `register.tsx`, on a main-loop `turn.start` record `{ turnId, number, prompt }` (whitespace collapsed, cut to 200 characters) and mark the previous main turn ended; on a main-loop `turn.complete` mark its turn ended. Save them in a `turns` atom (`turns-1`) written through a queue that waits for the load's merge, as `agents` is, keeping only the running turn and turns a kept change names. Add plugin tests in `claude-code/tests/chapters.test.tsx`: numbering across turns with and without changes, an agent's turn not numbered, a reload keeping numbers and prompts and numbering on, a turn starting during the load, a turn running at a reload ending at the next `turn.start`, and pruning once a turn's changes are dropped. Verify with `npm run check:claude-code`.
+- [x] 2.1 In `register.tsx`, on a main-loop `turn.start` record `{ turnId, number, prompt }` (whitespace collapsed, cut to 200 characters) and mark the previous main turn ended; on a main-loop `turn.complete` mark its turn ended. Save them in a `turns` atom (`turns-1`) written through a queue that waits for the load's merge, as `agents` is, keeping only the running turn and turns a kept change names. Add plugin tests in `claude-code/tests/chapters.test.tsx`: numbering across turns with and without changes, an agent's turn not numbered, a reload keeping numbers and prompts and numbering on, a turn starting during the load, a turn running at a reload ending at the next `turn.start`, and pruning once a turn's changes are dropped. Verify with `npm run check:claude-code`. *Superseded in implementation:* the atom also keeps the turns a known agent names; see task 6.1 and design.md, *Corrected in implementation*.
 
 ## 3. Chapters in the pane
 
