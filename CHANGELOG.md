@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Each recorded change's tooltip in the Changes view shows the Claude Code prompt and tool call that made it, and what the agent said just before. They come from Claude Code's session transcripts for the recorded checkouts (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`), which the extension only reads. This is rebuilt after a reload and never saved. Set `agentContext` to `false` to turn it off.
+
 ## 0.6.0 (2026-10-27)
 
 - With `autoRecordWorktrees` set to `fill` or `rotate`, a new worktree gets its lane at its first change instead of as soon as git lists it. Until then it is watched but has no lane, doesn't count toward the 5-lane cap, can't make `rotate` stop a lane and can't be followed, so worktrees that review tools check out and remove without writing leave no lanes. The cap and rotation are decided at that first change. At most 5 new worktrees wait at once.
