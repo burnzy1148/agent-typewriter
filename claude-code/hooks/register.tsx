@@ -6,8 +6,8 @@
 // The deck lives in module memory. Hooks, the timer and button handlers run in
 // this one module, one at a time, so they change it directly. $.state keeps
 // only what must outlive a reload (`saved`, and each kept change's texts in
-// the `text` family, the agents' links in `agents`, the main conversation's
-// turns in `turns`) and what the pane draws (`view`, and the changes list in
+// the `text` family with their captions, the agents' links in `agents`, the
+// main conversation's turns in `turns`) and what the pane draws (`view`, and the changes list in
 // `listing`, which changes far less often).
 
 import { atom, read, update } from 'claude-code';
@@ -20,11 +20,14 @@ import {
   MAX_REPLAY_BYTES,
   SAVED_SHAPE,
   TICK_MS,
+  captionLines,
+  captionsOf,
   changeById,
   chaptersOf,
   chipLabel,
   enqueue,
   finish,
+  forgetLoop,
   frame,
   headerLabel,
   isUnchanged,
@@ -33,6 +36,7 @@ import {
   listLines,
   listWindow,
   listingOf,
+  narrate,
   newDeck,
   playOptions,
   promptOf,
@@ -45,6 +49,7 @@ import {
   scrollTargets,
   scrolledTop,
   seek,
+  setCaption,
   skipToLatest,
   tick,
   togglePause,
@@ -54,7 +59,9 @@ import {
   type CallLinks,
   type Change,
   type Deck,
+  type HeardRow,
   type ListGeometry,
+  type Narration,
   type NewChange,
   type PlayOptions,
   type Tool,
@@ -80,14 +87,21 @@ const SCROLL_FAILED_NOTE = "Couldn't scroll the conversation to that call.";
 const MAX_AGENTS = 200;
 /** The share of the body's rows the changes list may take. */
 const LIST_SHARE = 0.4;
+/** Most captions kept for calls not yet recorded as changes; past this the oldest go first. */
+const MAX_WAITING_CAPTIONS = 200;
+/** Most lines the caption over the code takes. */
+const BAND_LINES = 3;
+/** Most lines a row's hover card takes, and the columns it may take at most. */
+const CARD_LINES = 6;
+const CARD_COLUMNS = 60;
 
 // Change a tag when its value's fields change: a reload then starts fresh
 // instead of reading what an earlier version stored. `saved` reads its earlier
 // tag through savedFrom.
 const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
 const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
-const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-1' });
-const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-3' });
+const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-2' });
+const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-4' });
 const agentsRef = { plugin: 'agent-typewriter', key: 'agents' } as const;
 const AGENTS_SHAPE = 'agents-1';
 const agents = atom(agentsRef, [] as AgentLink[], { shape: AGENTS_SHAPE });
@@ -101,8 +115,14 @@ type Live = {
   deck: Deck;
   opts: PlayOptions;
   cwd?: string;
-  /** Ids whose `text` members hold text. */
+  /** Ids whose `text` members hold text: their before and after texts, their caption, or both. */
   texts: Set<string>;
+  /** Ids whose `:caption` member holds their caption. */
+  captioned: Set<string>;
+  /** Where each loop's response stands, for the captions of its calls. */
+  narration: Narration;
+  /** Captions settled for calls not yet recorded as changes, by `tool_use_id`, oldest first, at most MAX_WAITING_CAPTIONS. */
+  captions: Map<string, string>;
   /** What was last written to `saved`, `view` and `listing`, to skip writes that change nothing. */
   savedJson: string;
   viewJson: string;
@@ -155,6 +175,14 @@ async function flush($: EngineInterface, live: Live): Promise<void> {
     live.texts.delete(id);
     await $.state.set({ ...text, id: `${id}:before` }, '');
     await $.state.set({ ...text, id: `${id}:after` }, '');
+    if (live.captioned.delete(id)) await $.state.set({ ...text, id: `${id}:caption` }, '');
+  }
+  // A caption is written once its change is kept; a reload that finds none shows none.
+  for (const [id, caption] of captionsOf(live.deck)) {
+    if (live.captioned.has(id)) continue;
+    live.captioned.add(id);
+    live.texts.add(id);
+    await $.state.set({ ...text, id: `${id}:caption` }, caption);
   }
   const savedJson = JSON.stringify(nextSaved);
   if (savedJson !== live.savedJson) {
@@ -180,15 +208,22 @@ async function load($: EngineInterface, live: Live): Promise<void> {
   const was = savedFrom((await $.state.get(savedRef)).value);
   const changes: Change[] = [];
   for (const c of was.changes) {
+    // Changes saved before captions were kept have no caption member.
+    const stored = (await $.state.get({ ...text, id: `${c.id}:caption` })).value;
+    const caption = stored ? { caption: stored } : {};
+    if (stored) {
+      live.texts.add(c.id);
+      live.captioned.add(c.id);
+    }
     if (c.isTooLarge) {
-      changes.push({ ...c, before: '', after: '' });
+      changes.push({ ...c, before: '', after: '', ...caption });
       continue;
     }
     const before = (await $.state.get({ ...text, id: `${c.id}:before` })).value;
     const after = (await $.state.get({ ...text, id: `${c.id}:after` })).value;
     live.texts.add(c.id);
     if (before === undefined || after === undefined || before === after) continue;
-    changes.push({ ...c, before, after });
+    changes.push({ ...c, before, after, ...caption });
   }
   live.deck = restore(was, changes, live.opts, live.cwd);
   const stored = (await $.state.get(agentsRef)).value;
@@ -327,6 +362,12 @@ async function record<R extends { deny?: string; isError?: boolean }>(
     await $.state.set({ ...text, id: `${id}:after` }, change.after);
   }
   // Read the deck after the writes: the timer and other hooks may have moved it.
+  // The caption, too: the row with the call's text may have been kept meanwhile.
+  const caption = live.captions.get(id);
+  if (caption !== undefined) {
+    live.captions.delete(id);
+    change = { ...change, caption };
+  }
   const isFirst = live.deck.recorded === 0;
   enqueue(live.deck, change, live.cwd);
   // Tracked only once queued: a flush during the writes would take it for a
@@ -346,6 +387,25 @@ async function record<R extends { deny?: string; isError?: boolean }>(
     );
   }
   return ran;
+}
+
+/**
+ * Feeds a row a loop kept to the narration tracker. A caption for a change
+ * already kept is set on it; one for a call not yet recorded waits for it.
+ */
+function heard($: EngineInterface, live: Live, row: HeardRow): void {
+  for (const [id, caption] of narrate(live.narration, row)) {
+    if (changeById(live.deck, id)) {
+      if (setCaption(live.deck, id, caption)) sync($, live);
+      continue;
+    }
+    live.captions.delete(id);
+    live.captions.set(id, caption);
+    for (const oldest of live.captions.keys()) {
+      if (live.captions.size <= MAX_WAITING_CAPTIONS) break;
+      live.captions.delete(oldest);
+    }
+  }
 }
 
 /** Whether an open left the pane undrawn because no surface is attached, the engine's `no-surface` reason. */
@@ -428,6 +488,9 @@ export const register: Register = (on, options) => {
     deck: newDeck(),
     opts: playOptions(options),
     texts: new Set(),
+    captioned: new Set(),
+    narration: new Map(),
+    captions: new Map(),
     savedJson: '',
     viewJson: '',
     listingJson: '',
@@ -473,6 +536,7 @@ export const register: Register = (on, options) => {
   // Between turns a loop has no turn: a call then (a plugin's own) is stamped with none.
   on('turn.complete', ($, e, next) => {
     live.turns.delete(e.agentId ?? '');
+    forgetLoop(live.narration, e.agentId);
     if (e.agentId === undefined) {
       endTurn(live, e.turnId);
       saveTurns($, live);
@@ -491,6 +555,21 @@ export const register: Register = (on, options) => {
       saveAgents($, live);
     }
     return started;
+  });
+
+  // What each loop's agent writes before an Edit or Write call becomes that
+  // change's caption. Observed only: the row is stored and handed back as the
+  // engine stored it, and a failure here loses a caption, nothing else. In a
+  // session drawn only on the terminal nothing is recorded, so no caption is
+  // ever used.
+  on('session.append', async ($, e, next) => {
+    const stored = await next(e);
+    try {
+      if (stored.deny === undefined) heard($, live, { door: e.door, ...(e.agentId !== undefined && { agentId: e.agentId }), content: stored.message.content });
+    } catch {
+      // The caption is lost; the conversation and the recording are not touched.
+    }
+    return stored;
   });
 
   // A failure while recording never blocks the tool: the handler runs it, or
@@ -585,12 +664,14 @@ export const register: Register = (on, options) => {
     const top = listWindow(count, currentLine === -1 ? undefined : currentLine, height, live.listTop);
     const linesShown = lines.slice(top, top + height);
 
-    // The code takes what the header, the controls and the list leave.
-    const rows = Math.max(3, bodyRows - 3 - (height > 0 ? height + 1 : 0));
+    // The shown change's caption, in quotes, between the header and the code.
+    const band = v.caption ? captionLines(`“${v.caption}”`, bodyColumns - 2, BAND_LINES) : [];
+    // The code takes what the header, the caption, the controls and the list leave.
+    const rows = Math.max(3, bodyRows - 3 - band.length - (height > 0 ? height + 1 : 0));
     const columns = Math.max(10, bodyColumns - GUTTER);
     const shown = v.path !== undefined && !v.isTooLarge ? frame(v, rows, columns) : undefined;
-    // Under the header, the code (or its one-line note), the controls and the "Changes" line.
-    const firstRow = 1 + (shown ? shown.source.split('\n').length : 1) + 2;
+    // Under the header and the caption, the code (or its one-line note), the controls and the "Changes" line.
+    const firstRow = 1 + band.length + (shown ? shown.source.split('\n').length : 1) + 2;
     live.list = { top, height, count, firstRow };
     const isPaused = v.status === 'paused';
 
@@ -609,6 +690,11 @@ export const register: Register = (on, options) => {
             </Button>
           )}
         </Box>
+        {band.length > 0 && (
+          <Box backgroundColor="subtle" paddingX={1}>
+            <Text italic>{band.join('\n')}</Text>
+          </Box>
+        )}
         {shown ? (
           <Code source={shown.source} path={v.path} startLine={shown.startLine} wrap="truncate-end" />
         ) : v.isTooLarge ? (
@@ -636,7 +722,7 @@ export const register: Register = (on, options) => {
               <Text bold>Changes</Text>
               <Text dimColor>{live.note ?? 'Pick a change to play from it'}</Text>
             </Box>
-            {linesShown.map((line) => {
+            {linesShown.map((line, index) => {
               if (line.kind === 'dropped') {
                 return (
                   <Text key="dropped" dimColor>{`${l.dropped} older ${l.dropped === 1 ? 'change was' : 'changes were'} dropped to stay within the limit.`}</Text>
@@ -660,6 +746,11 @@ export const register: Register = (on, options) => {
               const isCurrent = row.id === l.current;
               const width = bodyColumns - ROW_MARGIN - REVEAL_COLUMNS;
               const label = rowLabel(row, relativePath(row.path, live.cwd), { isCurrent, isPaused }, width);
+              // The card opens above the row, over the rows and code drawn before it,
+              // since the list sits at the pane's foot; its lines fit the rows above.
+              const cardColumns = Math.max(10, Math.min(CARD_COLUMNS, bodyColumns - ROW_MARGIN));
+              const cardLines = Math.max(1, Math.min(CARD_LINES, firstRow + index - 2));
+              const card = row.caption ? captionLines(row.caption, cardColumns - 4, cardLines) : [];
               return (
                 <Box key={`row:${row.id}`} flexDirection="row" gap={1}>
                   <Button
@@ -676,6 +767,22 @@ export const register: Register = (on, options) => {
                   <Button key={`reveal:${row.id}`} plain dimColor label={`Show #${row.number} in the conversation`} onPress={() => reveal($, live, row.id)}>
                     ↗
                   </Button>
+                  {card.length > 0 && (
+                    <Box
+                      position="absolute"
+                      left={2}
+                      bottom={1}
+                      width={cardColumns}
+                      display="none"
+                      hover={{ display: 'flex' }}
+                      borderStyle="round"
+                      borderDimColor
+                      backgroundColor="inverseText"
+                      paddingX={1}
+                    >
+                      <Text italic>{card.join('\n')}</Text>
+                    </Box>
+                  )}
                 </Box>
               );
             })}

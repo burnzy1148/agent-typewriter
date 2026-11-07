@@ -39,6 +39,17 @@ import {
   tick,
   togglePause,
   viewOf,
+  MAX_CAPTION,
+  MAX_ROW_CAPTION,
+  captionLines,
+  captionsOf,
+  forgetLoop,
+  narrate,
+  normalizeCaption,
+  setCaption,
+  type HeardRow,
+  type Narration,
+  type RowBlock,
   type Change,
   type Deck,
   type NewChange,
@@ -1064,4 +1075,169 @@ test('kept turns are the running one and those a change or agent names', () => {
   assert.deepEqual(keptTurns(turns, new Set(['t2'])), { next: 5, turns: [turns.turns[1], turns.turns[3]] });
   const ended = { ...turns, turns: turns.turns.map((t) => ({ ...t, isEnded: true })) };
   assert.deepEqual(keptTurns(ended, new Set()).turns, [], 'an ended newest turn with no changes goes too');
+});
+
+// Captions: what the agent wrote before each Edit or Write call.
+
+const say = (text: string): RowBlock => ({ type: 'text', text });
+const call = (id: string, name = 'Edit'): RowBlock => ({ type: 'tool_use', id, name, input: {} });
+const think: RowBlock = { type: 'thinking', thinking: 'hmm', signature: 's' };
+const response = (content: RowBlock[], agentId?: string): HeardRow => ({ door: 'response', content, ...(agentId !== undefined && { agentId }) });
+const result = (id: string, agentId?: string): HeardRow => ({
+  door: 'tool-result',
+  content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }],
+  ...(agentId !== undefined && { agentId }),
+});
+
+/** Every caption the rows settle, in order, by call id. */
+function captionsFrom(rows: HeardRow[], n: Narration = new Map()): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) for (const [id, caption] of narrate(n, row)) out[id] = caption;
+  return out;
+}
+
+test('a call takes the text written before it in the same response', () => {
+  assert.deepEqual(captionsFrom([response([say("Now I'll guard the login route."), call('e1')])]), { e1: "Now I'll guard the login route." });
+});
+
+test('text between two calls goes to the second one', () => {
+  const rows = [response([say('Add the limiter.'), call('w1', 'Write'), say('Export it.'), call('e1')])];
+  assert.deepEqual(captionsFrom(rows), { w1: 'Add the limiter.', e1: 'Export it.' });
+});
+
+test('calls made together share the text before the first', () => {
+  const rows = [response([say('Update both callers.'), call('e1'), call('e2')])];
+  assert.deepEqual(captionsFrom(rows), { e1: 'Update both callers.', e2: 'Update both callers.' });
+});
+
+test('text before another tool does not reach a call in the next response', () => {
+  const rows = [response([say('Let me read the file.'), call('r1', 'Read')]), result('r1'), response([call('e1')])];
+  assert.deepEqual(captionsFrom(rows), {});
+});
+
+test('text after another tool in the same response goes to the call after it', () => {
+  const rows = [response([say('Checking first.'), call('g1', 'Grep'), say('Fix the typo.'), call('e1')])];
+  assert.deepEqual(captionsFrom(rows), { e1: 'Fix the typo.' });
+});
+
+test('thinking is never a caption', () => {
+  assert.deepEqual(captionsFrom([response([think, call('e1')])]), {});
+  assert.deepEqual(captionsFrom([response([say('Plan.'), think, call('e1')])]), { e1: 'Plan.' });
+});
+
+test('blank text is not a caption, and does not break a run of calls', () => {
+  assert.deepEqual(captionsFrom([response([say('  \n'), call('e1')])]), {});
+  assert.deepEqual(captionsFrom([response([say('Both.'), call('e1'), say(' '), call('e2')])]), { e1: 'Both.', e2: 'Both.' });
+});
+
+test('a response kept as a row per block gives the same captions as one row', () => {
+  const blocks = [say('Add the limiter.'), call('w1', 'Write'), say('Export it.'), call('e1'), call('e2')];
+  const expected = { w1: 'Add the limiter.', e1: 'Export it.', e2: 'Export it.' };
+  assert.deepEqual(captionsFrom([response(blocks)]), expected);
+  assert.deepEqual(captionsFrom(blocks.map((b) => response([b]))), expected);
+});
+
+test('a tool result kept between calls of one response ends the run: the later call has no caption', () => {
+  const rows = [response([say('Both.'), call('e1')]), result('e1'), response([call('e2')])];
+  assert.deepEqual(captionsFrom(rows), { e1: 'Both.' });
+});
+
+test("two loops' rows interleaved keep their own captions", () => {
+  const rows = [
+    response([say('Covering the refill.')], 'a1'),
+    response([say('Signup gets the same guard.')], 'a2'),
+    response([call('w1', 'Write')], 'a1'),
+    response([call('e1')], 'a2'),
+  ];
+  assert.deepEqual(captionsFrom(rows), { w1: 'Covering the refill.', e1: 'Signup gets the same guard.' });
+});
+
+test("the main conversation's text before an Agent call does not reach the agent's calls", () => {
+  const rows = [response([say("I'll hand the tests to a subagent."), call('ag', 'Agent')]), response([call('w1', 'Write')], 'a1')];
+  assert.deepEqual(captionsFrom(rows), {});
+});
+
+test('a queued message changes nothing; a loop forgotten at its turn end starts fresh', () => {
+  const n: Narration = new Map();
+  assert.deepEqual(captionsFrom([response([say('Fix it.')]), { door: 'queue', content: [say('also this')] }, response([call('e1')])], n), { e1: 'Fix it.' });
+  captionsFrom([response([say('Dangling.')])], n);
+  forgetLoop(n, undefined);
+  assert.deepEqual(captionsFrom([response([call('e2')])], n), {});
+});
+
+test('only Edit and Write calls are answered, and a block missing its id is skipped', () => {
+  assert.deepEqual(captionsFrom([response([say('Run it.'), call('b1', 'Bash')])]), {});
+  assert.deepEqual(captionsFrom([response([say('Odd.'), { type: 'tool_use', name: 'Edit' }])]), {});
+});
+
+test('a caption joins paragraphs with one space, shows control characters, and is cut to its limit', () => {
+  assert.deepEqual(captionsFrom([response([say('First para.\n\nSecond\tpara.'), say('Third.'), call('e1')])]), { e1: 'First para. Second para. Third.' });
+  assert.equal(normalizeCaption('a\u0007b'), 'a␇b');
+  assert.equal(normalizeCaption(' \n '), undefined);
+  const long = normalizeCaption('x'.repeat(5000))!;
+  assert.equal(long.length, MAX_CAPTION);
+  assert.ok(long.endsWith('…'));
+  assert.ok(!/[\uD800-\uDBFF]…$/.test(normalizeCaption('😀'.repeat(600))!), 'never ends on half a pair');
+});
+
+test('a caption rides with its change through playback, seek and a reload, and shows in the view and its row', () => {
+  const d = deckOf({ ...change('a', 'x\n', 'y\n'), caption: 'Swap x for y.' }, change('b', 'p\n', 'q\n'));
+  tick(d, FAST);
+  assert.equal(viewOf(d).caption, 'Swap x for y.');
+  assert.equal(listingOf(d).rows[0]!.caption, 'Swap x for y.');
+  assert.equal('caption' in listingOf(d).rows[1]!, false);
+  playOut(d);
+  assert.equal(viewOf(d).caption, undefined, 'the last change shown has no caption');
+  seek(d, 'a', FAST);
+  assert.equal(viewOf(d).caption, 'Swap x for y.', 'cued while paused or not, it shows its caption');
+  playOut(d);
+
+  const saved = savedOf(d);
+  assert.equal(JSON.stringify(saved).includes('Swap'), false, '`saved` keeps no caption');
+  const back = restore(saved, withTexts(saved, [change('a', 'x\n', 'y\n'), change('b', 'p\n', 'q\n')]).map((c) => (c.id === 'a' ? { ...c, caption: 'Swap x for y.' } : c)), FAST);
+  assert.deepEqual([...captionsOf(back)], [['a', 'Swap x for y.']]);
+  seek(back, 'a', FAST);
+  assert.equal(viewOf(back).caption, 'Swap x for y.');
+});
+
+test('a caption that arrives after its change is set on it, on the one being typed too, once', () => {
+  const d = deckOf(change('a', 'x\n', 'y\n'.repeat(50)), change('b', 'p\n', 'q\n'));
+  tick(d, FAST);
+  assert.equal(playingId(d), 'a');
+  assert.equal(setCaption(d, 'a', 'Grow it.'), true);
+  assert.equal(viewOf(d).caption, 'Grow it.');
+  assert.equal(setCaption(d, 'a', 'Again.'), false);
+  assert.equal(setCaption(d, 'b', 'Next.'), true);
+  assert.equal(setCaption(d, 'gone', 'No.'), false);
+  assert.deepEqual([...captionsOf(d)], [['a', 'Grow it.'], ['b', 'Next.']]);
+  playOut(d);
+  assert.equal(viewOf(d).caption, 'Next.');
+});
+
+test("a row's caption is cut for the card", () => {
+  const d = deckOf({ ...change('a', 'x\n', 'y\n'), caption: 'w '.repeat(400).trim() });
+  const row = listingOf(d).rows[0]!;
+  assert.equal(row.caption!.length, MAX_ROW_CAPTION);
+  assert.ok(row.caption!.endsWith('…'));
+});
+
+test('a too-large change keeps its caption in the view', () => {
+  const d = deckOf({ ...change('big', '', ''), isTooLarge: true, caption: 'Regenerate the lockfile.' });
+  tick(d, FAST);
+  assert.equal(viewOf(d).isTooLarge, true);
+  assert.equal(viewOf(d).caption, 'Regenerate the lockfile.');
+});
+
+test('caption lines wrap at spaces and cut the last with an ellipsis', () => {
+  assert.deepEqual(captionLines('Short one.', 20, 3), ['Short one.']);
+  assert.deepEqual(captionLines('exactly ten', 11, 3), ['exactly ten']);
+  assert.deepEqual(captionLines('one two three four', 9, 3), ['one two', 'three', 'four']);
+  assert.deepEqual(captionLines('one two three four five six seven', 9, 2), ['one two', 'three fo…']);
+  assert.deepEqual(captionLines('abcdefghijklmnop', 5, 3), ['abcde', 'fghij', 'klmn…']);
+  assert.deepEqual(captionLines('abcdefghij', 5, 3), ['abcde', 'fghij']);
+  for (const lines of [captionLines('word '.repeat(100), 17, 3), captionLines('x'.repeat(100), 17, 3)]) {
+    assert.equal(lines.length, 3);
+    assert.ok(lines.every((l) => l.length <= 17));
+    assert.ok(lines[2]!.endsWith('…'));
+  }
 });

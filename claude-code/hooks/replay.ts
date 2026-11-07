@@ -36,7 +36,8 @@ export const VIEW_COLUMNS = 400;
  * `tool` the tool that made it, unknown for a change an earlier version saved.
  * `kind` says whether the file was new, and `time` is when the change was
  * recorded, in epoch milliseconds. Its links name the turn and agent that made
- * it (CallLinks).
+ * it (CallLinks). `caption` is what the agent wrote before the call, as
+ * normalizeCaption keeps it, absent when it wrote nothing there.
  */
 export type Change = {
   id: string;
@@ -48,6 +49,7 @@ export type Change = {
   kind: 'create' | 'modify';
   time: number;
   isTooLarge?: boolean;
+  caption?: string;
 } & CallLinks;
 
 /** The links `x` has, leaving out the ones it lacks. */
@@ -78,8 +80,20 @@ function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
 }
 
 function changeOf(e: ChangeEvent): Change {
-  const { id, number, tool, path, before, after, kind, time, isTooLarge } = e as Event;
-  return { id, number, ...(tool && { tool }), path, before, after, kind, time, ...(isTooLarge && { isTooLarge }), ...linksOf(e as Event) };
+  const { id, number, tool, path, before, after, kind, time, isTooLarge, caption } = e as Event;
+  return {
+    id,
+    number,
+    ...(tool && { tool }),
+    path,
+    before,
+    after,
+    kind,
+    time,
+    ...(isTooLarge && { isTooLarge }),
+    ...(caption && { caption }),
+    ...linksOf(e as Event),
+  };
 }
 
 export type Playback = {
@@ -99,8 +113,13 @@ export type Playback = {
   credit: number;
 };
 
-/** What the pane shows, and the id of the change it shows: the playing change, a change cued to play next, or the last one played. */
-export type Shown = { id: string; path: string; text: string; caret: number; isTooLarge?: boolean };
+/** What the pane shows, and the id and caption of the change it shows: the playing change, a change cued to play next, or the last one played. */
+export type Shown = { id: string; path: string; text: string; caret: number; isTooLarge?: boolean; caption?: string };
+
+/** The caption field of `change`, for spreading into what shows it. */
+function captionOf(change: { caption?: string }): { caption?: string } {
+  return change.caption ? { caption: change.caption } : {};
+}
 
 /** Playback's state, which its functions change in place. */
 export type Deck = {
@@ -162,6 +181,31 @@ function played(deck: Deck): Change[] {
   return timeline.all().filter((e) => timeline.stateOf(e.seq) === 'played').map(changeOf);
 }
 
+/** Every change the deck keeps, oldest first: the played ones, the one being typed, then the waiting ones. */
+function keptChanges(deck: Deck): Change[] {
+  return [...played(deck), ...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
+}
+
+/** The captions of the changes the deck keeps, by change id. */
+export function captionsOf(deck: Deck): Map<string, string> {
+  return new Map(keptChanges(deck).flatMap((c) => (c.caption ? [[c.id, c.caption] as const] : [])));
+}
+
+/**
+ * Gives the kept change `id` its caption, unless it has one. Returns whether
+ * it changed anything.
+ */
+export function setCaption(deck: Deck, id: string, caption: string): boolean {
+  const e = deck.timeline.all().find((x) => (x as Event).id === id) as Event | undefined;
+  const p = deck.playing;
+  const isPlaying = p?.change.id === id;
+  if ((!e && !isPlaying) || (e ?? p!.change).caption) return false;
+  if (e) e.caption = caption;
+  if (isPlaying) deck.playing = { ...p!, change: { ...p!.change, caption } };
+  if (deck.shown?.id === id) deck.shown = { ...deck.shown, caption };
+  return true;
+}
+
 /**
  * What a reload needs to rebuild the deck, texts aside. The change being typed
  * is kept even once the timeline has dropped it; by then it has dropped every
@@ -169,7 +213,7 @@ function played(deck: Deck): Change[] {
  */
 export function savedOf(deck: Deck): Saved {
   const done = played(deck);
-  const changes = [...done, ...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
+  const changes = keptChanges(deck);
   return {
     changes: changes.map(
       (c): SavedChange => ({
@@ -265,8 +309,8 @@ function finalCaret(hunks: Hunk[]): number {
 
 function shownDone(change: Change, caret: number): Shown {
   return change.isTooLarge
-    ? { id: change.id, path: change.path, text: '', caret: 0, isTooLarge: true }
-    : { id: change.id, path: change.path, text: change.after, caret };
+    ? { id: change.id, path: change.path, text: '', caret: 0, isTooLarge: true, ...captionOf(change) }
+    : { id: change.id, path: change.path, text: change.after, caret, ...captionOf(change) };
 }
 
 /** `change` shown done, the caret where typing it ends. */
@@ -277,7 +321,7 @@ function shownFinished(change: Change, opts: PlayOptions): Shown {
 /** `change` shown before it plays: its before text, the caret where typing it starts. A too-large one shows its note. */
 function shownBefore(change: Change, opts: PlayOptions): Shown {
   if (change.isTooLarge) return shownDone(change, 0);
-  return { id: change.id, path: change.path, text: change.before, caret: caretBefore(plan(change, opts)[0], 0) };
+  return { id: change.id, path: change.path, text: change.before, caret: caretBefore(plan(change, opts)[0], 0), ...captionOf(change) };
 }
 
 /** Plays the change at `seq` in one go: `shown` stays a while before the next change. */
@@ -301,7 +345,7 @@ function startNext(deck: Deck, opts: PlayOptions): boolean {
   const caret = caretBefore(hunks[0], 0);
   const token = deck.timeline.begin(next.seq);
   deck.playing = { change, seq: next.seq, token, hunks, hunk: 0, deleted: 0, typed: 0, text: change.before, caret, credit: 0 };
-  deck.shown = { id: change.id, path: change.path, text: change.before, caret };
+  deck.shown = { id: change.id, path: change.path, text: change.before, caret, ...captionOf(change) };
   return true;
 }
 
@@ -362,7 +406,7 @@ export function tick(deck: Deck, opts: PlayOptions): boolean {
     deck.timeline.complete(p.seq, p.token);
     deck.playing = undefined;
   } else deck.playing = { ...p, credit: Math.min(budget, rate + 1) };
-  deck.shown = { id: p.change.id, path: p.change.path, text: p.text, caret: p.caret };
+  deck.shown = { id: p.change.id, path: p.change.path, text: p.text, caret: p.caret, ...captionOf(p.change) };
   return true;
 }
 
@@ -442,6 +486,7 @@ function rowOf(e: Event, state: Row['state']): Row {
     ...(e.isTooLarge && { isTooLarge: true }),
     ...(e.mainTurnId && { mainTurnId: e.mainTurnId }),
     ...(e.agentCallId && { agentCallId: e.agentCallId }),
+    ...(e.caption && { caption: cutCaption(e.caption, MAX_ROW_CAPTION) }),
   };
 }
 
@@ -746,9 +791,9 @@ function lineStart(text: string, at: number): number {
 /** What the pane draws for `deck`: status, and a window of the shown text around the caret. */
 export function viewOf(deck: Deck): View {
   const status = deck.isPaused ? 'paused' : deck.playing ? 'typing' : 'idle';
-  const base = { status, queued: deck.timeline.pendingCount(), isTyping: deck.playing !== undefined } as const;
-  const empty = { lines: [], firstLine: 1, firstColumn: 0, caretLine: 0, caretColumn: 0 };
   const s = deck.shown;
+  const base = { status, queued: deck.timeline.pendingCount(), isTyping: deck.playing !== undefined, ...(s && captionOf(s)) } as const;
+  const empty = { lines: [], firstLine: 1, firstColumn: 0, caretLine: 0, caretColumn: 0 };
   if (!s) return { ...base, ...empty };
   if (s.isTooLarge) return { ...base, ...empty, path: s.path, isTooLarge: true };
 
@@ -789,4 +834,111 @@ export function frame(view: View, rows: number, columns: number): { source: stri
     return shown.slice(0, caretX - shift) + '▍' + shown.slice(caretX - shift);
   });
   return { source: out.join('\n'), startLine: view.firstLine + top };
+}
+
+/** Longest caption a change keeps, in code units, its ellipsis included. */
+export const MAX_CAPTION = 1000;
+/** Longest caption a row of the list carries, in code units, its ellipsis included: enough for the hover card's lines. */
+export const MAX_ROW_CAPTION = 300;
+
+/** `text` cut with `…` to `max` code units, as it is when it fits. */
+function cutCaption(text: string, max: number): string {
+  return text.length > max ? cutAt(text, max - 1) + '…' : text;
+}
+
+/**
+ * `text` as a caption keeps it: whitespace runs and line breaks as single
+ * spaces, trimmed, other control characters as visible stand-ins, and cut with
+ * `…` to MAX_CAPTION code units; undefined when nothing is left.
+ */
+export function normalizeCaption(text: string): string | undefined {
+  const line = oneLine(text);
+  return line === '' ? undefined : cutCaption(line, MAX_CAPTION);
+}
+
+/** One block of a conversation row, as `session.append` hands it. */
+export type RowBlock = { type: string; [field: string]: unknown };
+
+/** One row a loop keeps: the door it came in by, the loop (an agent's id, absent for main), and its blocks. */
+export type HeardRow = { door: string; agentId?: string; content: readonly RowBlock[] };
+
+/**
+ * Where each loop's current response stands, by loop key (an agent's id, ''
+ * for main): the text written since its last call, and the caption of that
+ * call while no text has followed it.
+ */
+export type Narration = Map<string, { text: string[]; last?: string; wasCall: boolean }>;
+
+/** The file tools whose calls get a caption. */
+const CAPTIONED: ReadonlySet<string> = new Set<Tool>(['Edit', 'Write']);
+
+/**
+ * Feeds one row a loop kept to the tracker. Returns the captions it settles,
+ * by `tool_use_id`, for each `Edit` or `Write` call in the row that has one.
+ *
+ * In a response row, a text block that is not blank adds to the text since the
+ * last call; a call takes that text, joined by spaces, as its caption, or,
+ * with no text since, the caption of the call just before it; thinking and
+ * other blocks are skipped. A row of any other door ends the response, so its
+ * text never reaches a later one; a `queue` row is no row of the conversation
+ * and changes nothing.
+ */
+export function narrate(narration: Narration, row: HeardRow): Map<string, string> {
+  const answers = new Map<string, string>();
+  const loop = row.agentId ?? '';
+  if (row.door === 'queue') return answers;
+  if (row.door !== 'response') {
+    narration.delete(loop);
+    return answers;
+  }
+  let at = narration.get(loop);
+  if (!at) narration.set(loop, (at = { text: [], wasCall: false }));
+  for (const block of row.content) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.trim() !== '') {
+      at.text.push(block.text);
+      at.wasCall = false;
+      at.last = undefined;
+    } else if (block.type === 'tool_use') {
+      const caption = at.text.length > 0 ? normalizeCaption(at.text.join(' ')) : at.wasCall ? at.last : undefined;
+      if (caption !== undefined && typeof block.id === 'string' && typeof block.name === 'string' && CAPTIONED.has(block.name)) {
+        answers.set(block.id, caption);
+      }
+      at.text = [];
+      at.last = caption;
+      at.wasCall = true;
+    }
+  }
+  return answers;
+}
+
+/** Forgets the loop `agentId` (absent for main), as its turn ends. */
+export function forgetLoop(narration: Narration, agentId: string | undefined): void {
+  narration.delete(agentId ?? '');
+}
+
+/**
+ * `text` wrapped at spaces into lines of at most `columns` code units, a word
+ * longer than a line broken across lines, and at most `maxLines` of them: when
+ * the text needs more, the last line holds what is left, cut with `…`.
+ */
+export function captionLines(text: string, columns: number, maxLines: number): string[] {
+  const width = Math.max(2, columns);
+  const lines: string[] = [];
+  let rest = text.trim();
+  while (rest !== '' && lines.length < maxLines) {
+    if (lines.length === maxLines - 1 && rest.length > width) {
+      lines.push(cutAt(rest, width - 1).trimEnd() + '…');
+      break;
+    }
+    if (rest.length <= width) {
+      lines.push(rest);
+      break;
+    }
+    // Break at the last space that fits, or inside a word longer than a line.
+    const space = rest.lastIndexOf(' ', width);
+    const line = space > 0 ? rest.slice(0, space) : cutAt(rest, width);
+    lines.push(line.trimEnd());
+    rest = rest.slice(line.length).trimStart();
+  }
+  return lines;
 }

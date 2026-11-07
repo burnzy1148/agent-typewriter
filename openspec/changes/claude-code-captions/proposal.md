@@ -32,7 +32,7 @@ None.
 
 - `claude-code/hooks/replay.ts`: `Change` gains an optional `caption`; a pure narration tracker (per loop: text since the last call, the run's last caption) that turns rows into `tool_use_id` → caption; `View` gains the shown change's caption and `Row` its caption cut for the card; helpers that cut a caption to a number of lines and columns.
 - `claude-code/hooks/register.tsx`: an observe-only `session.append` hook on response rows feeds the tracker; `record()` attaches a waiting caption when it enqueues, and a caption that arrives after its change is attached then; the pane draws the caption band and each row's hover card.
-- `claude-code/types/index.d.ts`: `View` and `Row` gain `caption`; the `text` family gains a `<change id>:caption` member; `view` moves to `view-2` and `listing` to `listing-3`. `saved` keeps `saved-4`.
+- `claude-code/types/index.d.ts`: `View` and `Row` gain `caption`; the `text` family gains a `<change id>:caption` member; `view` moves to `view-2` and `listing` to `listing-4`. `saved` keeps `saved-4`.
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for the tracker, the band, the card, the reload.
 - `claude-code/README.md`: captions. `site/` has no page on the plugin's pane today.
 - No shared module (`core.mjs`) changes.
