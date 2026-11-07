@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import type { AgentTypewriterApi } from '../src/extension';
 import { baselines } from '../src/highlights';
 import type { Timeline } from '../src/timeline';
+import { ChangeItem } from '../src/timelineView';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -2716,6 +2717,50 @@ async function edits(c: Context): Promise<void> {
 
     await cfg().update('reorderWindowMs', restoreReorder, WS);
     await sleep(500);
+  }
+
+  {
+    // AGENT CONTEXT: a change gets the prompt, tool call and narration from a
+    // Claude Code transcript under CLAUDE_CONFIG_DIR (set by runTest.ts),
+    // through the activated extension's own wiring, and its tooltip shows them.
+    const config = process.env.CLAUDE_CONFIG_DIR;
+    assert.ok(config, 'runTest.ts sets CLAUDE_CONFIG_DIR');
+    // Claude Code writes Windows drive letters in upper case; VS Code's fsPath has them in lower.
+    const cwd = root.replace(/^[a-z]:/, (d) => d.toUpperCase());
+    const rel = 'src/agentctx.ts';
+    const transcript = path.join(config, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'), 'it-session.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    const at = (ms: number) => new Date(ms).toISOString();
+    const line = (o: object) => JSON.stringify({ sessionId: 'it-session', cwd, ...o }) + '\n';
+    const t0 = Date.now();
+    fs.writeFileSync(
+      transcript,
+      line({ type: 'user', uuid: 'it-u1', promptId: 'it-p1', timestamp: at(t0 - 2000), message: { role: 'user', content: 'Add the agent context fixture' } }) +
+        line({ type: 'assistant', uuid: 'it-u2', timestamp: at(t0 - 1000), message: { role: 'assistant', content: [{ type: 'text', text: 'Writing the fixture.' }] } }) +
+        line({
+          type: 'assistant',
+          uuid: 'it-u3',
+          timestamp: at(t0 - 500),
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_it1', name: 'Write', input: { file_path: path.join(cwd, rel), content: 'x' } }] },
+        }),
+    );
+    const from = timeline.all().length;
+    write(rel, 'export const agentCtx = 1;\n');
+    fs.appendFileSync(transcript, line({ type: 'user', uuid: 'it-u4', timestamp: at(Date.now()), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_it1', content: 'ok' }] } }));
+    await until('agent context change recorded', () => eventsFor(rel, from).length > 0, 20000);
+    await until('agent context attached', () => eventsFor(rel, from)[0].agent !== undefined, 20000);
+    const event = eventsFor(rel, from)[0];
+    assert.equal(event.agent!.session, 'it-session');
+    assert.equal(event.agent!.turn.id, 'it-p1');
+    assert.equal(event.agent!.turn.prompt, 'Add the agent context fixture');
+    assert.deepEqual([event.agent!.tool?.id, event.agent!.tool?.name, event.agent!.via], ['toolu_it1', 'Write', 'edit']);
+    assert.equal(event.agent!.narration, 'Writing the fixture.');
+    const tip = (new ChangeItem(event, 'played').tooltip as vscode.MarkdownString).value;
+    assert.doesNotMatch(tip, /&nbsp;/);
+    assert.match(tip, /\*\*Prompt:\*\* Add the agent context fixture/);
+    assert.match(tip, /\*\*Agent:\*\* Writing the fixture/);
+    await until('agent context playback', idle);
+    console.log('[it] agent context ok');
   }
 }
 

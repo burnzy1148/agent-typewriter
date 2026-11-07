@@ -280,6 +280,11 @@
       "type": "boolean",
       "default": false,
       "description": "Once the followed lane is caught up and nothing has been typed for 3 seconds, follow the lane whose oldest queued change was recorded first. It never switches lanes in the middle of a change."
+    },
+    "agentContext": {
+      "type": "boolean",
+      "default": true,
+      "description": "Read the transcripts of Claude Code sessions started in a recorded checkout, a folder above it or a folder inside it to tell which prompt and tool call made each change, shown in the Changes view's tooltips. A change made while one of those sessions runs a command is credited to that command, even one you made yourself. Transcripts are only read, never written, and nothing from them is saved."
     }
   },
   "additionalProperties": false

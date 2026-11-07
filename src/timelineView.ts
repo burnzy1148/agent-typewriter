@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { AgentContext } from './agentContext';
 import type { ChangeEvent, LaneInfo, Timeline } from './timeline';
 
 const MAX_ITEMS = 300;
@@ -21,9 +22,11 @@ export class ChangeItem extends vscode.TreeItem {
             ? `renamed from ${event.fromRelPath}${event.linesAdded === 0 && event.linesRemoved === 0 ? '' : ` ${counts}`}`
             : counts;
     this.description = [delta, dir, time].filter(Boolean).join('  ·  ');
-    this.tooltip = new vscode.MarkdownString(
+    const tooltip = new vscode.MarkdownString(
       `**${event.fromRelPath !== undefined ? `${event.fromRelPath} \u2192 ` : ''}${event.relPath}**  \n#${event.seq} · ${event.kind} · ${time}  \n${delta} lines · ${state}`,
     );
+    if (event.agent) appendAgent(tooltip, event.agent);
+    this.tooltip = tooltip;
     this.contextValue = 'changeEvent';
     this.iconPath =
       state === 'playing'
@@ -37,6 +40,31 @@ export class ChangeItem extends vscode.TreeItem {
               : new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
     this.command = { command: 'agentTypewriter.showDiff', title: 'Show Diff', arguments: [this] };
   }
+}
+
+/** Agent text in a tooltip is cut to this many characters. */
+const TOOLTIP_TEXT = 300;
+
+function shorten(s: string, max = TOOLTIP_TEXT): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : flat.slice(0, max - 1) + '\u2026';
+}
+
+/**
+ * Agent text as literal markdown. Not `appendText`: VS Code's writes each space as `&nbsp;`,
+ * so a long prompt would never wrap in the hover.
+ */
+function literal(s: string): string {
+  return shorten(s).replace(/[\\`*_{}[\]()#+\-.!|<>~&]/g, '\\$&');
+}
+
+/** The prompt, tool call and narration behind a change, under its summary. */
+function appendAgent(md: vscode.MarkdownString, agent: AgentContext): void {
+  const tool = agent.tool ? [agent.tool.name, agent.tool.detail].filter(Boolean).join(' · ') : 'a command';
+  const by = agent.subagent ? ` (subagent${agent.subagent.type ? ` ${agent.subagent.type}` : ''})` : '';
+  md.appendMarkdown(`\n\n---\n\n**Prompt:** ${literal(agent.turn.prompt)}`);
+  md.appendMarkdown(`  \n**Tool:** ${literal(tool + by)}`);
+  if (agent.narration) md.appendMarkdown(`  \n**Agent:** ${literal(agent.narration)}`);
 }
 
 /** A lane's icon: a dot in its color, or an outline for the default lane, which has none. */
