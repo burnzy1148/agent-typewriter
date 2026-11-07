@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A `smoothScroll`, `arrowNavigation` or `naturalOrder` setting that is not `true` or `false` (a string such as `"false"`, say) now counts as unset, so the next settings layer or the default applies, as for numeric settings. It used to read as on.
+
 ## 0.6.0 (2026-10-27)
 
 - With `autoRecordWorktrees` set to `fill` or `rotate`, a new worktree gets its lane at its first change instead of as soon as git lists it. Until then it is watched but has no lane, doesn't count toward the 5-lane cap, can't make `rotate` stop a lane and can't be followed, so worktrees that review tools check out and remove without writing leave no lanes. The cap and rotation are decided at that first change. At most 5 new worktrees wait at once.

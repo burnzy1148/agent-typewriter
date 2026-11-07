@@ -390,10 +390,9 @@ interface PlaybackSettings {
 }
 /**
  * The playback settings `get` reads, with defaults for unset ones. A number
- * that is not finite counts as unset; numbers are then clamped to their
- * limits. An on/off setting is taken as `get` returns it, unchecked, as the
- * extension always has. The base speed and read pause have their own
- * resolvers, in pace.ts and readPause.ts.
+ * that is not finite and an on/off setting that is not a boolean count as
+ * unset; numbers are then clamped to their limits. The base speed and read
+ * pause have their own resolvers, in pace.ts and readPause.ts.
  */
 declare function resolvePlaybackSettings(get: SettingGetter): PlaybackSettings;
 /** A numeric setting: a value that is not a finite number counts as unset, then the result is clamped. */

@@ -1383,7 +1383,7 @@ function resolvePlaybackSettings(get) {
   }
   const switches = {};
   for (const key of Object.keys(PLAYBACK_SWITCHES)) {
-    switches[key] = get(key, PLAYBACK_SWITCHES[key]);
+    switches[key] = get(key, PLAYBACK_SWITCHES[key], isBoolean);
   }
   return { ...numbers, ...switches, languageSpeeds: asRecord(get("languageSpeeds", {})) };
 }
@@ -1396,6 +1396,9 @@ function recordGetter(values) {
     if (v === void 0) return fallback;
     return !valid || valid(v) ? v : fallback;
   };
+}
+function isBoolean(v) {
+  return typeof v === "boolean";
 }
 function asRecord(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v) ? v : {};

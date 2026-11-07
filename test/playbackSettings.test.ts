@@ -74,6 +74,13 @@ test('a number that is not finite counts as unset', () => {
   }
 });
 
+test('an on/off setting that is not a boolean counts as unset', () => {
+  for (const bad of ['false', 0, 1, null, {}]) {
+    const r = resolve({ smoothScroll: bad, arrowNavigation: bad, naturalOrder: bad });
+    assert.deepEqual([r.smoothScroll, r.arrowNavigation, r.naturalOrder], [true, true, true], String(bad));
+  }
+});
+
 test('languageSpeeds that is not an object reads as empty', () => {
   for (const bad of [null, [1], 'python', 3]) assert.deepEqual(resolve({ languageSpeeds: bad }).languageSpeeds, {}, String(bad));
 });
@@ -115,6 +122,11 @@ test('readSettings resolves playback through the layers, a wrong-typed value fal
     assert.equal(readSettings().jitter, 0.3, 'a wrong-typed workspace setting falls through to the file');
     mock.set('agentTypewriter.smoothScroll', false);
     assert.equal(readSettings().smoothScroll, false);
+    setRepoValues({ smoothScroll: false });
+    mock.set('agentTypewriter.smoothScroll', 'true');
+    assert.equal(readSettings().smoothScroll, false, 'a wrong-typed workspace switch falls through to the file');
+    setRepoValues({});
+    assert.equal(readSettings().smoothScroll, true, 'and with nothing below it, to the default');
   } finally {
     setRepoValues({});
     mock.reset();

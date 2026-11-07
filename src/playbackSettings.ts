@@ -53,10 +53,9 @@ export interface PlaybackSettings {
 
 /**
  * The playback settings `get` reads, with defaults for unset ones. A number
- * that is not finite counts as unset; numbers are then clamped to their
- * limits. An on/off setting is taken as `get` returns it, unchecked, as the
- * extension always has. The base speed and read pause have their own
- * resolvers, in pace.ts and readPause.ts.
+ * that is not finite and an on/off setting that is not a boolean count as
+ * unset; numbers are then clamped to their limits. The base speed and read
+ * pause have their own resolvers, in pace.ts and readPause.ts.
  */
 export function resolvePlaybackSettings(get: SettingGetter): PlaybackSettings {
   const numbers = {} as Record<keyof typeof PLAYBACK_NUMBERS, number>;
@@ -65,7 +64,7 @@ export function resolvePlaybackSettings(get: SettingGetter): PlaybackSettings {
   }
   const switches = {} as Record<keyof typeof PLAYBACK_SWITCHES, boolean>;
   for (const key of Object.keys(PLAYBACK_SWITCHES) as (keyof typeof PLAYBACK_SWITCHES)[]) {
-    switches[key] = get(key, PLAYBACK_SWITCHES[key]);
+    switches[key] = get<boolean>(key, PLAYBACK_SWITCHES[key], isBoolean);
   }
   return { ...numbers, ...switches, languageSpeeds: asRecord(get<unknown>('languageSpeeds', {})) };
 }
@@ -82,6 +81,10 @@ export function recordGetter(values: Readonly<Record<string, unknown>>): Setting
     if (v === undefined) return fallback;
     return !valid || valid(v) ? (v as T) : fallback;
   };
+}
+
+function isBoolean(v: unknown): v is boolean {
+  return typeof v === 'boolean';
 }
 
 export function asRecord(v: unknown): Record<string, unknown> {
