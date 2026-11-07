@@ -327,6 +327,11 @@
         "icon": "$(eye)"
       },
       {
+        "command": "agentTypewriter.copyHookSettings",
+        "title": "Copy Claude Code Hook Settings",
+        "category": "Agent Typewriter"
+      },
+      {
         "command": "agentTypewriter.refreshCheckouts",
         "title": "Refresh Checkouts",
         "category": "Agent Typewriter",
@@ -873,6 +878,14 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Read the transcripts of Claude Code sessions started in a recorded checkout, a folder above it or a folder inside it (in `~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`) to tell which prompt and tool call made each change. The Changes view shows it in each change's tooltip. A change made while one of those sessions runs a command is credited to that command, even one you made yourself. Transcripts are only read, never written, and nothing from them is saved."
+        },
+        "agentTypewriter.hookPort": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "scope": "application",
+          "markdownDescription": "Port on `127.0.0.1` where Claude Code's `PostToolUse` hook tells the extension which tool call wrote each file, so each change gets its exact call. `0` (the default) is off. Run **Agent Typewriter: Copy Claude Code Hook Settings** to pick a port and copy the hook settings to paste into Claude Code's `settings.json`. Only user settings count, never workspace settings or `.agent-typewriter.json`. Needs `agentContext` on. VS Code windows with the same port share it."
         }
       }
     }

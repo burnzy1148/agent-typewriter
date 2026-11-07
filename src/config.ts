@@ -71,6 +71,8 @@ export interface Settings extends FilterSettings {
   autoFollow: boolean;
   /** Read Claude Code transcripts to tell what the agent was doing when it made each change. */
   agentContext: boolean;
+  /** Port of the Claude Code hook listener, from user settings only; 0 when off. */
+  hookPort: number;
 }
 
 /** Values from the repository settings file; they sit between user and workspace settings. */
@@ -141,8 +143,18 @@ export function readSettings(): Settings {
     autoIgnoreWorktrees: c.get('autoIgnoreWorktrees', [], isStringArray),
     autoFollow: c.get<unknown>('autoFollow', false) === true,
     agentContext: c.get<unknown>('agentContext', true) !== false,
+    hookPort: hookPortOf(cfg.inspect<unknown>('hookPort')?.globalValue),
     ...readHighlightSettings(),
   };
+}
+
+/**
+ * The hook port from its user settings value: 1024 to 65535, else 0 (off).
+ * Workspace settings and the repository file are not read, so opening a
+ * folder never opens a port.
+ */
+export function hookPortOf(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1024 && value <= 65535 ? value : 0;
 }
 
 /** `value` when it is one of `allowed`, else `fallback`. */

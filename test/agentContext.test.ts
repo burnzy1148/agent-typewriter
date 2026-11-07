@@ -356,7 +356,7 @@ test('end to end: a transcript on disk gives a recorded change its context', asy
   timeline.push(ev('a.ts', T));
   await clock.advance(300, correlator);
   const agent = timeline.get(1)!.agent!;
-  assert.equal(agent.turn.prompt, 'Rename the helper');
+  assert.equal(agent.turn?.prompt, 'Rename the helper');
   assert.equal(agent.tool?.name, 'Edit');
   assert.equal(agent.narration, 'Renaming.');
   correlator.dispose();

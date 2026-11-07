@@ -62,8 +62,9 @@ function literal(s: string): string {
 function appendAgent(md: vscode.MarkdownString, agent: AgentContext): void {
   const tool = agent.tool ? [agent.tool.name, agent.tool.detail].filter(Boolean).join(' · ') : 'a command';
   const by = agent.subagent ? ` (subagent${agent.subagent.type ? ` ${agent.subagent.type}` : ''})` : '';
-  md.appendMarkdown(`\n\n---\n\n**Prompt:** ${literal(agent.turn.prompt)}`);
-  md.appendMarkdown(`  \n**Tool:** ${literal(tool + by)}`);
+  md.appendMarkdown('\n\n---\n\n');
+  if (agent.turn) md.appendMarkdown(`**Prompt:** ${literal(agent.turn.prompt)}  \n`);
+  md.appendMarkdown(`**Tool:** ${literal(tool + by)}`);
   if (agent.narration) md.appendMarkdown(`  \n**Agent:** ${literal(agent.narration)}`);
 }
 

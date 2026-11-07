@@ -51,6 +51,12 @@ export const REPO_SETTING_KINDS: Readonly<Record<string, Kind>> = {
   agentContext: 'boolean',
 };
 
+/**
+ * Settings the repository file does not take, so cloning a repository can
+ * never turn them on: `hookPort` opens a port. Read from user settings only.
+ */
+export const USER_ONLY_SETTINGS: readonly string[] = ['hookPort'];
+
 export type RepoValues = Readonly<Record<string, unknown>>;
 
 export type ParseResult =

@@ -82,7 +82,7 @@ Alternative: every window on its own random port, registered in a shared folder,
 
 ### Keeping events
 
-A `HookLog` holds events for 15 minutes (`FORGET_MS`, already the transcript index's), at most 5000, and fires `onDidAdd`. The correlator schedules a pass on it, as it does on a timeline change, so a change that reached the timeline before its hook event is matched without waiting for the 2 s retry.
+A `HookLog` holds events for 15 minutes (`FORGET_MS`, already the transcript index's), at most 5000, and fires `onDidAdd`. The correlator schedules a pass 250 ms after it, moving a pending 2 s retry earlier, so a change that reached the timeline before its hook event is matched without waiting for the retry. (A timeline change still leaves a pending retry where it is, as before.)
 
 ### Matching
 
@@ -94,7 +94,7 @@ A `HookLog` holds events for 15 minutes (`FORGET_MS`, already the transcript ind
 
 The context: `session` from the event; `tool` `{ id, name, time, detail: basename(file) }`; `subagent` from the event. Then the transcript call with the same id, if the index has it, supplies `turn`, `narration`, the subagent's `description`, and `tool.time` (its start). `via: 'hook'`.
 
-When the event matches but the index has no call with that id yet, the change keeps waiting (the transcript line may be written after the hook request, and the subagent's turn may need its parent's line). Once the change is 30 s past first seen (`SETTLE_MS`), it is settled with the event-only context, without `turn`. The event stays claimed by the change from the first pass that saw it through tracking it in the correlator's per-change state, so another change cannot take it while this one waits.
+When the event matches but the index has no call with that id (and a known turn) yet, the change keeps waiting (the transcript line may be written after the hook request, and a subagent's turn may need its parent's line). Once the change is 30 s past first seen (`SETTLE_MS`), it is settled with the event-only context, without `turn`. The correlator remembers the event per waiting change, and adds it to `claimed` on every pass, so another change cannot take it while this one waits.
 
 ### `turn` becomes optional
 
@@ -104,7 +104,7 @@ Alternative: a placeholder turn from `prompt_id` with an empty prompt. Consumers
 
 ### Reading the transcripts hooks name
 
-`TranscriptIndex.refresh(roots, since, files)` gains `files`: transcript paths from kept hook events whose match is still open. Each is read like a candidate transcript (incrementally, whatever its mtime, since the event says it is live), followed by its `<session>/subagents` folder. A path must be absolute and end in `.jsonl`; others are ignored. `TranscriptIndex.call(id)` returns a call by id if its turn is known.
+`TranscriptIndex.refresh(roots, since, files)` gains `files`: transcript paths from kept hook events whose match is still open. Each is read like a candidate transcript (incrementally, whatever its mtime, since the event says it is live), followed by its `<session>/subagents` folder. A path must be absolute and end in `.jsonl`; others are ignored. The correlator looks a hook's call up by id among `calls()`, which holds only calls whose turn is known.
 
 ### Lifecycle and settings
 
