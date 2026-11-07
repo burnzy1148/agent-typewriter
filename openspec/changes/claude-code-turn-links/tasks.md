@@ -20,6 +20,11 @@
 - [x] 4.1 In `claude-code/README.md`, describe Show in conversation and the chip. Check `site/` for pages that describe the plugin's pane and update them to match. Verify by reading the sections.
 - [x] 4.2 Run `npm run typecheck`, `npm test`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-turn-links --strict`. All pass.
 
+## 5. Corrections in implementation
+
+- [x] 5.1 *Added in implementation:* give `Listing` an `isPaused` flag (tag `listing-2`) so the chip reads the pause state without subscribing to `view`; unit-test it in `listingOf`'s tests. Verify with `npm test`.
+- [x] 5.2 *Added in implementation:* the plugin tests that 1.2, 2.2 and 3.2 name went into a new `claude-code/tests/links.test.tsx` rather than `recording.test.tsx` and `pane.test.tsx`, which keeps the linking tests together; `seed` moved to `tests/world.ts` so both files share it. Verify with `npm run check:claude-code`.
+
 ## Workflow follow-up
 
 - Record the change on the bead (`bd update at-o3z.12 --spec-id openspec/changes/claude-code-turn-links`) and remove its `needs-spec` label.

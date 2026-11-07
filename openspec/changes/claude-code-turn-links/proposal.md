@@ -30,7 +30,7 @@ None.
 
 - `claude-code/hooks/replay.ts`: `Change` gains `turnId`, `agentId`, `mainTurnId` and `agentCallId`; `savedOf` saves them; `SAVED_SHAPE` moves to `saved-4` and `savedFrom` reads `saved-3`; new helpers for a chip's label and a change's scroll targets.
 - `claude-code/hooks/register.tsx`: `turn.start` and `agent.spawn` hooks track the running turn of each loop and where each agent was started; `record()` stamps the fields; the pane draws Show in conversation and a ↗ per row; a `ui.render` hook on `ToolUse` adds the chip.
-- `claude-code/types/index.d.ts`: `SavedChange` gains the four optional fields.
+- `claude-code/types/index.d.ts`: `SavedChange` gains the four optional fields. *Added in implementation:* `Listing` gains `isPaused` and its tag moves to `listing-2` (design.md, *Corrected in implementation*).
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for the fields, the reload, the buttons, and the chip on every surface but the terminal.
 - `claude-code/README.md`: Show in conversation and the chip.
 - No shared module (`core.mjs`) changes.

@@ -259,6 +259,20 @@ test('rows with no kept change are drawn as the engine draws them', async ($, on
   expect((await row($, 'toolu_never', 'Write')).chip).toBe(undefined);
 });
 
+test("a change dropped to stay within the limits loses its call row's chip", async ($, on) => {
+  const w = world(on);
+  engineRows(on);
+  await start($);
+  await write($, 'first.ts', 'toolu_first');
+  await w.clock.advance(10_000);
+  expect((await row($, 'toolu_first', 'Write')).chip).toBe('Replay #1');
+
+  for (let i = 0; i < 200; i++) await write($, `n${i}.ts`, `toolu_n${i}`);
+  await w.clock.advance(60);
+  expect(await row($, 'toolu_first', 'Write')).toEqual({ engine: 'engine Write', chip: undefined, key: undefined, label: undefined });
+  expect((await row($, 'toolu_n0', 'Write')).chip).toMatch(/#2$/);
+});
+
 test('a too-large change reads Too large on its chip while shown, and Not typed once passed', async ($, on) => {
   const w = world(on);
   engineRows(on);

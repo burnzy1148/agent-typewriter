@@ -99,3 +99,7 @@ The plugin test kit answers a test's own `$.ui.scroll` call through the test's `
 ## Migration Plan
 
 `saved-3` state loads as it is, without the new fields; nothing else moves. Rolling back to the previous plugin reads `saved-4` as an unknown tag and starts with an empty list for that session, as any earlier downgrade did.
+
+## Corrected in implementation
+
+- *Added in implementation:* **`listing` carries the pause state.** The chip needs to tell Typing from Paused. Reading `view` for that while drawing would subscribe every `Edit` and `Write` row to `view`, which changes on every tick while a change types, and redraw them all twenty times a second. So `Listing` gains `isPaused`, written only when pause toggles, and its tag moves from `listing-1` to `listing-2`. The pane's own status line still reads `view`.
