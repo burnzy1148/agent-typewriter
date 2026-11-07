@@ -2,7 +2,7 @@
 // file tools acting on it, and the engine calls the plugin makes at start.
 // It also watches what the plugin writes to $.state.
 
-import type { On, RenderSurface, Shaped, ToolCallResult } from 'claude-code';
+import type { On, RenderSurface, Shaped, ToolCallResult, UiOpenResult } from 'claude-code';
 import { mock, type Engine, type MockClock } from 'claude-code/testing';
 
 import type { Saved, View } from '../types';
@@ -28,6 +28,10 @@ export type World = {
   breakReads: () => void;
   /** What `$.session.surfaces()` answers; a test may change it. */
   surfaces: RenderSurface[];
+  /** What `$.ui.open` answers, or the reason it rejects; a test may change it. */
+  openAnswer: UiOpenResult | { reject: string };
+  /** The plugin's `$.ui.log` lines bound for the transcript, in order. */
+  logs: string[];
 };
 
 /** Answers a Write in place of the in-memory one, as a refusal or a tool of its own would. */
@@ -45,6 +49,8 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
     writes: [],
     breakReads: () => (isBroken = true),
     surfaces: ['desktop'],
+    openAnswer: { isPlaced: true },
+    logs: [],
   };
   let isBroken = false;
   // Each write to a file moves its modification time on.
@@ -86,7 +92,13 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
   on('command.register', () => ({ value: { command: 'typewriter' } }));
   on('ui.open', (_, e) => {
     w.opens.push(e.id);
-    return { value: { isPlaced: true } };
+    const answer = w.openAnswer;
+    if ('reject' in answer) return { deny: answer.reject };
+    return { value: answer };
+  });
+  on('ui.log', (_, e) => {
+    if (e.to === 'transcript') w.logs.push(e.text);
+    return { value: undefined };
   });
   on('session.start', (_, e) => ({ cwd: e.cwd }));
   on('session.surfaces', () => ({ value: w.surfaces }));
