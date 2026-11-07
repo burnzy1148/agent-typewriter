@@ -6,13 +6,14 @@
 // The deck lives in module memory. Hooks, the timer and button handlers run in
 // this one module, one at a time, so they change it directly. $.state keeps
 // only what must outlive a reload (`saved`, and each kept change's texts in
-// the `text` family) and what the pane draws (`view`, and the changes list in
+// the `text` family, the agents' links in `agents`, the main conversation's
+// turns in `turns`) and what the pane draws (`view`, and the changes list in
 // `listing`, which changes far less often).
 
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, Register, UiOpenResult } from 'claude-code';
 
-import type { AgentLink } from '../types';
+import type { AgentLink, Turns } from '../types';
 
 import { normalizeEol } from './core.mjs';
 import {
@@ -20,16 +21,21 @@ import {
   SAVED_SHAPE,
   TICK_MS,
   changeById,
+  chaptersOf,
   chipLabel,
   enqueue,
   finish,
   frame,
+  headerLabel,
   isUnchanged,
+  keptTurns,
   linksOf,
+  listLines,
   listWindow,
   listingOf,
   newDeck,
   playOptions,
+  promptOf,
   relativePath,
   replayFromStart,
   restore,
@@ -42,6 +48,8 @@ import {
   skipToLatest,
   tick,
   togglePause,
+  turnChipLabel,
+  turnChips,
   viewOf,
   type CallLinks,
   type Change,
@@ -79,10 +87,14 @@ const LIST_SHARE = 0.4;
 const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
 const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
 const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-1' });
-const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-2' });
+const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-3' });
 const agentsRef = { plugin: 'agent-typewriter', key: 'agents' } as const;
 const AGENTS_SHAPE = 'agents-1';
 const agents = atom(agentsRef, [] as AgentLink[], { shape: AGENTS_SHAPE });
+const turnsRef = { plugin: 'agent-typewriter', key: 'turns' } as const;
+const TURNS_SHAPE = 'turns-1';
+const NO_TURNS: Turns = { next: 1, turns: [] };
+const turns = atom(turnsRef, NO_TURNS, { shape: TURNS_SHAPE });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -109,11 +121,18 @@ type Live = {
    * and kept in $.state (`agents`) so a reload keeps it.
    */
   agents: Map<string, { mainTurnId?: string; agentCallId?: string }>;
-  /** Settles once the load has read and merged the stored `agents`, or failed; `agents` is not written before. */
+  /**
+   * The main conversation's turns the plugin saw start, numbered from 1, kept
+   * in $.state (`turns`) for the changes list's chapters and for a reload.
+   */
+  turnInfo: Turns;
+  /** Settles once the load has read and merged the stored `agents` and `turns`, or failed; neither is written before. */
   loaded: Promise<void>;
   settleLoaded: () => void;
   /** Writes of `agents`, one after another. */
   agentWrites: Promise<void>;
+  /** Writes of `turns`, one after another. */
+  turnWrites: Promise<void>;
   /** A note the pane shows on its Changes line until the next press in it. */
   note?: string;
 };
@@ -181,6 +200,16 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     // A spawn during the load queued a write that waits for this one's list.
     if (seen.length > 0) saveAgents($, live);
   }
+  const storedTurns = (await $.state.get(turnsRef)).value;
+  if (storedTurns?.shape === TURNS_SHAPE) {
+    // Turns that started during the load come after the stored ones, numbered
+    // on from them, and every stored turn has ended by then.
+    const was = storedTurns.value;
+    const seen = live.turnInfo.turns;
+    const kept = seen.length > 0 ? was.turns.map((t) => ({ ...t, isEnded: true })) : was.turns;
+    live.turnInfo = { next: was.next + seen.length, turns: [...kept, ...seen.map((t, i) => ({ ...t, number: was.next + i }))] };
+    if (seen.length > 0) saveTurns($, live);
+  }
   sync($, live);
 }
 
@@ -223,6 +252,44 @@ function saveAgents($: EngineInterface, live: Live): void {
       await update($, agents, () => next);
     })
     .catch(() => undefined);
+}
+
+/**
+ * Queues a write of the turns as they are when it runs, after the load has
+ * merged the stored ones, keeping only the running turn and the turns a kept
+ * change or a known agent names.
+ */
+function saveTurns($: EngineInterface, live: Live): void {
+  live.turnWrites = live.turnWrites
+    .then(() => live.loaded)
+    .then(async () => {
+      const named = new Set<string>();
+      for (const row of listingOf(live.deck).rows) if (row.mainTurnId) named.add(row.mainTurnId);
+      for (const at of live.agents.values()) if (at.mainTurnId) named.add(at.mainTurnId);
+      live.turnInfo = keptTurns(live.turnInfo, named);
+      const next = live.turnInfo;
+      await update($, turns, () => next);
+    })
+    .catch(() => undefined);
+}
+
+/** A main conversation turn starts: it takes the next number, and every turn before it has ended. */
+function startTurn(live: Live, turnId: string, text: string): void {
+  const was = live.turnInfo;
+  const ended = was.turns.map((t) => (t.isEnded ? t : { ...t, isEnded: true }));
+  live.turnInfo = { next: was.next + 1, turns: [...ended, { turnId, number: was.next, prompt: promptOf(text) }] };
+}
+
+/** A main conversation turn ends. */
+function endTurn(live: Live, turnId: string): void {
+  const was = live.turnInfo;
+  live.turnInfo = { ...was, turns: was.turns.map((t) => (t.turnId === turnId && !t.isEnded ? { ...t, isEnded: true } : t)) };
+}
+
+/** Plays from the first kept change of the chapter `key` names, as pressing its row does. */
+function playTurn(live: Live, key: string): void {
+  const chapter = chaptersOf(listingOf(live.deck), live.turnInfo.turns).find((ch) => ch.key === key);
+  if (chapter) seek(live.deck, chapter.rows[0]!.id, live.opts);
 }
 
 /** Runs a file tool, capturing "before" when the call starts and "after" once it succeeded. */
@@ -367,9 +434,11 @@ export const register: Register = (on, options) => {
     writes: Promise.resolve(),
     turns: new Map(),
     agents: new Map(),
+    turnInfo: NO_TURNS,
     loaded: Promise.resolve(),
     settleLoaded: () => undefined,
     agentWrites: Promise.resolve(),
+    turnWrites: Promise.resolve(),
   };
   live.loaded = new Promise((resolve) => (live.settleLoaded = resolve));
 
@@ -391,14 +460,23 @@ export const register: Register = (on, options) => {
   });
 
   // Which turn each loop is in, and where each agent hangs off the main
-  // conversation, so a change can name both. Observed only.
+  // conversation, so a change can name both; and the main conversation's
+  // turns, numbered with their prompts, for the list's chapters. Observed only.
   on('turn.start', ($, e, next) => {
     live.turns.set(e.agentId ?? '', e.turnId);
+    if (e.agentId === undefined) {
+      startTurn(live, e.turnId, e.text);
+      saveTurns($, live);
+    }
     return next(e);
   });
   // Between turns a loop has no turn: a call then (a plugin's own) is stamped with none.
   on('turn.complete', ($, e, next) => {
     live.turns.delete(e.agentId ?? '');
+    if (e.agentId === undefined) {
+      endTurn(live, e.turnId);
+      saveTurns($, live);
+    }
     return next(e);
   });
   on('agent.spawn', async ($, e, next) => {
@@ -425,30 +503,49 @@ export const register: Register = (on, options) => {
   ).catch(($, e, next) => next(e));
 
   // In the conversation, a kept change's call row keeps the engine's drawing
-  // and gains a chip that plays from the change. Every other row, and the
-  // terminal, are left as the engine draws them.
+  // and gains a chip that plays from the change. The row a turn's work ends on
+  // (its last kept change's call, or the Agent or Workflow call that started
+  // it) gains a chip that plays the turn, once the turn has ended. Every other
+  // row, and the terminal, are left as the engine draws them.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.surface === 'terminal' || (e.props.tool !== 'Edit' && e.props.tool !== 'Write')) return next(e);
+    const tool = e.props.tool;
+    const isFileTool = tool === 'Edit' || tool === 'Write';
+    if (e.surface === 'terminal' || (!isFileTool && tool !== 'Agent' && tool !== 'Workflow')) return next(e);
     const l = await read($, listing);
-    const row = l.rows.find((r) => r.id === e.props.tool_use_id);
-    if (!row) return next(e);
+    const row = isFileTool ? l.rows.find((r) => r.id === e.props.tool_use_id) : undefined;
+    const t = await read($, turns);
+    const chapter = turnChips(chaptersOf(l, t.turns)).get(e.props.tool_use_id);
+    if (!row && !chapter) return next(e);
     const drawn = await next(e);
     const { Box, Button } = $.ui.resolve(e);
-    const label = chipLabel(row, { isCurrent: row.id === l.current, isPaused: l.isPaused });
     return (
       <Box flexDirection="column">
         {drawn}
-        <Box flexDirection="row">
-          <Button
-            key={`chip:${row.id}`}
-            label={`Play from #${row.number} in the typewriter pane`}
-            onPress={async () => {
-              move($, live, (d) => seek(d, row.id, live.opts));
-              await $.ui.open({ id: PANE, title: TITLE });
-            }}
-          >
-            {label}
-          </Button>
+        <Box flexDirection="row" gap={1}>
+          {row && (
+            <Button
+              key={`chip:${row.id}`}
+              label={`Play from #${row.number} in the typewriter pane`}
+              onPress={async () => {
+                move($, live, (d) => seek(d, row.id, live.opts));
+                await $.ui.open({ id: PANE, title: TITLE });
+              }}
+            >
+              {chipLabel(row, { isCurrent: row.id === l.current, isPaused: l.isPaused })}
+            </Button>
+          )}
+          {chapter && (
+            <Button
+              key={`turn-chip:${chapter.key}`}
+              label={`Play turn ${chapter.number} in the typewriter pane`}
+              onPress={async () => {
+                move($, live, () => playTurn(live, chapter.key));
+                await $.ui.open({ id: PANE, title: TITLE });
+              }}
+            >
+              {turnChipLabel(chapter)}
+            </Button>
+          )}
         </Box>
       </Box>
     );
@@ -473,19 +570,20 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Code } = $.ui.resolve(e);
     const v = await read($, view);
     const l = await read($, listing);
+    const t = await read($, turns);
     const queued = v.queued > 0 ? ` · ${v.queued} queued` : '';
     const name = v.path === undefined ? undefined : relativePath(v.path, live.cwd);
     const current = l.rows.findIndex((r) => r.id === l.current);
     const bodyRows = e.props.scroll?.bodyRows ?? 24;
     const bodyColumns = e.props.bodyColumns ?? 80;
 
-    // The list's items: a note on dropped changes, then a row per change.
-    const lead = l.dropped > 0 ? 1 : 0;
-    const count = lead + l.rows.length;
+    // The list's lines: a note on dropped changes, then each turn's header and rows.
+    const lines = listLines(l, chaptersOf(l, t.turns));
+    const count = lines.length;
+    const currentLine = lines.findIndex((x) => x.kind === 'row' && x.row.id === l.current);
     const height = count === 0 ? 0 : Math.min(count, Math.max(3, Math.floor(bodyRows * LIST_SHARE)));
-    const top = listWindow(count, current === -1 ? undefined : lead + current, height, live.listTop);
-    const rowsShown = l.rows.slice(Math.max(0, top - lead), top - lead + height);
-    const isDroppedShown = lead > 0 && top === 0;
+    const top = listWindow(count, currentLine === -1 ? undefined : currentLine, height, live.listTop);
+    const linesShown = lines.slice(top, top + height);
 
     // The code takes what the header, the controls and the list leave.
     const rows = Math.max(3, bodyRows - 3 - (height > 0 ? height + 1 : 0));
@@ -538,10 +636,27 @@ export const register: Register = (on, options) => {
               <Text bold>Changes</Text>
               <Text dimColor>{live.note ?? 'Pick a change to play from it'}</Text>
             </Box>
-            {isDroppedShown && (
-              <Text dimColor>{`${l.dropped} older ${l.dropped === 1 ? 'change was' : 'changes were'} dropped to stay within the limit.`}</Text>
-            )}
-            {rowsShown.map((row) => {
+            {linesShown.map((line) => {
+              if (line.kind === 'dropped') {
+                return (
+                  <Text key="dropped" dimColor>{`${l.dropped} older ${l.dropped === 1 ? 'change was' : 'changes were'} dropped to stay within the limit.`}</Text>
+                );
+              }
+              if (line.kind === 'header') {
+                const { chapter } = line;
+                const label = headerLabel(chapter, bodyColumns - ROW_MARGIN);
+                return (
+                  <Box key={`turn:${chapter.key}`} flexDirection="row" gap={1}>
+                    <Text bold>{label.title}</Text>
+                    {label.prompt !== '' && <Text dimColor>{label.prompt}</Text>}
+                    <Text dimColor>{label.count}</Text>
+                    <Button key={`play:${chapter.key}`} plain onPress={() => move($, live, () => playTurn(live, chapter.key))}>
+                      {label.play}
+                    </Button>
+                  </Box>
+                );
+              }
+              const { row } = line;
               const isCurrent = row.id === l.current;
               const width = bodyColumns - ROW_MARGIN - REVEAL_COLUMNS;
               const label = rowLabel(row, relativePath(row.path, live.cwd), { isCurrent, isPaused }, width);

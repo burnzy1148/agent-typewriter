@@ -6,9 +6,9 @@
 // what the hooks write to $.state.
 
 import { Timeline, authoringOrder, backspaceStep, countChanges, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
-import type { CallLinks, Listing, Row, Saved, SavedChange, Tool, View } from '../types';
+import type { CallLinks, Listing, Row, Saved, SavedChange, Tool, TurnInfo, Turns, View } from '../types';
 
-export type { CallLinks, Listing, Row, Saved, SavedChange, Tool, View };
+export type { CallLinks, Listing, Row, Saved, SavedChange, Tool, TurnInfo, Turns, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
@@ -440,6 +440,8 @@ function rowOf(e: Event, state: Row['state']): Row {
     added: e.linesAdded,
     removed: e.linesRemoved,
     ...(e.isTooLarge && { isTooLarge: true }),
+    ...(e.mainTurnId && { mainTurnId: e.mainTurnId }),
+    ...(e.agentCallId && { agentCallId: e.agentCallId }),
   };
 }
 
@@ -457,10 +459,149 @@ export function listingOf(deck: Deck): Listing {
   return { rows, dropped: Math.max(0, (rows[0]?.number ?? 1) - 1), ...(deck.shown && { current: deck.shown.id }), isPaused: deck.isPaused };
 }
 
+/** Longest prompt a turn keeps, in characters, its ellipsis included; the pane cuts it again to fit. */
+export const MAX_PROMPT = 200;
+
 /**
- * The first of `count` rows a window `height` rows high shows: row `top` when
- * the person has scrolled the list, else the one that puts row `current` a
- * third of the way down. Clamped so the window stays within the rows.
+ * `text` on one line as a header draws it: whitespace runs as single spaces
+ * and trimmed, other control characters as visible stand-ins, and cut with `…`
+ * to MAX_PROMPT characters.
+ */
+export function promptOf(text: string): string {
+  const line = oneLine(text);
+  return line.length > MAX_PROMPT ? cutAt(line, MAX_PROMPT - 1) + '…' : line;
+}
+
+/** `text` on one line: whitespace runs as single spaces, trimmed, and other control characters as visible stand-ins. */
+function oneLine(text: string): string {
+  return showControls(text.replace(/\s+/g, ' ').trim());
+}
+
+/** `s` at most `n` code units long, never ending on half a surrogate pair. */
+function cutAt(s: string, n: number): string {
+  if (s.length <= n) return s;
+  const cut = s.slice(0, n);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+/**
+ * A run of the list's rows under one header. `turn` is a main conversation
+ * turn the plugin numbered, keyed by its id; `earlier` a turn the plugin knows
+ * by id only; `outside` the changes in no known turn, keyed ''. Rows are in
+ * recorded order.
+ */
+export type Chapter = {
+  key: string;
+  kind: 'turn' | 'earlier' | 'outside';
+  number?: number;
+  prompt?: string;
+  isEnded?: boolean;
+  rows: Row[];
+};
+
+/**
+ * The listing's rows grouped by the main conversation's turn: a chapter per
+ * turn some row names, rows in recorded order, chapters in the order of their
+ * first row. Rows naming no turn share the `outside` chapter; a turn missing
+ * from `turns` makes an `earlier` one.
+ */
+export function chaptersOf(listing: Listing, turns: readonly TurnInfo[]): Chapter[] {
+  const byId = new Map(turns.map((t) => [t.turnId, t]));
+  const chapters = new Map<string, Chapter>();
+  for (const row of listing.rows) {
+    const key = row.mainTurnId ?? '';
+    let ch = chapters.get(key);
+    if (!ch) {
+      const t = row.mainTurnId === undefined ? undefined : byId.get(row.mainTurnId);
+      if (row.mainTurnId === undefined) ch = { key, kind: 'outside', rows: [] };
+      else if (!t) ch = { key, kind: 'earlier', rows: [] };
+      else ch = { key, kind: 'turn', number: t.number, prompt: t.prompt, ...(t.isEnded && { isEnded: true }), rows: [] };
+      chapters.set(key, ch);
+    }
+    ch.rows.push(row);
+  }
+  return [...chapters.values()];
+}
+
+/** How many kept changes `n` is, as a header and a chip say it. */
+function changeCount(n: number): string {
+  return n === 1 ? '1 change' : `${n} changes`;
+}
+
+/** A chapter's header as the pane draws it: its title, its prompt cut to fit, its count, and its play button's words. */
+export type HeaderLabel = { title: string; prompt: string; count: string; play: string };
+
+/** Columns a header's play button takes beyond its words: its padding and the gap before it. */
+const PLAY_PADDING = 3;
+
+/**
+ * How the pane draws `ch`'s header in `width` columns, its play button
+ * included: `Turn <n>`, `Earlier turn` or `Outside a turn`; the prompt on one
+ * line, cut with `…` to the columns the rest leaves, '' when none fits or the
+ * turn had none; the count; and the play button's words, Play turn, or Play
+ * from first for the changes in no turn.
+ */
+export function headerLabel(ch: Chapter, width: number): HeaderLabel {
+  const title = ch.kind === 'turn' ? `Turn ${ch.number}` : ch.kind === 'earlier' ? 'Earlier turn' : 'Outside a turn';
+  const count = changeCount(ch.rows.length);
+  const play = ch.kind === 'outside' ? 'Play from first' : 'Play turn';
+  const line = oneLine(ch.prompt ?? '');
+  // The title, prompt and count are each a gap apart.
+  const room = width - title.length - count.length - 2 - play.length - PLAY_PADDING;
+  let prompt = line;
+  if (line.length > room) prompt = room < 2 ? '' : cutAt(line, room - 1) + '…';
+  return { title, prompt, count, play };
+}
+
+/**
+ * The call row a turn's Play turn chip sits on: its last kept change's own
+ * call, or for an agent's change the `Agent` or `Workflow` call that started
+ * its chain, since an agent's own calls are not rows of the conversation.
+ */
+export function turnChipAnchor(ch: Chapter): string {
+  const last = ch.rows.at(-1)!;
+  return last.agentCallId ?? last.id;
+}
+
+/** The words of a turn's Play turn chip: `Play turn · ` and its kept change count. */
+export function turnChipLabel(ch: Chapter): string {
+  return `Play turn · ${changeCount(ch.rows.length)}`;
+}
+
+/** The ended turns' chapters by the call row their chip sits on. */
+export function turnChips(chapters: readonly Chapter[]): Map<string, Chapter> {
+  return new Map(chapters.filter((ch) => ch.kind === 'turn' && ch.isEnded).map((ch) => [turnChipAnchor(ch), ch]));
+}
+
+/**
+ * The turns worth keeping: the running one (the newest, while not ended) and
+ * every turn named in `named`, the main turns of kept changes and of agents
+ * still known.
+ */
+export function keptTurns(turns: Turns, named: ReadonlySet<string>): Turns {
+  const newest = turns.turns.at(-1);
+  return { next: turns.next, turns: turns.turns.filter((t) => named.has(t.turnId) || (t === newest && !t.isEnded)) };
+}
+
+/** One line of the pane's changes list: the note on dropped changes, a chapter's header, or a change's row. */
+export type ListLine = { kind: 'dropped' } | { kind: 'header'; chapter: Chapter } | { kind: 'row'; row: Row };
+
+/** The list's lines, top to bottom: the dropped note when changes were dropped, then each chapter's header and rows. */
+export function listLines(listing: Listing, chapters: readonly Chapter[]): ListLine[] {
+  const lines: ListLine[] = listing.dropped > 0 ? [{ kind: 'dropped' }] : [];
+  for (const chapter of chapters) {
+    lines.push({ kind: 'header', chapter });
+    for (const row of chapter.rows) lines.push({ kind: 'row', row });
+  }
+  return lines;
+}
+
+/**
+ * The first of the list's `count` lines (the note on dropped changes, chapter
+ * headers and rows) a window `height` lines high shows: line `top` when the
+ * person has scrolled the list, else the one that puts line `current`, the
+ * current row's, a third of the way down. Clamped so the window stays within
+ * the lines.
  */
 export function listWindow(count: number, current: number | undefined, height: number, top?: number): number {
   const want = top ?? (current === undefined ? 0 : current - Math.floor(height / 3));
@@ -470,16 +611,16 @@ export function listWindow(count: number, current: number | undefined, height: n
 /** A scroll of the pane as `ui.scroll` reports it: the rows asked for, the body's and the tree's heights, and for a wheel the body row under the pointer. */
 export type PaneScroll = { by: number; bodyRows: number; contentRows: number; pointerRow?: number };
 
-/** The changes list as the pane last drew it: its first item shown, the items it shows and has, and the body row its first item is on. */
+/** The changes list as the pane last drew it: its first line shown, the lines it shows and has, and the body row its first line is on. */
 export type ListGeometry = { top: number; height: number; count: number; firstRow: number };
 
 /**
- * The list's first item once scroll `s` has moved it, or undefined when the
+ * The list's first line once scroll `s` has moved it, or undefined when the
  * scroll is not the list's: the list fits, or a wheel is over the rows above
  * it. The engine tells the kinds apart as follows: a wheel carries the pointer
  * and moves by its ticks; a page key asks for `bodyRows` and moves by the
  * list's own height; Home and End ask for `contentRows` and go to its ends;
- * an arrow moves a row. When the tree fills the body exactly, Home and End
+ * an arrow moves a line. When the tree fills the body exactly, Home and End
  * cannot be told from a page and move a page.
  */
 export function scrolledTop(s: PaneScroll, list: ListGeometry): number | undefined {

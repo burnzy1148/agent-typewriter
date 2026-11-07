@@ -56,7 +56,9 @@ export type View = {
 /**
  * One kept change as the pane lists it: its place in the session, the tool
  * that made it, its absolute path, whether it has played, is being typed or
- * waits, and the lines it adds and removes.
+ * waits, and the lines it adds and removes. `mainTurnId` and `agentCallId`
+ * are the change's links (CallLinks), which group it into its turn's chapter
+ * and anchor that turn's chip; each is absent when the change lacks it.
  */
 export type Row = {
   id: string;
@@ -67,6 +69,8 @@ export type Row = {
   isTooLarge?: boolean;
   added: number;
   removed: number;
+  mainTurnId?: string;
+  agentCallId?: string;
 };
 
 /**
@@ -86,6 +90,22 @@ export type Listing = { rows: Row[]; dropped: number; current?: string; isPaused
  */
 export type AgentLink = { agentId: string; mainTurnId?: string; agentCallId?: string };
 
+/**
+ * A main conversation turn the plugin saw start: its id, its number in the
+ * session from 1, the prompt that started it on one line (whitespace runs as
+ * single spaces, other control characters as visible stand-ins, at most 200
+ * characters with a cut one ending in `…`, '' when it had none), and whether
+ * it has ended.
+ */
+export type TurnInfo = { turnId: string; number: number; prompt: string; isEnded?: boolean };
+
+/**
+ * The main conversation's turns as a reload needs them: the number the next
+ * turn takes, and the running turn, every turn a kept change names and every
+ * turn that started an agent the plugin still knows, oldest first.
+ */
+export type Turns = { next: number; turns: TurnInfo[] };
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-typewriter': {
@@ -94,6 +114,8 @@ declare module 'claude-code' {
       listing: Shaped<Listing>;
       /** The agents started this session, oldest first, at most the newest 200. */
       agents: Shaped<AgentLink[]>;
+      /** The main conversation's turns, for the changes list's chapters. */
+      turns: Shaped<Turns>;
       /** Member `<change id>:before` or `<change id>:after`; '' once the change is gone. */
       text: StateFamily<string>;
     };
