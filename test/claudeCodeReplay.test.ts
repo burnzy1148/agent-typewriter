@@ -5,8 +5,17 @@ import {
   MAX_WAITING,
   MAX_WAITING_CHARS,
   SAVED_SHAPE,
+  MAX_PROMPT,
   changeById,
+  chaptersOf,
   chipLabel,
+  headerLabel,
+  keptTurns,
+  listLines,
+  promptOf,
+  turnChipAnchor,
+  turnChipLabel,
+  turnChips,
   scrollTargets,
   TICK_MS,
   enqueue,
@@ -34,8 +43,10 @@ import {
   type Deck,
   type NewChange,
   type PlayOptions,
+  type Listing,
   type Row,
   type Saved,
+  type TurnInfo,
 } from '../claude-code/hooks/replay';
 
 const FAST: PlayOptions = { charsPerMinute: 6000, naturalOrder: true };
@@ -913,4 +924,136 @@ test('a chip names the change\'s state and number', () => {
   assert.equal(chipLabel(row('played', { isTooLarge: true }), at(true)), 'Too large #2', 'shown during its hold');
   assert.equal(chipLabel(row('played', { isTooLarge: true }), at(false)), 'Not typed #2');
   assert.equal(chipLabel(row('pending', { isTooLarge: true }), at(false)), 'Queued #2');
+});
+
+test('rows carry the turn and Agent call of their change, and lack the ones it lacks', () => {
+  const d = deckOf({ ...change('a', '', 'a\n'), ...MAIN }, { ...change('b', '', 'b\n'), ...AGENT }, change('c', '', 'c\n'));
+  const rows = listingOf(d).rows;
+  assert.deepEqual(rows.map((r) => [r.id, r.mainTurnId, r.agentCallId]), [
+    ['a', 't1', undefined],
+    ['b', 't1', 'toolu_agent'],
+    ['c', undefined, undefined],
+  ]);
+  assert.equal('agentCallId' in rows[0]!, false);
+  assert.equal('mainTurnId' in rows[2]!, false);
+});
+
+// Chapters by turn.
+
+/** A row of change `n`, in main turn `turn` (none when undefined), started through Agent call `call` when given. */
+function turnRow(n: number, turn?: string, call?: string): Row {
+  return { id: `toolu_${n}`, number: n, path: `/w/${n}.ts`, state: 'pending', added: 1, removed: 0, ...(turn && { mainTurnId: turn }), ...(call && { agentCallId: call }) };
+}
+
+function listingFrom(rows: Row[], dropped = 0): Listing {
+  return { rows, dropped, isPaused: false };
+}
+
+const TURNS: TurnInfo[] = [
+  { turnId: 't1', number: 1, prompt: 'Add a rate limiter.', isEnded: true },
+  { turnId: 't2', number: 2, prompt: 'Cover it with tests.' },
+];
+
+test('chapters group rows by main turn, in recorded order, ordered by their first row', () => {
+  const rows = [turnRow(1, 't1'), turnRow(2, 't1'), turnRow(3, 't2'), turnRow(4, 't2')];
+  const chapters = chaptersOf(listingFrom(rows), TURNS);
+  assert.deepEqual(
+    chapters.map((ch) => [ch.key, ch.kind, ch.number, ch.prompt, ch.isEnded, ch.rows.map((r) => r.number)]),
+    [
+      ['t1', 'turn', 1, 'Add a rate limiter.', true, [1, 2]],
+      ['t2', 'turn', 2, 'Cover it with tests.', undefined, [3, 4]],
+    ],
+  );
+});
+
+test("a background agent's later change joins its own turn's chapter, which still comes first", () => {
+  // Change 3, from an agent turn 1 started, was recorded after turn 2's change 2.
+  const rows = [turnRow(1, 't1'), turnRow(2, 't2'), turnRow(3, 't1', 'toolu_agent')];
+  const chapters = chaptersOf(listingFrom(rows), TURNS);
+  assert.deepEqual(chapters.map((ch) => [ch.key, ch.rows.map((r) => r.number)]), [
+    ['t1', [1, 3]],
+    ['t2', [2]],
+  ]);
+});
+
+test('changes in no turn share an Outside a turn chapter, and a turn known by id only is an Earlier turn', () => {
+  const rows = [turnRow(1), turnRow(2, 't0'), turnRow(3), turnRow(4, 't1')];
+  const chapters = chaptersOf(listingFrom(rows), TURNS);
+  assert.deepEqual(chapters.map((ch) => [ch.key, ch.kind, ch.rows.map((r) => r.number)]), [
+    ['', 'outside', [1, 3]],
+    ['t0', 'earlier', [2]],
+    ['t1', 'turn', [4]],
+  ]);
+  assert.deepEqual(headerLabel(chapters[0]!, 80), { title: 'Outside a turn', prompt: '', count: '2 changes', play: 'Play from first' });
+  assert.deepEqual(headerLabel(chapters[1]!, 80), { title: 'Earlier turn', prompt: '', count: '1 change', play: 'Play turn' });
+});
+
+test("a turn whose first changes were dropped starts its chapter at its first kept change", () => {
+  const d = newDeck();
+  for (let i = 0; i < MAX_WAITING + 3; i++) enqueue(d, { ...change(`c${i}`, '', `${i}\n`), ...(i < 5 ? MAIN : { turnId: 't2', mainTurnId: 't2' }) });
+  const l = listingOf(d);
+  const lines = listLines(l, chaptersOf(l, TURNS));
+  assert.equal(lines[0]?.kind, 'dropped');
+  assert.equal(lines[1]?.kind === 'header' && lines[1].chapter.rows[0]?.number, 4);
+  assert.equal(lines[1]?.kind === 'header' && lines[1].chapter.rows.length, 2);
+});
+
+test('the list is the dropped note, then each chapter\'s header and rows', () => {
+  const rows = [turnRow(4, 't1'), turnRow(5, 't2')];
+  const l = listingFrom(rows, 3);
+  const lines = listLines(l, chaptersOf(l, TURNS));
+  assert.deepEqual(
+    lines.map((x) => (x.kind === 'dropped' ? 'dropped' : x.kind === 'header' ? `header ${x.chapter.key}` : `row ${x.row.number}`)),
+    ['dropped', 'header t1', 'row 4', 'header t2', 'row 5'],
+  );
+  assert.deepEqual(listLines(listingFrom([]), []), []);
+});
+
+test('a header names the turn, its prompt cut to fit, its count and Play turn', () => {
+  const ch = { key: 't2', kind: 'turn' as const, number: 2, prompt: 'Cover it with tests and update the other callers.', rows: [1, 2, 3, 4].map((n) => turnRow(n, 't2')) };
+  assert.deepEqual(headerLabel(ch, 120), { title: 'Turn 2', prompt: 'Cover it with tests and update the other callers.', count: '4 changes', play: 'Play turn' });
+  const cut = headerLabel(ch, 40);
+  // 40 columns: 'Turn 2' and '4 changes' with their gaps, then 'Play turn' and its padding, leave 11 for the prompt.
+  assert.equal(cut.prompt, 'Cover it w…');
+  assert.equal(headerLabel(ch, 30).prompt, '', 'no room for a prompt leaves it out');
+  assert.equal(headerLabel({ ...ch, rows: [turnRow(1, 't2')] }, 120).count, '1 change');
+  assert.equal(headerLabel({ ...ch, prompt: '' }, 120).prompt, '');
+  assert.equal(headerLabel({ ...ch, prompt: 'two\n\n  lines\tand tabs' }, 120).prompt, 'two lines and tabs');
+});
+
+test('a prompt is kept on one line, whitespace runs as single spaces, at most 200 characters', () => {
+  assert.equal(promptOf('  Fix the\n\nlogin   bug.\t '), 'Fix the login bug.');
+  assert.equal(promptOf(''), '');
+  assert.equal(promptOf('x'.repeat(500)).length, MAX_PROMPT);
+  assert.equal(promptOf('x'.repeat(MAX_PROMPT - 1) + '😀'), 'x'.repeat(MAX_PROMPT - 1), 'never half a surrogate pair');
+});
+
+test("a turn's chip sits on its last kept change's call, or on the Agent call that started it", () => {
+  const main = { key: 't1', kind: 'turn' as const, number: 1, isEnded: true, rows: [turnRow(1, 't1', 'toolu_agent'), turnRow(2, 't1')] };
+  assert.equal(turnChipAnchor(main), 'toolu_2');
+  assert.equal(turnChipLabel(main), 'Play turn · 2 changes');
+  const agent = { ...main, rows: [turnRow(1, 't1'), turnRow(2, 't1', 'toolu_agent')] };
+  assert.equal(turnChipAnchor(agent), 'toolu_agent');
+  assert.equal(turnChipLabel({ ...main, rows: [turnRow(1, 't1')] }), 'Play turn · 1 change');
+});
+
+test('only ended turns get a chip; a running turn, an earlier one and the changes in no turn get none', () => {
+  const rows = [turnRow(1), turnRow(2, 't0'), turnRow(3, 't1'), turnRow(4, 't2')];
+  const chips = turnChips(chaptersOf(listingFrom(rows), TURNS));
+  assert.deepEqual([...chips].map(([anchor, ch]) => [anchor, ch.key]), [['toolu_3', 't1']]);
+});
+
+test('kept turns are the running one and those a change or agent names', () => {
+  const turns = {
+    next: 5,
+    turns: [
+      { turnId: 't1', number: 1, prompt: 'a', isEnded: true },
+      { turnId: 't2', number: 2, prompt: 'b', isEnded: true },
+      { turnId: 't3', number: 3, prompt: 'c', isEnded: true },
+      { turnId: 't4', number: 4, prompt: 'd' },
+    ],
+  };
+  assert.deepEqual(keptTurns(turns, new Set(['t2'])), { next: 5, turns: [turns.turns[1], turns.turns[3]] });
+  const ended = { ...turns, turns: turns.turns.map((t) => ({ ...t, isEnded: true })) };
+  assert.deepEqual(keptTurns(ended, new Set()).turns, [], 'an ended newest turn with no changes goes too');
 });

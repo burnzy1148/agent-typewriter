@@ -42,7 +42,7 @@ Rows with no `mainTurnId` share one `Outside a turn` chapter, placed like any ot
 
 `turn.start` on the main loop (no `agentId`) records `{ turnId, number, prompt }` with `number` the next in the session, counting every main-loop turn the plugin sees start. `prompt` is `text` with whitespace runs collapsed to one space, trimmed, and cut to 200 characters; the pane cuts it again to fit. The same hook marks the previous main turn ended, so a turn whose `turn.complete` the plugin missed across a reload still ends. `turn.complete` on the main loop marks its turn `isEnded`.
 
-They are saved in a new atom `turns` (shape `turns-1`): `{ next: number; turns: TurnInfo[] }`, `TurnInfo = { turnId; number; prompt; isEnded? }`. On each write it keeps the running turn and the turns some kept change names as its `mainTurnId`, so it is bounded by the kept changes (at most 201) plus one.
+They are saved in a new atom `turns` (shape `turns-1`): `{ next: number; turns: TurnInfo[] }`, `TurnInfo = { turnId; number; prompt; isEnded? }`. On each write it keeps the running turn, the turns some kept change names as its `mainTurnId`, and the turns a known agent (the `agents` list) names as its `mainTurnId`, so it is bounded by the kept changes (at most 201) plus the known agents (at most 200) plus one. Keeping the agents' turns matters for a background agent: a turn that started one and made no change of its own would otherwise be dropped when the next turn starts, and the agent's later change would land in an `Earlier turn` chapter instead of its turn's.
 
 Writes use the queue pattern at-o3z.12 settled for `agents` after its review round 2: a write waits until the load has read and merged the stored value, takes the value as it is when it runs, and the load saves once after merging anything recorded while it read. A turn that starts during the load gets a number after the stored `next`.
 
@@ -70,7 +70,7 @@ turnChipAnchor(ch: Chapter): string    // last row's agentCallId ?? id
 turnChipLabel(ch: Chapter): string     // 'Play turn · 4 changes'
 ```
 
-The button reads Play turn for `turn` and `earlier`, Play from first for `outside`; each calls `seek(deck, ch.rows[0].id)`, the same path as pressing the row, then makes the list follow again. at-o3z.27 adds a `fileChaptersOf(listing)` returning the same shape (title, sub, count, play label, rows), so the pane draws whichever the switch picks.
+The button reads Play turn for `turn` and `earlier`, Play from first for `outside`; each calls `seek(deck, ch.rows[0].id)`, the same path as pressing the row, then makes the list follow again. The chapter is looked up by key when the button is pressed, from the deck and turns as they are then, so a press after the chapter's first row was dropped plays from its first kept row. at-o3z.27 adds a `fileChaptersOf(listing)` returning the same shape (title, sub, count, play label, rows), so the pane draws whichever the switch picks.
 
 ### Drawing chapters in the pane
 

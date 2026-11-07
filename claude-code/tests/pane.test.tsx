@@ -654,18 +654,19 @@ test('a long list keeps the current change in view, stays where the person scrol
   const w = world(on);
   await start($);
   for (let i = 1; i <= 30; i++) await $.tool.call({ tool: 'Write', file_path: `/w/f${i}.ts`, content: `${i}\n` });
+  // No turn was seen, so the rows sit under one Outside a turn header, the list's first line.
   const numbers = async () => (await list($)).rows.map((r) => Number(/#(\d+) /.exec(r)![1]));
 
   await press($, 'skip');
   expect(await numbers()).toEqual([23, 24, 25, 26, 27, 28, 29, 30]);
   await press($, 'start');
-  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
   await wheel($, 10);
-  expect(await numbers()).toEqual([11, 12, 13, 14, 15, 16, 17, 18]);
+  expect(await numbers()).toEqual([10, 11, 12, 13, 14, 15, 16, 17]);
   await w.clock.advance(2_000);
   expect((await look($, 'desktop')).number).not.toBe('#1');
-  expect(await numbers()).toEqual([11, 12, 13, 14, 15, 16, 17, 18]);
+  expect(await numbers()).toEqual([10, 11, 12, 13, 14, 15, 16, 17]);
   await wheel($, -100);
   expect((await numbers())[0]).toBe(1);
 
@@ -685,11 +686,11 @@ test('a wheel over the code leaves the list following playback; page keys move i
   for (let i = 1; i <= 30; i++) await $.tool.call({ tool: 'Write', file_path: `/w/f${i}.ts`, content: `${i}\n` });
   const numbers = async () => (await list($)).rows.map((r) => Number(/#(\d+) /.exec(r)![1]));
   await press($, 'start');
-  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
   await scrollPane($, 5, 1);
   expect(passed).toBe(1);
-  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(await numbers()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   await press($, 'skip');
   expect((await numbers())[7]).toBe(30);
 

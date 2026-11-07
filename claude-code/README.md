@@ -84,15 +84,19 @@ It shows the file being typed (by its path in your project) and the change's num
 - **Finish current** (`f`): show the current change done and start the next one.
 - **Skip to latest** (`l`): finish every queued change and show the last one.
 
-Below them, the pane lists the session's changes, oldest first: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press a change, From start, Finish current or Skip to latest.
+Below them, the pane lists the session's changes: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press a change, Play turn, From start, Finish current or Skip to latest.
 
-Press a change to play from it: it is typed next and the later ones follow, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done.
+The list is grouped by turn: each prompt you send starts a chapter headed **Turn 4** (the fourth prompt the plugin saw), the prompt on one line, how many of its changes the pane keeps, and **Play turn**. A change a subagent made goes in the chapter of the turn that started the subagent, even when it lands after a later turn began. Changes the plugin can't place in a turn, such as ones saved by an older version, sit under **Outside a turn**, with **Play from first**. Turn numbers and prompts survive a reload.
+
+Press a change to play from it: it is typed next and the later ones follow, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done. Play turn does the same from the turn's first change the pane keeps.
 
 ### Back and forth with the conversation
 
 **Show in conversation**, in the pane's header, scrolls the conversation to the `Edit` or `Write` call that made the change the pane shows; the ↗ beside each row of the list does the same for that change. For a change a subagent made, it goes to the subagent's call, or to the `Agent` call that started the subagent when the conversation doesn't show the subagent's own calls. If it can't scroll there, say because the call is no longer in the conversation, the list says so until your next press in the pane. Neither moves playback.
 
 In the conversation, each `Edit` or `Write` call whose change the pane keeps has a chip under it naming the change and where playback is with it: **Replay #2** once it has played, **Typing #2** or **Paused #2** while it is typed, **Next #2** when you picked it while paused, **Queued #2** while it waits, and **Too large #2**, then **Not typed #2**, for a file too large to type. Press the chip to play from that change, as pressing its row does; it opens the pane if it is closed.
+
+Once a turn has ended, the last row of the conversation that holds its work gets a **Play turn · 4 changes** chip too: the `Edit` or `Write` call of its last change, or the `Agent` call that started a subagent when the subagent's change comes last. Pressing it plays the turn, as Play turn does, and opens the pane. It sits there rather than on the turn's closing "Worked for" line because Claude Code draws that line only in the terminal.
 
 ## Options
 
