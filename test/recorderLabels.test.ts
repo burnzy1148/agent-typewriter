@@ -57,6 +57,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     autoIgnoreWorktrees: [],
     autoFollow: false,
     agentContext: false,
+    hookPort: 0,
     ...over,
   };
 }

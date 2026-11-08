@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { REPO_SETTING_KINDS, changedKeys, parseRepoSettings, pickLayer } from '../src/repoSettings';
+import { REPO_SETTING_KINDS, USER_ONLY_SETTINGS, changedKeys, parseRepoSettings, pickLayer } from '../src/repoSettings';
 import { DEFAULT_CHARS_PER_MINUTE } from '../src/pace';
 
 const root = path.join(__dirname, '..');
@@ -137,7 +137,11 @@ test('file format, schema, and package.json settings list the same keys', () => 
   const pkg = readJson('package.json');
   const schema = readJson('schemas/agent-typewriter.schema.json');
   const settings = pkg.contributes.configuration.properties as Record<string, { type: unknown }>;
-  const fromPkg = Object.keys(settings).map((k) => k.replace(/^agentTypewriter\./, '')).sort();
+  const fromPkg = Object.keys(settings)
+    .map((k) => k.replace(/^agentTypewriter\./, ''))
+    .filter((k) => !USER_ONLY_SETTINGS.includes(k))
+    .sort();
+  for (const k of USER_ONLY_SETTINGS) assert.ok(settings[`agentTypewriter.${k}`], `${k} missing from package.json`);
   assert.deepEqual(Object.keys(REPO_SETTING_KINDS).sort(), fromPkg, 'REPO_SETTING_KINDS is out of date');
   const schemaKeys = Object.keys(schema.properties).filter((k) => k !== '$schema').sort();
   assert.deepEqual(schemaKeys, fromPkg, 'schemas/agent-typewriter.schema.json is out of date');
@@ -162,4 +166,12 @@ test('autoIgnoreWorktrees: patterns pass through; anything but strings is droppe
   const r = parsed('{"autoIgnoreWorktrees": "review-*"}');
   assert.deepEqual(r.values, {});
   assert.match(r.problems[0], /"autoIgnoreWorktrees" should be an array of strings/);
+});
+
+test('a user-only setting in the file is ignored and reported', () => {
+  const r = parseRepoSettings('{ "hookPort": 47323 }');
+  assert.ok(r.ok);
+  assert.deepEqual(r.values, {});
+  assert.equal(r.problems.length, 1);
+  assert.match(r.problems[0], /hookPort/);
 });
