@@ -17,10 +17,10 @@
 ## 3. Wiring and docs
 
 - [x] 3.1 `agentTypewriter.hookPort` in `package.json` (application scope, 0 or 1024–65535), read from user settings only in `config.ts`; not in `repoSettings.ts` or the repository schema. Verify: typecheck, `test/repoSettings.test.ts`, a config unit test that a workspace value is ignored.
-- [ ] 3.2 `extension.ts`: listener lifecycle on `hookPort` and `agentContext`, the `HookLog` into the correlator, the output channel. Verify: `npm run it` on CI.
-- [ ] 3.3 *Copy Claude Code Hook Settings* command: sets the default port when 0, copies the hooks JSON, says where to paste it. Verify: unit test of the JSON it builds; integration test that the command sets the port and a posted event reaches a recorded change's context.
+- [x] 3.2 `extension.ts`: listener lifecycle on `hookPort` and `agentContext`, the `HookLog` into the correlator, the output channel. Verify: `npm run it` on CI.
+- [x] 3.3 *Copy Claude Code Hook Settings* command: sets the default port when 0, copies the hooks JSON, says where to paste it. Verify: unit test of the JSON it builds; integration test that the command sets the port and a posted event reaches a recorded change's context.
 - [x] 3.4 Docs: hook setup on the site's Panels page (or a new page), `CHANGELOG.md`. Verify: `npm run build` in `site/`.
-- [ ] 3.5 Full check: `npm run typecheck`, `npm test`, CI integration tests on Ubuntu and Windows.
+- [x] 3.5 Full check: `npm run typecheck`, `npm test`, CI integration tests on Ubuntu and Windows.
 
 ## 4. Review round 1 (Added in implementation)
 
