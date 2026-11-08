@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Correlator, HOOK_LATE_MS, RETRY_MS, SETTLE_MS, hookContext, matchHook, type CallSource } from '../src/agentContext';
+import { Correlator, HOOK_LATE_MS, RETRY_MS, SETTLE_MS, WRITE_LAG_MS, hookContext, matchHook, type CallSource } from '../src/agentContext';
 import { HookLog, type HookEvent } from '../src/hookListener';
 import { Timeline, type NewChangeEvent } from '../src/timeline';
 import { TranscriptIndex, type ToolCall, type Turn } from '../src/transcripts';
@@ -26,36 +26,46 @@ function call(id: string, file: string, start: number, extra: Partial<ToolCall> 
 // ------------------------------------------------------------ matchHook
 
 test('a hook event on the file, just after the write, matches', () => {
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T + 40)], none, false)?.id, 'e1');
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T + 40)], none, [], false)?.id, 'e1');
 });
 
 test('two hook events on one file go to their own changes', () => {
   const events = [hook('e1', '/w/a.ts', T + 40), hook('e2', '/w/a.ts', T + 1040)];
-  const first = matchHook({ paths: ['/w/a.ts'], time: T }, events, none, false)!;
-  const second = matchHook({ paths: ['/w/a.ts'], time: T + 1000 }, events, new Set([first.id]), false)!;
+  const first = matchHook({ paths: ['/w/a.ts'], time: T }, events, none, [], false)!;
+  const second = matchHook({ paths: ['/w/a.ts'], time: T + 1000 }, events, new Set([first.id]), [], false)!;
   assert.equal(first.id, 'e1');
   assert.equal(second.id, 'e2');
 });
 
 test('the earliest event at or after the write wins, else the latest before it', () => {
   const events = [hook('e0', '/w/a.ts', T - 800), hook('e1', '/w/a.ts', T - 300), hook('e2', '/w/a.ts', T + 50), hook('e3', '/w/a.ts', T + 900)];
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, events, none, false)?.id, 'e2');
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, events, new Set(['e2', 'e3']), false)?.id, 'e1');
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, events, none, [], false)?.id, 'e2');
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, events, new Set(['e2', 'e3']), [], false)?.id, 'e1');
 });
 
 test('events more than 1 s before or 10 s after the write do not match', () => {
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T - 1001)], none, false), undefined);
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T + HOOK_LATE_MS + 1)], none, false), undefined);
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T - 1001)], none, [], false), undefined);
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T + HOOK_LATE_MS + 1)], none, [], false), undefined);
 });
 
 test('a claimed event, or one on another file, does not match', () => {
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T + 40)], new Set(['e1']), false), undefined);
-  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/b.ts', T + 40)], none, false), undefined);
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/a.ts', T + 40)], new Set(['e1']), [], false), undefined);
+  assert.equal(matchHook({ paths: ['/w/a.ts'], time: T }, [hook('e1', '/w/b.ts', T + 40)], none, [], false), undefined);
 });
 
 test('a rename matches an event on either path; Windows paths compare without case', () => {
-  assert.equal(matchHook({ paths: ['/w/new.ts', '/w/old.ts'], time: T }, [hook('e1', '/w/old.ts', T + 40)], none, false)?.id, 'e1');
-  assert.equal(matchHook({ paths: ['c:\\work\\a.ts'], time: T }, [hook('e1', 'C:\\Work\\A.ts', T + 40)], none, true)?.id, 'e1');
+  assert.equal(matchHook({ paths: ['/w/new.ts', '/w/old.ts'], time: T }, [hook('e1', '/w/old.ts', T + 40)], none, [], false)?.id, 'e1');
+  assert.equal(matchHook({ paths: ['c:\\work\\a.ts'], time: T }, [hook('e1', 'C:\\Work\\A.ts', T + 40)], none, [], true)?.id, 'e1');
+});
+
+test('an event goes to the latest write on its file before it arrived, not to an older waiting change', () => {
+  const save = { paths: ['/w/a.ts'], time: T };
+  const edit = { paths: ['/w/a.ts'], time: T + 5000 };
+  const events = [hook('e1', '/w/a.ts', T + 5050)];
+  assert.equal(matchHook(save, events, none, [save, edit], false), undefined);
+  assert.equal(matchHook(edit, events, none, [save, edit], false)?.id, 'e1');
+  // A later write on another file, or after the event, takes nothing from it.
+  assert.equal(matchHook(save, events, none, [save, { paths: ['/w/b.ts'], time: T + 5000 }, { paths: ['/w/a.ts'], time: T + 5100 }], false)?.id, 'e1');
 });
 
 test('hookContext takes the turn, narration, start and subagent description from the transcript call', () => {
@@ -233,6 +243,46 @@ test('a call given to a change by its hook event is not given to another by the 
   await clock.advance(SETTLE_MS + RETRY_MS * 2, correlator);
   assert.equal(timeline.get(1)!.agent?.via, 'hook');
   assert.equal(timeline.get(2)!.agent, undefined);
+  correlator.dispose();
+});
+
+test('user save, then an agent edit: the edit takes the event even when it reaches the timeline after it', async () => {
+  const { clock, timeline, source, hooks, correlator } = harness();
+  timeline.push(ev('a.ts', T));
+  await clock.advance(5050, correlator);
+  source.list = [call('e1', '/w/a.ts', T + 4900)];
+  hooks.add(hook('e1', '/w/a.ts', T + 5050));
+  await clock.advance(400, correlator);
+  assert.equal(timeline.get(1)!.agent, undefined, 'the older change does not take an event that came 5 s after its write at once');
+  timeline.push(ev('a.ts', T + 5000));
+  await clock.advance(SETTLE_MS + RETRY_MS * 2, correlator);
+  assert.equal(timeline.get(1)!.agent, undefined);
+  assert.equal(timeline.get(2)!.agent?.via, 'hook');
+  assert.equal(timeline.get(2)!.agent?.tool?.id, 'e1');
+  correlator.dispose();
+});
+
+test('a hook event well after the write, with no later write recorded, matches once the write lag has passed', async () => {
+  const { clock, timeline, source, hooks, correlator } = harness();
+  timeline.push(ev('a.ts', T));
+  await clock.advance(5050, correlator);
+  // Known to the transcript under another file, so only the hook event can match it.
+  source.list = [call('e1', '/w/elsewhere.ts', T - 100)];
+  hooks.add(hook('e1', '/w/a.ts', T + 5050));
+  await clock.advance(400, correlator);
+  assert.equal(timeline.get(1)!.agent, undefined);
+  await clock.advance(WRITE_LAG_MS + RETRY_MS, correlator);
+  assert.equal(timeline.get(1)!.agent?.via, 'hook');
+  correlator.dispose();
+});
+
+test('only transcripts of events on a waiting change\u2019s files are read', async () => {
+  const { clock, timeline, source, hooks, correlator } = harness();
+  hooks.add(hook('e1', '/w/a.ts', T + 40));
+  hooks.add(hook('e2', '/w/other.ts', T + 40, { transcript: '/t/other.jsonl' }));
+  timeline.push(ev('a.ts', T));
+  await clock.advance(300, correlator);
+  assert.deepEqual(source.files.at(-1), ['/t/s1.jsonl']);
   correlator.dispose();
 });
 

@@ -167,3 +167,11 @@ test('autoIgnoreWorktrees: patterns pass through; anything but strings is droppe
   assert.deepEqual(r.values, {});
   assert.match(r.problems[0], /"autoIgnoreWorktrees" should be an array of strings/);
 });
+
+test('a user-only setting in the file is ignored and reported', () => {
+  const r = parseRepoSettings('{ "hookPort": 47323 }');
+  assert.ok(r.ok);
+  assert.deepEqual(r.values, {});
+  assert.equal(r.problems.length, 1);
+  assert.match(r.problems[0], /hookPort/);
+});

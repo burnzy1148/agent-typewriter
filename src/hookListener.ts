@@ -59,7 +59,8 @@ export function parseHookInput(body: unknown, time: number): HookEvent | undefin
   const raw = str(input.file_path) ?? str(input.notebook_path);
   if (!raw) return undefined;
   const cwd = str(body.cwd);
-  const file = isAbsolute(raw) ? raw : cwd ? path.resolve(cwd, raw) : undefined;
+  // Resolved in cwd's own style: Claude Code may run on another platform's paths than this host's.
+  const file = isAbsolute(raw) ? raw : cwd ? (path.posix.isAbsolute(cwd) ? path.posix : path.win32).resolve(cwd, raw) : undefined;
   if (!file) return undefined;
   const prompt = str(body.prompt_id);
   const transcript = str(body.transcript_path);

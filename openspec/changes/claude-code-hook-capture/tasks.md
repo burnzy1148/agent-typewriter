@@ -11,7 +11,7 @@
 
 - [x] 2.1 `AgentContext.turn` optional, `via: 'hook'`; tooltip without a prompt line when there is no turn. Verify: typecheck and a tooltip case.
 - [x] 2.2 `matchHook` (window, earliest-after else latest-before, shared `claimed`, rename paths, Windows paths). Verify: unit tests for each `Changes are matched to hook events` scenario.
-- [x] 2.3 `TranscriptIndex.refresh(..., files)`; calls are looked up by id among `calls()` (no `call(id)`, see design.md). Verify: unit test reading a transcript outside any candidate folder, and its subagent folder.
+- [x] 2.3 `TranscriptIndex.refresh(..., files)` and `call(id)`. *Corrected in implementation:* calls are looked up by id among `calls()`, no `call(id)` (design.md C3). Verify: unit test reading a transcript outside any candidate folder, and its subagent folder.
 - [x] 2.4 Correlator: hook match first, wait for the transcript call until settle, then event-only context; claim held while waiting; a pass on `onDidAdd`. Verify: unit tests with a fake clock: hook plus transcript, transcript written late, transcript unreadable, hook arriving after the change, hook and transcript naming the same call.
 
 ## 3. Wiring and docs
@@ -21,6 +21,14 @@
 - [ ] 3.3 *Copy Claude Code Hook Settings* command: sets the default port when 0, copies the hooks JSON, says where to paste it. Verify: unit test of the JSON it builds; integration test that the command sets the port and a posted event reaches a recorded change's context.
 - [x] 3.4 Docs: hook setup on the site's Panels page (or a new page), `CHANGELOG.md`. Verify: `npm run build` in `site/`.
 - [ ] 3.5 Full check: `npm run typecheck`, `npm test`, CI integration tests on Ubuntu and Windows.
+
+## 4. Review round 1 (Added in implementation)
+
+- [x] 4.1 Relative hook paths resolved in `cwd`'s own style (design.md C6). Verify: the relative-path unit test on Windows CI.
+- [x] 4.2 Hook event ownership by later writes, and holding a late event for the write lag (design.md C4). Verify: unit tests for a user save then an agent edit (the edit reaching the timeline after the event), and a late event with no later write matching after the lag.
+- [x] 4.3 Only transcripts of events on waiting changes' files are read (design.md C5). Verify: unit test that an unrelated event's transcript is not passed to `refresh`.
+- [x] 4.4 `hookPort` as an integer, `0` or 1024 to 65535, with a one-time log for an ignored value (design.md C7). Verify: typecheck, `npm test`.
+- [x] 4.5 `repo-settings` and `agent-context` reload deltas (design.md C8). Verify: `openspec validate --all --strict`.
 
 ## Workflow follow-up
 

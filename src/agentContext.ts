@@ -93,26 +93,47 @@ function normalizer(caseInsensitive: boolean): (p: string) => string {
  * The hook event that reported the write behind `change`: an unclaimed edit
  * event on one of its paths, arriving from START_SLACK_MS before the write to
  * HOOK_LATE_MS after it. The request follows the write it reports, so the
- * earliest event at or after the write wins, else the latest before it.
+ * earliest event at or after the write wins, else the latest before it. An
+ * event belongs to the latest write on its file before it arrived: one is
+ * skipped when another of `writes` on its file came after `change` and
+ * before the event.
  */
 export function matchHook(
   change: ChangeRef,
   events: Iterable<HookEvent>,
   claimed: ReadonlySet<string>,
+  writes: Iterable<ChangeRef> = [],
   caseInsensitive = process.platform === 'win32',
 ): HookEvent | undefined {
   const norm = normalizer(caseInsensitive);
   const paths = new Set(change.paths.map(norm));
   const t = change.time;
+  const later = [...writes].filter((w) => w.time > t);
   let after: HookEvent | undefined;
   let before: HookEvent | undefined;
   for (const e of events) {
     if (claimed.has(e.id) || e.time < t - START_SLACK_MS || e.time > t + HOOK_LATE_MS || !paths.has(norm(e.file))) continue;
+    if (laterWrite(e, later, norm)) continue;
     if (e.time >= t) {
       if (!after || e.time < after.time) after = e;
     } else if (!before || e.time > before.time) before = e;
   }
   return after ?? before;
+}
+
+/** Whether one of `later` wrote `e`'s file before `e` arrived: the event is that write's. */
+function laterWrite(e: HookEvent, later: readonly ChangeRef[], norm: (p: string) => string): boolean {
+  const file = norm(e.file);
+  return later.some((w) => w.time <= e.time && w.paths.some((p) => norm(p) === file));
+}
+
+/**
+ * Whether `e` may still belong to a write not yet in the timeline: it arrived
+ * more than START_SLACK_MS after `change`'s write, and a later write on its
+ * file could still be recorded within `writeLag` of its arrival.
+ */
+export function hookHeld(change: ChangeRef, e: HookEvent, writeLag: number, now: number): boolean {
+  return e.time > change.time + START_SLACK_MS && now < e.time + writeLag;
 }
 
 /** The context a hook event gives, filled in from its transcript call when that is known. */
@@ -155,6 +176,8 @@ export const DEBOUNCE_MS = 250;
 export const RETRY_MS = 2000;
 /** Transcripts not written to for this long are forgotten after a pass. */
 export const FORGET_MS = 15 * 60 * 1000;
+/** `writeLag` when none is given: the default reorder window and debounce, and slack. */
+export const WRITE_LAG_MS = 2500;
 
 export interface CorrelatorOptions {
   timeline: Timeline;
@@ -166,6 +189,8 @@ export interface CorrelatorOptions {
   enabled: () => boolean;
   /** Recent Claude Code hook events, when the hook listener is on. */
   hooks?: HookSource;
+  /** How long after a write it may reach the timeline: the reorder window, the recorder's debounce, and slack. */
+  writeLag?: () => number;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
@@ -273,7 +298,13 @@ export class Correlator {
     for (const e of open) if (!this.seen.has(keyOf(e))) this.seen.set(keyOf(e), firstSeen);
     const since = open.reduce((m, e) => Math.min(m, e.time), Infinity);
     const hooks = this.o.hooks?.all() ?? [];
-    const transcripts = [...new Set(hooks.map((h) => h.transcript).filter((t): t is string => t !== undefined))];
+    // Only the transcripts of events a waiting change may take, or holds.
+    const norm = normalizer(process.platform === 'win32');
+    const openPaths = new Set(open.flatMap((e) => this.pathsOf(e)).map(norm));
+    const heldIds = new Set(this.pendingHook.values());
+    const transcripts = [
+      ...new Set(hooks.filter((h) => heldIds.has(h.id) || openPaths.has(norm(h.file))).map((h) => h.transcript).filter((t): t is string => t !== undefined)),
+    ];
     await index.refresh(this.o.roots(), since, transcripts);
     if (this.disposed || !this.o.enabled()) return;
     const now = this.now();
@@ -286,14 +317,23 @@ export class Correlator {
     const calls = [...index.calls()];
     const byId = new Map(calls.map((c) => [c.id, c]));
     const hookById = new Map(hooks.map((h) => [h.id, h]));
+    const writes: ChangeRef[] = events.map((e) => ({ paths: this.pathsOf(e), time: e.time }));
+    const writeLag = this.o.writeLag?.() ?? WRITE_LAG_MS;
     const found: Array<{ seq: number; agent: AgentContext }> = [];
     let left = false;
     for (const e of this.waiting(events)) {
       const key = keyOf(e);
       const due = now - (this.seen.get(key) ?? now) >= SETTLE_MS;
-      const paths = [this.o.pathOf(e.uri), e.fromUri !== undefined ? this.o.pathOf(e.fromUri) : undefined].filter((p): p is string => p !== undefined);
+      const paths = this.pathsOf(e);
+      const ref = { paths, time: e.time };
       const held = this.pendingHook.get(key);
-      const hook = held !== undefined ? hookById.get(held) : paths.length > 0 ? matchHook({ paths, time: e.time }, hooks, claimed) : undefined;
+      let hook = held !== undefined ? hookById.get(held) : paths.length > 0 ? matchHook(ref, hooks, claimed, writes) : undefined;
+      // An event that came well after this write may be a later write's still on its way to the timeline.
+      let wait = false;
+      if (hook && held === undefined && !due && hookHeld(ref, hook, writeLag, now)) {
+        hook = undefined;
+        wait = true;
+      }
       let agent: AgentContext | undefined;
       if (hook) {
         claimed.add(hook.id);
@@ -305,12 +345,12 @@ export class Correlator {
           left = true;
           continue;
         }
-      } else if (paths.length > 0) agent = matchChange({ paths, time: e.time }, calls, claimed, now);
+      } else if (paths.length > 0) agent = matchChange(ref, calls, claimed, now);
       if (agent) {
         found.push({ seq: e.seq, agent });
         if (agent.tool && agent.via !== 'command') claimed.add(agent.tool.id);
         this.settle(key);
-      } else if (due) this.settle(key);
+      } else if (due && !wait) this.settle(key);
       else {
         if (!this.seen.has(key)) this.seen.set(key, now);
         left = true;
@@ -321,6 +361,11 @@ export class Correlator {
     // transcripts the next retry reads again.
     if (left) this.schedule(RETRY_MS);
     else index.prune(now - FORGET_MS);
+  }
+
+  /** A change's absolute paths, the old one too for a rename. */
+  private pathsOf(e: ChangeEvent): string[] {
+    return [this.o.pathOf(e.uri), e.fromUri !== undefined ? this.o.pathOf(e.fromUri) : undefined].filter((p): p is string => p !== undefined);
   }
 
   private settle(key: string): void {

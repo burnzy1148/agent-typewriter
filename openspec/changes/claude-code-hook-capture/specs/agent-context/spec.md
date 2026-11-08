@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Changes are matched to hook events
-Before any transcript match, a recorded change SHALL get the context of an edit hook event (`claude-code-hook`) that names the change's file, or either path of a rename, arrived no earlier than 1 s before the file was written and no later than 10 s after it, and whose tool call has given context to no other change. Of several, the earliest arriving at or after the write SHALL be chosen, otherwise the latest before it. The context SHALL say it was matched by a hook.
+Before any transcript match, a recorded change SHALL get the context of an edit hook event (`claude-code-hook`) that names the change's file (or either path of a rename), arrived from 1 s before the write to 10 s after it, whose call has given context to no other change, and before whose arrival no later write on that file was recorded. Of several, the earliest arriving at or after the write SHALL be chosen, otherwise the latest before it. The context SHALL say it was matched by a hook.
 
 #### Scenario: Edit reported by the hook
 - **WHEN** the hook listener is on, Claude Code's `PostToolUse` hook posts an `Edit` call on `src/a.ts`, and the change to `src/a.ts` is recorded
@@ -15,6 +15,18 @@ Before any transcript match, a recorded change SHALL get the context of an edit 
 #### Scenario: User edit later
 - **WHEN** the user saves `src/a.ts` a minute after the last hook event on it, with no tool call running
 - **THEN** that change gets no agent context
+
+#### Scenario: User save, then an agent edit
+- **WHEN** the user saves `src/a.ts`, an `Edit` call writes `src/a.ts` 5 s later, and the hook posts that call before the edit's change reaches the timeline
+- **THEN** the edit's change gets the `Edit` call
+- **AND** the user's save does not
+
+### Requirement: Late hook events wait for later writes
+A hook event arriving more than 1 s after a change's write SHALL NOT be given to that change until a later write on its file, recorded before the event arrived, could no longer still reach the timeline. While it waits, the change SHALL still be matched by the transcript rules.
+
+#### Scenario: Late event with no later write
+- **WHEN** the hook posts an `Edit` call on `src/a.ts` 5 s after the change to `src/a.ts` was written, and no later write on `src/a.ts` is recorded
+- **THEN** the change gets the `Edit` call a few seconds later
 
 ### Requirement: Hook matches take the turn from the transcript
 For a change matched to a hook event, the turn, the prompt, what the agent said and the subagent's description SHALL come from the call with the event's tool call id in the transcript the event names, read whatever folder it is in. When that call is not found within 30 s of the recording, the change SHALL get the session, the tool call and the subagent from the event, without a turn.
@@ -92,3 +104,18 @@ The setting `agentTypewriter.agentContext` SHALL turn agent context on or off, o
 #### Scenario: Turned off
 - **WHEN** `agentTypewriter.agentContext` is `false` and Claude Code edits a recorded file
 - **THEN** no transcript is read and the change gets no agent context
+
+### Requirement: Agent context is rebuilt after a reload
+Agent context SHALL NOT be written to the saved timeline or to saved session files. After the timeline is restored, its changes SHALL be matched again from the transcripts that still exist. Hook events are not saved, so context that came only from a hook event, or from a transcript only a hook event named outside the folders that are read, SHALL NOT be rebuilt.
+
+#### Scenario: Reload
+- **WHEN** VS Code reloads with a restored timeline whose Claude Code transcripts still exist
+- **THEN** the restored changes get their agent context again
+
+#### Scenario: Saved session file
+- **WHEN** the user saves the session to a file
+- **THEN** the file holds no agent context
+
+#### Scenario: Reload after a session started elsewhere
+- **WHEN** a change got its context from a hook event whose transcript is outside the folders that are read, and VS Code reloads
+- **THEN** the restored change has no agent context

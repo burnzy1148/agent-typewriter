@@ -82,7 +82,9 @@ Alternative: every window on its own random port, registered in a shared folder,
 
 ### Keeping events
 
-A `HookLog` holds events for 15 minutes (`FORGET_MS`, already the transcript index's), at most 5000, and fires `onDidAdd`. The correlator schedules a pass 250 ms after it, moving a pending 2 s retry earlier, so a change that reached the timeline before its hook event is matched without waiting for the retry. (A timeline change still leaves a pending retry where it is, as before.)
+A `HookLog` holds events for 15 minutes (`FORGET_MS`, already the transcript index's), at most 5000, and fires `onDidAdd`. The correlator schedules a pass on it, as it does on a timeline change, so a change that reached the timeline before its hook event is matched without waiting for the 2 s retry.
+
+*Superseded in implementation:* scheduling "as it does on a timeline change" leaves a pending retry where it is. See Corrected in implementation, C1.
 
 ### Matching
 
@@ -92,9 +94,13 @@ A `HookLog` holds events for 15 minutes (`FORGET_MS`, already the transcript ind
 - Pick the earliest with `event.time >= change.time`, else the latest before it. The request follows the write it reports, so the first event after the change's time is the write that produced the change's final text. When a burst folds two edits into one change, the event of the earlier edit is left unclaimed; it is older than every later change's time, so later changes do not take it unless within the 1 s slack.
 - `claimed` is shared with transcript matching and holds tool ids of `'edit'` and `'hook'` matches, so one call never gives context to two changes whichever way it was found.
 
+*Superseded in implementation:* the window alone lets a change still waiting take the event of a later write to its file. See Corrected in implementation, C4.
+
 The context: `session` from the event; `tool` `{ id, name, time, detail: basename(file) }`; `subagent` from the event. Then the transcript call with the same id, if the index has it, supplies `turn`, `narration`, the subagent's `description`, and `tool.time` (its start). `via: 'hook'`.
 
-When the event matches but the index has no call with that id (and a known turn) yet, the change keeps waiting (the transcript line may be written after the hook request, and a subagent's turn may need its parent's line). Once the change is 30 s past first seen (`SETTLE_MS`), it is settled with the event-only context, without `turn`. The correlator remembers the event per waiting change, and adds it to `claimed` on every pass, so another change cannot take it while this one waits.
+When the event matches but the index has no call with that id yet, the change keeps waiting (the transcript line may be written after the hook request, and the subagent's turn may need its parent's line). Once the change is 30 s past first seen (`SETTLE_MS`), it is settled with the event-only context, without `turn`. The event stays claimed by the change from the first pass that saw it through tracking it in the correlator's per-change state, so another change cannot take it while this one waits.
+
+*Superseded in implementation:* worded more precisely in Corrected in implementation, C2.
 
 ### `turn` becomes optional
 
@@ -104,11 +110,26 @@ Alternative: a placeholder turn from `prompt_id` with an empty prompt. Consumers
 
 ### Reading the transcripts hooks name
 
-`TranscriptIndex.refresh(roots, since, files)` gains `files`: transcript paths from kept hook events whose match is still open. Each is read like a candidate transcript (incrementally, whatever its mtime, since the event says it is live), followed by its `<session>/subagents` folder. A path must be absolute and end in `.jsonl`; others are ignored. The correlator looks a hook's call up by id among `calls()`, which holds only calls whose turn is known.
+`TranscriptIndex.refresh(roots, since, files)` gains `files`: transcript paths from kept hook events whose match is still open. Each is read like a candidate transcript (incrementally, whatever its mtime, since the event says it is live), followed by its `<session>/subagents` folder. A path must be absolute and end in `.jsonl`; others are ignored. `TranscriptIndex.call(id)` returns a call by id if its turn is known.
+
+*Superseded in implementation:* there is no `call(id)`; see Corrected in implementation, C3. "Whose match is still open" was first implemented as every kept event; see C5.
 
 ### Lifecycle and settings
 
 `extension.ts` creates the `HookListener` when `agentContext` is on and the user-level `hookPort` is a valid port, and disposes it when either changes. Disposing closes the server, every stream and any follower connection. The setup command writes `hookPort` to `ConfigurationTarget.Global` when it is `0`, then copies the JSON above with the port filled in and shows where to paste it.
+
+## Corrected in implementation
+
+Written during implementation and review (PR #98). The passages above are left as proposed.
+
+- **C1. Pass on a hook event.** The correlator schedules a pass 250 ms after `onDidAdd`, moving a pending 2 s retry earlier; a timeline change still leaves a pending retry where it is, as before. What produced the original wording: it assumed the timeline path already moved retries earlier. It does not, and a test with a late hook event waited the full retry.
+- **C2. Waiting for the transcript call.** The change waits until the index has a call with the event's id and a known turn (a call without a known turn is not in `calls()`). The correlator remembers the event per waiting change, and adds it to `claimed` on every pass. Same behavior as proposed, said precisely.
+- **C3. No `call(id)`.** The correlator looks a hook's call up by id among `calls()`, which holds only calls whose turn is known, so the index needs no new lookup. What produced the original: the proposal planned the lookup before checking that `calls()` already filters on a known turn.
+- **C4. An event belongs to the latest write on its file before it arrived** (review round 1). `matchHook` also takes the timeline's changes, and skips an event when another change on its file was written after this change and no later than the event's arrival. A change can reach the timeline after its own hook event (reorder window, debounce, settle), so an event arriving more than 1 s (`START_SLACK_MS`) after the waiting change's write is held: that change may not take it until the event is older than the write lag (reorder window + recorder debounce + 2 s, from settings). Meanwhile the change still tries the transcript rules, and keeps waiting if they find nothing. What produced the original: the window was designed around one write per event and treated a change still waiting as if it were the latest write on its file. The reviewer's case: the user saves a file, the agent edits it 5 s later, and the save took the agent's call while the edit got none. The spec requirement gains "no later write on that file was recorded before it arrived" and the scenario *User save, then an agent edit*; the hold is its own requirement, *Late hook events wait for later writes*. The plan said "no later than 1 s after the event's arrival"; implemented as "no later than the arrival", because a recorded write time is its mtime, which comes before the hook request, and the 1 s slack would hand an event to a second write up to 1 s after the one it reported.
+- **C5. Which hook transcripts are read** (review round 1). Only transcripts of kept events whose file is a path of a change still waiting, or whose event a waiting change holds. The first implementation passed every kept event's transcript, which read up to 15 minutes of unrelated sessions on each pass.
+- **C6. Relative file paths** (review round 1). `tool_input.file_path` relative to `cwd` is resolved in `cwd`'s own style (`path.posix` for a POSIX-absolute `cwd`, `path.win32` otherwise), not the host's. The host's `path.resolve` turned `/w` + `n/x.ipynb` into `D:\w\n\x.ipynb` on Windows.
+- **C7. `hookPort` values** (review round 1). The setting is an `integer`, `0` or 1024 to 65535 in its schema, and its description says ports below 1024 count as off. A user value the extension ignores is logged once in the output channel. The first schema allowed 1 to 1023 and fractions, which `config.ts` silently treated as off.
+- **C8. Specs this change touches that the proposal did not name** (review round 1). `repo-settings` promised every setting could come from `.agent-typewriter.json`; `hookPort` cannot, so its requirements name user-only settings as an exception. `agent-context`'s reload requirement promised context comes back from transcripts that still exist; context found only through a transcript a hook event named, outside the folders that are read, does not, since hook events are not saved (already out of scope in the proposal).
 
 ## Risks / Trade-offs
 

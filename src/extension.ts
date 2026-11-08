@@ -85,6 +85,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       return u.scheme === 'file' ? u.fsPath : undefined;
     },
     enabled: () => readSettings().agentContext,
+    writeLag: () => {
+      const s = readSettings();
+      return s.reorderWindowMs + s.debounceMs + 2000;
+    },
     log: (line) => log.appendLine(line),
   });
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
@@ -951,8 +955,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
 
   /** The Claude Code hook listener, while agent context is on and a user-level hook port is set. */
   let hookListener: HookListener | undefined;
+  let ignoredPort: unknown;
   const applyHookPort = () => {
     const s = readSettings();
+    const raw = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('hookPort')?.globalValue;
+    if (raw !== undefined && raw !== 0 && s.hookPort === 0) {
+      if (raw !== ignoredPort) log.appendLine(`Agent context: hookPort ${JSON.stringify(raw)} is not a port from 1024 to 65535, so the hook listener stays off.`);
+      ignoredPort = raw;
+    } else ignoredPort = undefined;
     const port = s.agentContext ? s.hookPort : 0;
     if (hookListener?.port === port) return;
     hookListener?.dispose();
