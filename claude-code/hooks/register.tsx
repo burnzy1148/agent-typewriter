@@ -691,8 +691,13 @@ export const register: Register = (on, options) => {
           )}
         </Box>
         {band.length > 0 && (
-          <Box backgroundColor="subtle" paddingX={1}>
-            <Text italic>{band.join('\n')}</Text>
+          // A line apiece, each cut at the edge, so the band never takes more rows than it counted.
+          <Box backgroundColor="subtle" paddingX={1} flexDirection="column">
+            {band.map((line, index) => (
+              <Text key={`caption:${index}`} italic wrap="truncate-end">
+                {line}
+              </Text>
+            ))}
           </Box>
         )}
         {shown ? (

@@ -83,7 +83,7 @@ On a surface with a pointer, resting the pointer on a change's row in the change
 
 #### Scenario: Hovering a played change
 - **WHEN** change #4 has played, its caption is "Trust the proxy so the limiter sees client addresses.", and the user rests the pointer on its row
-- **THEN** a card shows that caption beside the row, and playback goes on as it was
+- **THEN** a card shows that caption above the row, and playback goes on as it was
 
 #### Scenario: A row without a caption
 - **WHEN** the user rests the pointer on the row of a change with no caption

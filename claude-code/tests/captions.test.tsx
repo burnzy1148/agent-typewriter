@@ -64,11 +64,17 @@ function captionOf(w: ReturnType<typeof world>, id: string) {
 /** What the pane draws: the caption band's text, and the Code element's first line. */
 async function look($: Engine, bodyRows = 20, bodyColumns = 80) {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: { ...PANE.props, bodyColumns, scroll: { offset: 0, bodyRows } } } as never);
-  const band = (await ui.findAll({ type: 'Text' })).find((t) => t.props.italic && t.text.startsWith('“'));
+  // The band's lines are the Texts cut at the edge; the card's Text wraps.
+  const band = (await ui.findAll({ type: 'Text' })).filter((t) => t.props.wrap === 'truncate-end');
   const code = (await ui.find({ type: 'Code' }))?.props as { source: string } | undefined;
   const note = (await ui.find({ type: 'Text', text: /too large/ }))?.text;
   await ui.unmount();
-  return { band: band?.text, codeRows: code?.source.split('\n').length, note };
+  return {
+    band: band.length > 0 ? band.map((t) => t.text).join('\n') : undefined,
+    isBandItalic: band.every((t) => t.props.italic === true),
+    codeRows: code?.source.split('\n').length,
+    note,
+  };
 }
 
 /** The hover card under the row of change `id`, if the pane draws one. */
@@ -326,6 +332,30 @@ test('a long caption shows three lines, the last cut with an ellipsis', async ($
   expect(lines.length).toBe(3);
   expect(lines.every((l) => l.length <= 38)).toBe(true);
   expect(lines[2]!.endsWith('…')).toBe(true);
+});
+
+test('a caption of wide characters wraps by the cells they take, and the code gives up that many rows', async ($, on) => {
+  const long = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  world(on, { '/w/p.ts': long, '/w/q.ts': long });
+  conversation(on);
+  await start($);
+  const change = (path: string, id: string) =>
+    $.tool.call({ tool: 'Edit', file_path: path, old_string: 'line 20', new_string: 'line twenty', tool_use_id: id });
+  await change('/w/p.ts', 'toolu_p');
+  // Twenty-three characters two cells wide and the quotes: 48 cells, two lines of the 38 a 40-column body leaves.
+  await keep($, 'response', [say('認証インデックスからエクスポートして、テストを'), edit('toolu_q')]);
+  await change('/w/q.ts', 'toolu_q');
+  await press($, 'pause');
+  await press($, 'change:toolu_p');
+  const plain = await look($, 20, 40);
+  await press($, 'change:toolu_q');
+  const captioned = await look($, 20, 40);
+
+  const lines = captioned.band!.split('\n');
+  expect(lines.length).toBe(2);
+  expect(lines.map((l) => [...l].length)).toEqual([19, 6]);
+  expect(captioned.isBandItalic).toBe(true);
+  expect(captioned.codeRows).toBe(plain.codeRows! - 2);
 });
 
 test('a too-large change shows its caption above the note', async ($, on) => {

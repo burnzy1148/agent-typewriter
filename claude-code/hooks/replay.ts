@@ -916,27 +916,82 @@ export function forgetLoop(narration: Narration, agentId: string | undefined): v
   narration.delete(agentId ?? '');
 }
 
+// Code points a terminal draws two cells wide: East Asian wide and fullwidth
+// characters, and emoji. The ranges lean wide (whole symbol and emoji blocks)
+// since counting a cell too many only cuts a caption early, while counting one
+// too few draws it on a row the pane did not allow for.
+const WIDE: readonly (readonly [number, number])[] = [
+  [0x1100, 0x115f],
+  [0x231a, 0x231b],
+  [0x2329, 0x232a],
+  [0x23e9, 0x23f3],
+  [0x25fd, 0x25fe],
+  [0x2600, 0x27bf],
+  [0x2b1b, 0x2b1c],
+  [0x2b50, 0x2b55],
+  [0x2e80, 0x303e],
+  [0x3041, 0x33ff],
+  [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff],
+  [0xa000, 0xa4cf],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f000, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+function cellsOf(ch: string): number {
+  const c = ch.codePointAt(0)!;
+  return WIDE.some(([lo, hi]) => c >= lo && c <= hi) ? 2 : 1;
+}
+
+/** The terminal cells `s` takes: two for each wide character, one for any other code point. */
+export function cellWidth(s: string): number {
+  let width = 0;
+  for (const ch of s) width += cellsOf(ch);
+  return width;
+}
+
+/** The longest start of `s` that fits `cells` terminal cells, never splitting a code point. */
+function cutCells(s: string, cells: number): string {
+  let width = 0;
+  let end = 0;
+  for (const ch of s) {
+    width += cellsOf(ch);
+    if (width > cells) break;
+    end += ch.length;
+  }
+  return s.slice(0, end);
+}
+
 /**
- * `text` wrapped at spaces into lines of at most `columns` code units, a word
- * longer than a line broken across lines, and at most `maxLines` of them: when
- * the text needs more, the last line holds what is left, cut with `…`.
+ * `text` wrapped at spaces into lines of at most `columns` terminal cells
+ * (cellWidth), a word longer than a line broken across lines, and at most
+ * `maxLines` of them: when the text needs more, the last line holds what is
+ * left, cut with `…`.
  */
 export function captionLines(text: string, columns: number, maxLines: number): string[] {
   const width = Math.max(2, columns);
   const lines: string[] = [];
   let rest = text.trim();
   while (rest !== '' && lines.length < maxLines) {
-    if (lines.length === maxLines - 1 && rest.length > width) {
-      lines.push(cutAt(rest, width - 1).trimEnd() + '…');
-      break;
-    }
-    if (rest.length <= width) {
+    const fits = cutCells(rest, width);
+    if (fits.length === rest.length) {
       lines.push(rest);
       break;
     }
+    if (lines.length === maxLines - 1) {
+      lines.push(cutCells(rest, width - 1).trimEnd() + '…');
+      break;
+    }
     // Break at the last space that fits, or inside a word longer than a line.
-    const space = rest.lastIndexOf(' ', width);
-    const line = space > 0 ? rest.slice(0, space) : cutAt(rest, width);
+    const space = rest[fits.length] === ' ' ? fits.length : fits.lastIndexOf(' ');
+    const line = space > 0 ? rest.slice(0, space) : fits;
     lines.push(line.trimEnd());
     rest = rest.slice(line.length).trimStart();
   }

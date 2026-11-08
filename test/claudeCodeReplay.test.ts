@@ -43,6 +43,7 @@ import {
   MAX_ROW_CAPTION,
   captionLines,
   captionsOf,
+  cellWidth,
   forgetLoop,
   narrate,
   normalizeCaption,
@@ -1237,7 +1238,26 @@ test('caption lines wrap at spaces and cut the last with an ellipsis', () => {
   assert.deepEqual(captionLines('abcdefghij', 5, 3), ['abcde', 'fghij']);
   for (const lines of [captionLines('word '.repeat(100), 17, 3), captionLines('x'.repeat(100), 17, 3)]) {
     assert.equal(lines.length, 3);
-    assert.ok(lines.every((l) => l.length <= 17));
+    assert.ok(lines.every((l) => cellWidth(l) <= 17));
+    assert.ok(lines[2]!.endsWith('…'));
+  }
+});
+
+test('caption lines count wide characters as two cells', () => {
+  assert.equal(cellWidth('abc'), 3);
+  assert.equal(cellWidth('日本語'), 6);
+  assert.equal(cellWidth('한글'), 4);
+  assert.equal(cellWidth('ＡＢ'), 4);
+  assert.equal(cellWidth('🎉 ok'), 5);
+  assert.deepEqual(captionLines('あ'.repeat(30), 10, 3), ['あああああ', 'あああああ', 'ああああ…']);
+  assert.deepEqual(captionLines('🎉'.repeat(10), 7, 3), ['🎉🎉🎉', '🎉🎉🎉', '🎉🎉🎉…']);
+  assert.deepEqual(captionLines('Fix 日本語 and 中文 text', 10, 3), ['Fix 日本語', 'and 中文', 'text']);
+  // A wide character that would cross the edge moves to the next line whole.
+  assert.deepEqual(captionLines('ab日本', 3, 3), ['ab', '日', '本']);
+  for (const text of ['認証'.repeat(40), '🎉 '.repeat(40), 'x日'.repeat(40)]) {
+    const lines = captionLines(text, 17, 3);
+    assert.equal(lines.length, 3);
+    assert.ok(lines.every((l) => cellWidth(l) <= 17), JSON.stringify(lines));
     assert.ok(lines[2]!.endsWith('…'));
   }
 });
