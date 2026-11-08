@@ -106,7 +106,7 @@ The setting `agentTypewriter.agentContext` SHALL turn agent context on or off, o
 - **THEN** no transcript is read and the change gets no agent context
 
 ### Requirement: Agent context is rebuilt after a reload
-Agent context SHALL NOT be written to the saved timeline or to saved session files. After the timeline is restored, its changes SHALL be matched again from the transcripts that still exist. Hook events are not saved, so context that came only from a hook event, or from a transcript only a hook event named outside the folders that are read, SHALL NOT be rebuilt.
+Agent context SHALL NOT be written to the saved timeline or to saved session files. After the timeline is restored, its changes SHALL be matched again from the transcripts that still exist. Hook events are not saved, so context that came only from a hook event, or from a transcript only a hook event named outside the folders that are read, is not guaranteed to be rebuilt.
 
 #### Scenario: Reload
 - **WHEN** VS Code reloads with a restored timeline whose Claude Code transcripts still exist
@@ -117,5 +117,5 @@ Agent context SHALL NOT be written to the saved timeline or to saved session fil
 - **THEN** the file holds no agent context
 
 #### Scenario: Reload after a session started elsewhere
-- **WHEN** a change got its context from a hook event whose transcript is outside the folders that are read, and VS Code reloads
+- **WHEN** a change got its context from a hook event whose transcript is outside the folders that are read, VS Code reloads, and no new hook event names that transcript within 30 s
 - **THEN** the restored change has no agent context

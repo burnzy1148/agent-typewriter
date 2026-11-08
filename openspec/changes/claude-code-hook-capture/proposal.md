@@ -29,7 +29,7 @@ Out of scope:
 ### Modified Capabilities
 
 - `agent-context`: changes are matched to hook events first; transcripts named by hook events are read; the turn may be unknown for a hook match; the setting closes the listener.
-- `agent-context` reload requirement: context that came only through a hook event is not rebuilt after a reload. *Added in implementation* (review round 1): the reload requirement promised every context from transcripts that still exist, which saving no hook events (out of scope above) cannot keep.
+- `agent-context` reload requirement: context that came only through a hook event is not guaranteed to be rebuilt after a reload. *Added in implementation* (review round 1): the reload requirement promised every context from transcripts that still exist, which saving no hook events (out of scope above) cannot keep.
 - `repo-settings`: user-only settings (`hookPort`) are an exception to "every setting can come from the file", beside `profiles`. *Added in implementation* (review round 1): the Impact section already said the file does not accept the setting, but the capability was not listed.
 
 ## Impact
