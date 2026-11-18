@@ -7,13 +7,14 @@
 // this one module, one at a time, so they change it directly. $.state keeps
 // only what must outlive a reload (`saved`, and each kept change's texts in
 // the `text` family with their captions, the agents' links in `agents`, the
-// main conversation's turns in `turns`) and what the pane draws (`view`, and the changes list in
+// main conversation's turns in `turns`, how the person groups the changes list
+// in `grouping`) and what the pane draws (`view`, and the changes list in
 // `listing`, which changes far less often).
 
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, Register, UiOpenResult } from 'claude-code';
 
-import type { AgentLink, Turns } from '../types';
+import type { AgentLink, Grouping, Turns } from '../types';
 
 import { normalizeEol } from './core.mjs';
 import {
@@ -26,6 +27,8 @@ import {
   chaptersOf,
   chipLabel,
   enqueue,
+  fileGroupsOf,
+  fileHeaderLabel,
   finish,
   forgetLoop,
   frame,
@@ -109,6 +112,7 @@ const turnsRef = { plugin: 'agent-typewriter', key: 'turns' } as const;
 const TURNS_SHAPE = 'turns-1';
 const NO_TURNS: Turns = { next: 1, turns: [] };
 const turns = atom(turnsRef, NO_TURNS, { shape: TURNS_SHAPE });
+const grouping = atom({ plugin: 'agent-typewriter', key: 'grouping' } as const, 'turn' as Grouping, { shape: 'grouping-1' });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -327,6 +331,12 @@ function playTurn(live: Live, key: string): void {
   if (chapter) seek(live.deck, chapter.rows[0]!.id, live.opts);
 }
 
+/** Plays from the first kept change to the file at `path`, as pressing its row does. */
+function playFile(live: Live, path: string): void {
+  const group = fileGroupsOf(listingOf(live.deck)).find((g) => g.path === path);
+  if (group) seek(live.deck, group.rows[0]!.id, live.opts);
+}
+
 /** Runs a file tool, capturing "before" when the call starts and "after" once it succeeded. */
 async function record<R extends { deny?: string; isError?: boolean }>(
   $: EngineInterface,
@@ -476,6 +486,21 @@ async function reveal($: EngineInterface, live: Live, id: string): Promise<void>
 function move($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
   live.listTop = undefined;
   act($, live, fn);
+}
+
+/**
+ * Groups the changes list by `to`. The list follows playback again, and any
+ * note goes, as after any press; the write redraws the pane, which reads it.
+ */
+function regroup($: EngineInterface, live: Live, to: Grouping): void {
+  live.listTop = undefined;
+  live.note = undefined;
+  live.writes = live.writes
+    .then(async () => {
+      await update($, grouping, () => to);
+    })
+    .catch(() => undefined);
+  $.ui.invalidate('ui.render');
 }
 
 /** One timer tick: moves playback and writes what it changed. */
@@ -650,14 +675,15 @@ export const register: Register = (on, options) => {
     const v = await read($, view);
     const l = await read($, listing);
     const t = await read($, turns);
+    const g = await read($, grouping);
     const queued = v.queued > 0 ? ` · ${v.queued} queued` : '';
     const name = v.path === undefined ? undefined : relativePath(v.path, live.cwd);
     const current = l.rows.findIndex((r) => r.id === l.current);
     const bodyRows = e.props.scroll?.bodyRows ?? 24;
     const bodyColumns = e.props.bodyColumns ?? 80;
 
-    // The list's lines: a note on dropped changes, then each turn's header and rows.
-    const lines = listLines(l, chaptersOf(l, t.turns));
+    // The list's lines: a note on dropped changes, then each turn's or file's header and rows.
+    const lines = listLines(l, g === 'file' ? fileGroupsOf(l) : chaptersOf(l, t.turns));
     const count = lines.length;
     const currentLine = lines.findIndex((x) => x.kind === 'row' && x.row.id === l.current);
     const height = count === 0 ? 0 : Math.min(count, Math.max(3, Math.floor(bodyRows * LIST_SHARE)));
@@ -725,6 +751,21 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             <Box flexDirection="row" gap={1}>
               <Text bold>Changes</Text>
+              {(['turn', 'file'] as const).map((to) => {
+                const word = to === 'turn' ? 'By turn' : 'By file';
+                const isChosen = g === to;
+                return (
+                  <Button
+                    key={`group:${to}`}
+                    variant={isChosen ? 'primary' : 'secondary'}
+                    dimColor={!isChosen}
+                    label={isChosen ? `${word}, shown` : `Group by ${to}`}
+                    onPress={() => (isChosen ? undefined : regroup($, live, to))}
+                  >
+                    {word}
+                  </Button>
+                );
+              })}
               <Text dimColor>{live.note ?? 'Pick a change to play from it'}</Text>
             </Box>
             {linesShown.map((line, index) => {
@@ -742,6 +783,20 @@ export const register: Register = (on, options) => {
                     {label.prompt !== '' && <Text dimColor>{label.prompt}</Text>}
                     <Text dimColor>{label.count}</Text>
                     <Button key={`play:${chapter.key}`} plain onPress={() => move($, live, () => playTurn(live, chapter.key))}>
+                      {label.play}
+                    </Button>
+                  </Box>
+                );
+              }
+              if (line.kind === 'file') {
+                const { group } = line;
+                const label = fileHeaderLabel(group, relativePath(group.path, live.cwd), bodyColumns - ROW_MARGIN);
+                return (
+                  <Box key={`file:${group.path}`} flexDirection="row" gap={1}>
+                    <Text bold>{label.file}</Text>
+                    {label.dir !== '' && <Text dimColor>{label.dir}</Text>}
+                    <Text dimColor>{label.count}</Text>
+                    <Button key={`play-file:${group.path}`} plain onPress={() => move($, live, () => playFile(live, group.path))}>
                       {label.play}
                     </Button>
                   </Box>

@@ -111,6 +111,9 @@ export type TurnInfo = { turnId: string; number: number; prompt: string; isEnded
  */
 export type Turns = { next: number; turns: TurnInfo[] };
 
+/** How the pane groups its changes list: into chapters by turn, or by file. */
+export type Grouping = 'turn' | 'file';
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-typewriter': {
@@ -121,6 +124,8 @@ declare module 'claude-code' {
       agents: Shaped<AgentLink[]>;
       /** The main conversation's turns, for the changes list's chapters. */
       turns: Shaped<Turns>;
+      /** How the person chose to group the changes list. */
+      grouping: Shaped<Grouping>;
       /**
        * Member `<change id>:before` or `<change id>:after`, the change's texts,
        * and `<change id>:caption`, its caption, absent or '' when it has none;

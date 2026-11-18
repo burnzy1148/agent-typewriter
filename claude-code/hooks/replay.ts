@@ -598,6 +598,49 @@ export function headerLabel(ch: Chapter, width: number): HeaderLabel {
   return { title, prompt, count, play };
 }
 
+/** A file's kept changes under one header: the path as its changes recorded it, and its rows in recorded order. */
+export type FileGroup = { path: string; rows: Row[] };
+
+/**
+ * The listing's rows grouped by file: a group per path some row names, keyed
+ * by the path as recorded, rows in recorded order, groups in the order of
+ * their first row, so the file first changed most recently comes last.
+ */
+export function fileGroupsOf(listing: Listing): FileGroup[] {
+  const groups = new Map<string, FileGroup>();
+  for (const row of listing.rows) {
+    let g = groups.get(row.path);
+    if (!g) groups.set(row.path, (g = { path: row.path, rows: [] }));
+    g.rows.push(row);
+  }
+  return [...groups.values()];
+}
+
+/** A file group's header as the pane draws it: the file name, its folder cut to fit, its count, and its play button's words. */
+export type FileHeaderLabel = { file: string; dir: string; count: string; play: string };
+
+/**
+ * How the pane draws `group`'s header in `width` columns, its path named
+ * `name`, its play button included: the file name; its folder with its
+ * trailing separator, cut with `…` to the columns the rest leaves, '' when
+ * none fits; the count; and Play from first. The folder goes before the file
+ * name does, and the count and the button are never cut.
+ */
+export function fileHeaderLabel(group: FileGroup, name: string, width: number): FileHeaderLabel {
+  const count = changeCount(group.rows.length);
+  const play = 'Play from first';
+  const at = name.search(/[^\\/]*$/);
+  let dir = name.slice(0, at);
+  let file = name.slice(at);
+  // The file name, folder and count are each a gap apart.
+  const room = Math.max(1, width - count.length - 2 - play.length - PLAY_PADDING);
+  if (file.length + dir.length > room) {
+    dir = file.length + 2 <= room ? cutAt(dir, room - file.length - 1) + '…' : '';
+    if (file.length > room) file = cutAt(file, Math.max(0, room - 1)) + '…';
+  }
+  return { file, dir, count, play };
+}
+
 /**
  * The call row a turn's Play turn chip sits on: its last kept change's own
  * call, or for an agent's change the `Agent` or `Workflow` call that started
@@ -628,15 +671,19 @@ export function keptTurns(turns: Turns, named: ReadonlySet<string>): Turns {
   return { next: turns.next, turns: turns.turns.filter((t) => named.has(t.turnId) || (t === newest && !t.isEnded)) };
 }
 
-/** One line of the pane's changes list: the note on dropped changes, a chapter's header, or a change's row. */
-export type ListLine = { kind: 'dropped' } | { kind: 'header'; chapter: Chapter } | { kind: 'row'; row: Row };
+/** One line of the pane's changes list: the note on dropped changes, a chapter's header, a file group's header, or a change's row. */
+export type ListLine = { kind: 'dropped' } | { kind: 'header'; chapter: Chapter } | { kind: 'file'; group: FileGroup } | { kind: 'row'; row: Row };
 
-/** The list's lines, top to bottom: the dropped note when changes were dropped, then each chapter's header and rows. */
-export function listLines(listing: Listing, chapters: readonly Chapter[]): ListLine[] {
+/**
+ * The list's lines, top to bottom: the dropped note when changes were
+ * dropped, then each group's header and rows, the groups being the chapters
+ * by turn or the groups by file, as the person chose.
+ */
+export function listLines(listing: Listing, groups: readonly Chapter[] | readonly FileGroup[]): ListLine[] {
   const lines: ListLine[] = listing.dropped > 0 ? [{ kind: 'dropped' }] : [];
-  for (const chapter of chapters) {
-    lines.push({ kind: 'header', chapter });
-    for (const row of chapter.rows) lines.push({ kind: 'row', row });
+  for (const group of groups) {
+    lines.push('path' in group ? { kind: 'file', group } : { kind: 'header', chapter: group });
+    for (const row of group.rows) lines.push({ kind: 'row', row });
   }
   return lines;
 }
