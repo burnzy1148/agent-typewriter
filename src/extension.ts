@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { readHighlightSettings, readMirrorStatusRow, readSettings, setRepoValues, storedProfiles, updateSetting, workspaceOverrides, writesWorkspace, SECTION } from './config';
@@ -24,7 +25,8 @@ import { CheckoutRow, CheckoutsView, followingHeader, ignoreWorktreesLike, LaneR
 import { LaneDecorations } from './laneDecorations';
 import { AutoFollow } from './autoFollow';
 import { Correlator } from './agentContext';
-import { TranscriptIndex } from './transcripts';
+import { projectsDir, TranscriptIndex } from './transcripts';
+import { DEFAULT_HOOK_PORT, HookListener, HookLog, hookSettings } from './hookListener';
 import { onTextReadError } from './changeText';
 import { FollowedMemory } from './followedMemory';
 import { MAX_LANES } from './lanes';
@@ -69,8 +71,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
   const player = new Player(timeline, mirror, readSettings, log);
   const highlights = new HighlightView(timeline, player, readHighlightSettings, context.extensionUri);
   const view = new TimelineView(timeline);
+  const hookLog = new HookLog();
   const correlator = new Correlator({
     timeline,
+    hooks: hookLog,
     index: new TranscriptIndex(undefined, (file, err) => log.appendLine(`Agent context: could not read ${file} (${err instanceof Error ? err.message : String(err)}).`)),
     roots: () => [
       ...timeline.laneList().map((l) => l.root).filter((r) => path.isAbsolute(r)),
@@ -81,6 +85,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
       return u.scheme === 'file' ? u.fsPath : undefined;
     },
     enabled: () => readSettings().agentContext,
+    writeLag: () => {
+      const s = readSettings();
+      return s.reorderWindowMs + s.debounceMs + 2000;
+    },
     log: (line) => log.appendLine(line),
   });
   const tree = vscode.window.createTreeView('agentTypewriter.timeline', { treeDataProvider: view });
@@ -945,6 +953,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     loggedDeprecatedReadPause = deprecated;
   };
 
+  /** The Claude Code hook listener, while agent context is on and a user-level hook port is set. */
+  let hookListener: HookListener | undefined;
+  let ignoredPort: unknown;
+  const applyHookPort = () => {
+    const s = readSettings();
+    const raw = vscode.workspace.getConfiguration(SECTION).inspect<unknown>('hookPort')?.globalValue;
+    if (raw !== undefined && raw !== 0 && s.hookPort === 0) {
+      if (raw !== ignoredPort) log.appendLine(`Agent context: hookPort ${JSON.stringify(raw)} is not a port from 1024 to 65535, so the hook listener stays off.`);
+      ignoredPort = raw;
+    } else ignoredPort = undefined;
+    const port = s.agentContext ? s.hookPort : 0;
+    if (hookListener?.port === port) return;
+    hookListener?.dispose();
+    hookListener = undefined;
+    if (port === 0) {
+      hookLog.clear();
+      return;
+    }
+    hookListener = new HookListener({ port, onEvent: (e) => hookLog.add(e), log: (line) => log.appendLine(line) });
+  };
+  applyHookPort();
+  context.subscriptions.push({ dispose: () => hookListener?.dispose() });
+
+  register('agentTypewriter.copyHookSettings', async () => {
+    let port = readSettings().hookPort;
+    if (port === 0) {
+      await vscode.workspace.getConfiguration(SECTION).update('hookPort', DEFAULT_HOOK_PORT, vscode.ConfigurationTarget.Global);
+      port = DEFAULT_HOOK_PORT;
+    }
+    await vscode.env.clipboard.writeText(JSON.stringify(hookSettings(port), null, 2) + '\n');
+    const settingsFile = path.join(path.dirname(projectsDir()), 'settings.json');
+    const off = readSettings().agentContext ? '' : ' agentContext is off, so the extension listens once you turn it on.';
+    const open = 'Open Claude Code Settings';
+    // Not awaited: the notification stays until dismissed.
+    void vscode.window
+      .showInformationMessage(
+        `Agent Typewriter: copied Claude Code hook settings for port ${port}. Merge them into the "hooks" of ${settingsFile}, then start a new Claude Code session.${off}`,
+        open,
+      )
+      .then(async (pick) => {
+        if (pick !== open) return;
+        // A new file opens unsaved at that path; the user saves it.
+        const uri = fs.existsSync(settingsFile) ? vscode.Uri.file(settingsFile) : vscode.Uri.file(settingsFile).with({ scheme: 'untitled' });
+        await vscode.window.showTextDocument(uri);
+      });
+  });
+
   /** Applies a change to the given settings, whether it came from VS Code settings or the repository file. */
   const applySettingsChange = async (affects: (key: string) => boolean) => {
     if (affects('historyLimit')) timeline.setLimit(readSettings().historyLimit);
@@ -969,6 +1024,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<AgentT
     }
     if (affects('autoIgnoreWorktrees')) autoFollow.check();
     if (affects('agentContext')) correlator.settingsChanged();
+    if (affects('agentContext') || affects('hookPort')) applyHookPort();
     refreshStatus();
   };
 

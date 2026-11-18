@@ -185,8 +185,20 @@ export class TranscriptIndex {
     return out;
   }
 
-  /** Reads what was appended to the transcripts of sessions that may have edited files under `roots`, written to since `since`. */
-  async refresh(roots: readonly string[], since: number): Promise<void> {
+  /**
+   * Reads what was appended to the transcripts of sessions that may have
+   * edited files under `roots`, written to since `since`, and to the
+   * transcript `files` hook events named, whatever their folder and mtime,
+   * with their subagent transcripts.
+   */
+  async refresh(roots: readonly string[], since: number, files: readonly string[] = []): Promise<void> {
+    for (const file of new Set(files)) {
+      if (!path.isAbsolute(file) || !file.endsWith('.jsonl')) continue;
+      const mtime = await this.mtimeOf(file);
+      if (mtime === undefined) continue;
+      await this.read(file, mtime);
+      await this.refreshSubagents(path.join(file.slice(0, -'.jsonl'.length), 'subagents'), since, file);
+    }
     if (roots.length === 0) return;
     const base = this.dir();
     const names = await this.projectNames(base);

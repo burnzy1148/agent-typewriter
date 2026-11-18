@@ -3,6 +3,9 @@
 import * as vscode from 'vscode';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import type { AgentTypewriterApi } from '../src/extension';
@@ -18,6 +21,18 @@ let describeState = () => '';
 async function until(what: string, fn: () => boolean, timeoutMs = 30000) {
   const start = Date.now();
   while (!fn()) {
+    if (Date.now() - start > timeoutMs) {
+      console.log(`[it] timed out waiting for ${what}. State:\n${describeState()}`);
+      throw new Error(`timed out waiting for ${what}`);
+    }
+    await sleep(50);
+  }
+}
+
+/** Like until, for a check that has to await. */
+async function untilAsync(what: string, fn: () => Promise<boolean>, timeoutMs = 30000) {
+  const start = Date.now();
+  while (!(await fn())) {
     if (Date.now() - start > timeoutMs) {
       console.log(`[it] timed out waiting for ${what}. State:\n${describeState()}`);
       throw new Error(`timed out waiting for ${what}`);
@@ -2751,8 +2766,8 @@ async function edits(c: Context): Promise<void> {
     await until('agent context attached', () => eventsFor(rel, from)[0].agent !== undefined, 20000);
     const event = eventsFor(rel, from)[0];
     assert.equal(event.agent!.session, 'it-session');
-    assert.equal(event.agent!.turn.id, 'it-p1');
-    assert.equal(event.agent!.turn.prompt, 'Add the agent context fixture');
+    assert.equal(event.agent!.turn?.id, 'it-p1');
+    assert.equal(event.agent!.turn?.prompt, 'Add the agent context fixture');
     assert.deepEqual([event.agent!.tool?.id, event.agent!.tool?.name, event.agent!.via], ['toolu_it1', 'Write', 'edit']);
     assert.equal(event.agent!.narration, 'Writing the fixture.');
     const tip = (new ChangeItem(event, 'played').tooltip as vscode.MarkdownString).value;
@@ -2761,6 +2776,62 @@ async function edits(c: Context): Promise<void> {
     assert.match(tip, /\*\*Agent:\*\* Writing the fixture/);
     await until('agent context playback', idle);
     console.log('[it] agent context ok');
+  }
+
+  {
+    // CLAUDE CODE HOOK: the setup command turns the listener on and copies the
+    // hook settings; a PostToolUse request naming a transcript outside any
+    // project folder gives the change its exact call, matched by a hook.
+    await cfg().update('hookPort', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('agentTypewriter.copyHookSettings');
+    assert.equal(cfg().inspect('hookPort')?.globalValue, 47323);
+    const copied = JSON.parse(await vscode.env.clipboard.readText());
+    assert.equal(copied.hooks.PostToolUse[0].hooks[0].url, 'http://127.0.0.1:47323/agent-typewriter/hook');
+    // A port of its own, so a busy 47323 on the CI machine does not matter.
+    const port = await new Promise<number>((resolve) => {
+      const s = net.createServer().listen(0, '127.0.0.1', () => {
+        const p = (s.address() as net.AddressInfo).port;
+        s.close(() => resolve(p));
+      });
+    });
+    await cfg().update('hookPort', port, vscode.ConfigurationTarget.Global);
+    const post = (body: object) =>
+      new Promise<number>((resolve) => {
+        const req = http.request({ host: '127.0.0.1', port, path: '/agent-typewriter/hook', method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on('error', () => resolve(0));
+        req.end(JSON.stringify(body));
+      });
+    // Answers 200 to anything valid once it listens; this request names no tool.
+    await untilAsync('hook listener up', async () => (await post({ session_id: 'probe' })) === 200, 20000);
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'athook-'));
+    const transcript = path.join(elsewhere, 'it-hook.jsonl');
+    const rel = 'src/hookctx.ts';
+    const file = path.join(root, rel);
+    const at = (ms: number) => new Date(ms).toISOString();
+    const line = (o: object) => JSON.stringify({ sessionId: 'it-hook', ...o }) + '\n';
+    const t0 = Date.now();
+    fs.writeFileSync(
+      transcript,
+      line({ type: 'user', uuid: 'h-u1', promptId: 'h-p1', timestamp: at(t0 - 2000), message: { role: 'user', content: 'Add the hook fixture' } }) +
+        line({ type: 'assistant', uuid: 'h-u2', timestamp: at(t0 - 500), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_hook1', name: 'Write', input: { file_path: file, content: 'x' } }] } }),
+    );
+    const from = timeline.all().length;
+    write(rel, 'export const hookCtx = 1;\n');
+    assert.equal(
+      await post({ session_id: 'it-hook', prompt_id: 'h-p1', transcript_path: transcript, cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file }, tool_use_id: 'toolu_hook1' }),
+      200,
+    );
+    await until('hook change recorded', () => eventsFor(rel, from).length > 0, 20000);
+    await until('hook context attached', () => eventsFor(rel, from)[0].agent !== undefined, 20000);
+    const event = eventsFor(rel, from)[0];
+    assert.deepEqual([event.agent!.session, event.agent!.tool?.id, event.agent!.tool?.name, event.agent!.via], ['it-hook', 'toolu_hook1', 'Write', 'hook']);
+    assert.equal(event.agent!.turn?.prompt, 'Add the hook fixture');
+    await cfg().update('hookPort', undefined, vscode.ConfigurationTarget.Global);
+    await until('hook playback', idle);
+    console.log('[it] claude code hook ok');
   }
 }
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Claude Code's `PostToolUse` hook can tell the extension which tool call wrote each file, so the change gets that exact call, with its prompt read from the transcript the hook names even when the session started outside the recorded folders. Run **Agent Typewriter: Copy Claude Code Hook Settings** to set `hookPort` and copy the hook settings for Claude Code. The extension listens on `127.0.0.1` only, off by default, and `hookPort` counts only in user settings. Recording still comes from watching files.
 - Each recorded change's tooltip in the Changes view shows the Claude Code prompt and tool call that made it, and what the agent said just before. They come from the transcripts of Claude Code sessions started in a recorded checkout, a folder above it or a folder inside it (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`), which the extension only reads. A change made while such a session runs a command is credited to that command, even one you made yourself. This is rebuilt after a reload and never saved. Set `agentContext` to `false` to turn it off.
 
 ## 0.6.0 (2026-10-27)
