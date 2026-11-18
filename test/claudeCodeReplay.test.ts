@@ -8,6 +8,8 @@ import {
   MAX_PROMPT,
   changeById,
   chaptersOf,
+  fileGroupsOf,
+  fileHeaderLabel,
   chipLabel,
   headerLabel,
   keptTurns,
@@ -1015,7 +1017,7 @@ test('the list is the dropped note, then each chapter\'s header and rows', () =>
   const l = listingFrom(rows, 3);
   const lines = listLines(l, chaptersOf(l, TURNS));
   assert.deepEqual(
-    lines.map((x) => (x.kind === 'dropped' ? 'dropped' : x.kind === 'header' ? `header ${x.chapter.key}` : `row ${x.row.number}`)),
+    lines.map((x) => (x.kind === 'dropped' ? 'dropped' : x.kind === 'header' ? `header ${x.chapter.key}` : x.kind === 'file' ? 'file' : `row ${x.row.number}`)),
     ['dropped', 'header t1', 'row 4', 'header t2', 'row 5'],
   );
   assert.deepEqual(listLines(listingFrom([]), []), []);
@@ -1032,6 +1034,97 @@ test('a header names the turn, its prompt cut to fit, its count and Play turn', 
   assert.equal(headerLabel({ ...ch, prompt: '' }, 120).prompt, '');
   assert.equal(headerLabel({ ...ch, prompt: 'two\n\n  lines\tand tabs' }, 120).prompt, 'two lines and tabs');
   assert.equal(headerLabel({ ...ch, prompt: 'fix \x1b[31merror\x07' }, 120).prompt, 'fix \u241b[31merror\u2407', 'control characters drawn as stand-ins');
+});
+
+// Groups by file.
+
+/** A row of change `n` to `path`, in main turn `turn` (none when undefined), started through Agent call `call` when given. */
+function fileRow(n: number, path: string, turn?: string, call?: string): Row {
+  return { ...turnRow(n, turn, call), path };
+}
+
+function groupsOf(rows: Row[]): [string, number[]][] {
+  return fileGroupsOf(listingFrom(rows)).map((g) => [g.path, g.rows.map((r) => r.number)]);
+}
+
+test('file groups hold each path\'s rows in recorded order, ordered by their first row', () => {
+  const rows = [fileRow(1, '/w/src/a.ts'), fileRow(2, '/w/src/b.ts'), fileRow(3, '/w/src/a.ts'), fileRow(4, '/w/test/a.test.ts')];
+  assert.deepEqual(groupsOf(rows), [
+    ['/w/src/a.ts', [1, 3]],
+    ['/w/src/b.ts', [2]],
+    ['/w/test/a.test.ts', [4]],
+  ]);
+  assert.deepEqual(fileGroupsOf(listingFrom([])), []);
+});
+
+test('a file changed again after a later file stays in place, its new row last in its group', () => {
+  const before = groupsOf([fileRow(1, '/w/a.ts'), fileRow(2, '/w/b.ts')]);
+  const after = groupsOf([fileRow(1, '/w/a.ts'), fileRow(2, '/w/b.ts'), fileRow(3, '/w/a.ts')]);
+  assert.deepEqual(before.map(([p]) => p), after.map(([p]) => p));
+  assert.deepEqual(after[0], ['/w/a.ts', [1, 3]]);
+});
+
+test("a file's changes from every turn and lane share one group", () => {
+  const rows = [fileRow(1, '/w/src/limiter.ts', 't1'), fileRow(2, '/w/other.ts', 't2'), fileRow(3, '/w/src/limiter.ts', 't2', 'toolu_agent')];
+  assert.deepEqual(groupsOf(rows)[0], ['/w/src/limiter.ts', [1, 3]]);
+});
+
+test('the same file name in two folders makes two groups', () => {
+  assert.deepEqual(groupsOf([fileRow(1, '/w/src/index.ts'), fileRow(2, '/w/test/index.ts')]).map(([p]) => p), ['/w/src/index.ts', '/w/test/index.ts']);
+});
+
+test('Windows paths that differ only in separators or letter case are one file, shown by the first spelling', () => {
+  const rows = [fileRow(1, 'C:\\w\\src\\a.ts'), fileRow(2, 'C:\\w\\b.ts'), fileRow(3, 'c:/w/src/A.ts'), fileRow(4, 'C:/W/SRC/a.TS')];
+  assert.deepEqual(groupsOf(rows), [
+    ['C:\\w\\src\\a.ts', [1, 3, 4]],
+    ['C:\\w\\b.ts', [2]],
+  ]);
+  assert.deepEqual(groupsOf([fileRow(1, '\\\\srv\\share\\a.ts'), fileRow(2, '\\\\SRV\\Share\\A.ts')]).map(([, n]) => n), [[1, 2]], 'a UNC share too');
+});
+
+test('other paths are one file only when spelled the same', () => {
+  assert.deepEqual(groupsOf([fileRow(1, '/w/README.md'), fileRow(2, '/w/readme.md'), fileRow(3, '/w/README.md')]), [
+    ['/w/README.md', [1, 3]],
+    ['/w/readme.md', [2]],
+  ]);
+});
+
+test("the change being typed after the timeline dropped it falls in its file's group", () => {
+  const d = typingPastTheLimit();
+  const groups = fileGroupsOf(listingOf(d));
+  assert.equal(groups[0]?.path, '/w/typing.ts');
+  assert.deepEqual(groups[0]?.rows.map((r) => [r.id, r.state]), [['typing', 'playing']]);
+});
+
+test('the list grouped by file is the dropped note, then each file\'s header and rows', () => {
+  const l = listingFrom([fileRow(4, '/w/a.ts'), fileRow(5, '/w/b.ts'), fileRow(6, '/w/a.ts')], 3);
+  const lines = listLines(l, fileGroupsOf(l));
+  assert.deepEqual(
+    lines.map((x) => (x.kind === 'dropped' ? 'dropped' : x.kind === 'file' ? `file ${x.group.path}` : x.kind === 'header' ? 'turn' : `row ${x.row.number}`)),
+    ['dropped', 'file /w/a.ts', 'row 4', 'row 6', 'file /w/b.ts', 'row 5'],
+  );
+});
+
+test("a file header names the file, its folder, its count and Play from first", () => {
+  const group = { path: '/w/src/routes/signup.ts', rows: [fileRow(1, '/w/src/routes/signup.ts'), fileRow(2, '/w/src/routes/signup.ts')] };
+  assert.deepEqual(fileHeaderLabel(group, 'src/routes/signup.ts', 80), { file: 'signup.ts', dir: 'src/routes/', count: '2 changes', play: 'Play from first' });
+  assert.equal(fileHeaderLabel({ ...group, rows: [group.rows[0]!] }, 'src/routes/signup.ts', 80).count, '1 change');
+  assert.deepEqual(fileHeaderLabel({ path: '/etc/hosts', rows: [fileRow(1, '/etc/hosts')] }, '/etc/hosts', 80).dir, '/etc/');
+  assert.deepEqual(fileHeaderLabel({ path: 'C:\\w\\a.ts', rows: [fileRow(1, 'C:\\w\\a.ts')] }, 'C:\\w\\a.ts', 80), { file: 'a.ts', dir: 'C:\\w\\', count: '1 change', play: 'Play from first' });
+});
+
+test('a file header cuts its folder before its file name, and never its count or button', () => {
+  const name = 'packages/server/src/routes/auth/signup.ts';
+  const group = { path: `/w/${name}`, rows: [fileRow(1, `/w/${name}`)] };
+  // 50 columns: '1 change' and two gaps, then 'Play from first' and its padding, leave 22 for the file name and folder.
+  const cut = fileHeaderLabel(group, name, 50);
+  assert.equal(cut.file, 'signup.ts');
+  assert.equal(cut.dir, 'packages/ser…');
+  assert.equal(cut.file.length + cut.dir.length, 22);
+  assert.equal(cut.count, '1 change');
+  assert.equal(cut.play, 'Play from first');
+  const tight = fileHeaderLabel(group, name, 36);
+  assert.deepEqual([tight.file, tight.dir], ['signup.…', ''], 'no room for a folder leaves it out and cuts the name');
 });
 
 test('a prompt kept to 200 characters shows its ellipsis on a pane wide enough for all of it', () => {
