@@ -260,7 +260,7 @@ When a session draws on the terminal and on another surface at once, the plugin 
 - **THEN** the change is recorded and typed out in the desktop app's pane, and the terminal shows nothing drawn by the plugin
 
 ### Requirement: Pane lists the session's changes
-Below the code and the playback controls, the pane SHALL list every change the plugin keeps, grouped into chapters by turn. Each row SHALL show whether its change has played, is being typed, or waits; its number, counting the session's recorded changes from 1 in recorded order; the tool that made it, `Edit` or `Write`; its path, named as the pane names a file; and the lines it adds and removes. A row's number SHALL NOT change for the rest of the session.
+Below the code and the playback controls, the pane SHALL list every change the plugin keeps, grouped by turn or by file, as the person chose. Each row SHALL show whether its change has played, is being typed, or waits; its number, counting the session's recorded changes from 1 in recorded order; the tool that made it, `Edit` or `Write`; its path, named as the pane names a file; and the lines it adds and removes. A row's number SHALL NOT change for the rest of the session.
 
 #### Scenario: Played, playing and queued
 - **WHEN** Claude has made five changes, two have played, the third is being typed and two wait
@@ -271,19 +271,27 @@ Below the code and the playback controls, the pane SHALL list every change the p
 - **THEN** that change's row shows `Edit`, `src/routes/login.ts` and `+1 −1`
 
 #### Scenario: Numbers stay
-- **WHEN** the user plays from an earlier change, or the plugin reloads
+- **WHEN** the user plays from an earlier change, switches grouping, or the plugin reloads
 - **THEN** every row keeps the number it had
+
+#### Scenario: Same row in either grouping
+- **WHEN** the user switches from By turn to By file
+- **THEN** each change's row shows the same state, number, tool, path and lines as before, under its file's group
 
 #### Scenario: Nothing recorded yet
 - **WHEN** no change has been recorded
-- **THEN** the pane shows no list and says that edits Claude makes will be typed out there
+- **THEN** the pane shows no list and no grouping buttons, and says that edits Claude makes will be typed out there
 
 ### Requirement: The list says how many changes were dropped
-When older changes have been dropped to stay within the limits on kept changes, the list SHALL begin by saying how many were dropped, above its first chapter.
+When older changes have been dropped to stay within the limits on kept changes, the list SHALL begin by saying how many were dropped, above its first chapter or file group.
 
 #### Scenario: Dropped changes
 - **WHEN** 212 changes have been recorded and the 12 oldest were dropped
 - **THEN** the list begins by saying 12 older changes were dropped, and its first change row is numbered 13
+
+#### Scenario: Dropped changes, by file
+- **WHEN** 12 older changes were dropped and the list is grouped by file
+- **THEN** the list begins by saying 12 older changes were dropped, above its first file group
 
 ### Requirement: The shown change's row names its state
 The row of the change the pane shows SHALL name that change's state: Typing while it is typed, Paused while its typing is paused, Next while it waits to play, shown as it was before, and Too large when it is too large to replay. A row of any other too-large change that has played SHALL read Not typed. No other row SHALL name a state.
@@ -358,7 +366,7 @@ The pane SHALL have a From start control that acts as pressing the first change 
 - **THEN** playback stays paused, the pane shows the first kept change as it was before it, and that change's row reads Next
 
 ### Requirement: The list keeps up with playback
-When more changes are kept than the pane can list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it until they press a change in the list or its chip in the conversation, Play turn or a Play turn chip, or From start, Finish current or Skip to latest, after which it keeps up with playback again. Scrolling with the pointer over the code SHALL NOT move the list.
+When more changes are kept than the pane can list, the list SHALL show the rows that fit and keep the shown change's row among them as playback moves on. A list the person scrolled SHALL stay where they put it until they press a change in the list or its chip in the conversation, Play turn or its chip, Play from first, By turn or By file, or From start, Finish current or Skip to latest; then it keeps up again. Scrolling with the pointer over the code SHALL NOT move the list.
 
 #### Scenario: Long session
 - **WHEN** 80 changes are kept, the pane lists 10 rows, and change 40 starts
@@ -379,6 +387,14 @@ When more changes are kept than the pane can list, the list SHALL show the rows 
 #### Scenario: Play turn brings it back
 - **WHEN** the person has scrolled the list and presses Play turn on a chapter whose first change is change 5
 - **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Play from first brings it back
+- **WHEN** the person has scrolled the list grouped by file and presses Play from first on a group whose first change is change 5
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Switching brings it back
+- **WHEN** the person has scrolled the list while change 40 is typed, and switches grouping
+- **THEN** change 40's row is shown in the new grouping, and as later changes start, their rows are shown
 
 #### Scenario: Scrolling over the code
 - **WHEN** the person scrolls with the pointer over the code while change 40 is typed, and change 41 then starts
@@ -540,7 +556,7 @@ When the session records its first change and no surface is attached to the sess
 - **THEN** no notice is added and the pane waits for `/typewriter`
 
 ### Requirement: The changes list is grouped by turn
-The list SHALL group the kept changes into one chapter per main conversation turn, each change in the chapter of the turn it belongs to. Within a chapter, changes SHALL be listed in recorded order. Chapters SHALL be ordered by their earliest kept change. A turn with no kept change SHALL have no chapter.
+While By turn is chosen, the list SHALL group the kept changes into one chapter per main conversation turn, each change in the chapter of the turn it belongs to. Within a chapter, changes SHALL be listed in recorded order. Chapters SHALL be ordered by their earliest kept change. A turn with no kept change SHALL have no chapter.
 
 #### Scenario: Two turns
 - **WHEN** the user's first prompt leads Claude to make changes 1 to 5, and the second prompt leads to changes 6 to 9
@@ -756,3 +772,86 @@ A change's caption SHALL survive a reload of the plugin within the session, alon
 #### Scenario: Reload across the update that keeps captions
 - **WHEN** two changes were saved by a version that kept no captions, and the plugin reloads into this version
 - **THEN** both changes load with their numbers, tools, turns and played state, and neither has a caption
+
+### Requirement: The list can be grouped by turn or by file
+The `Changes` line above the list SHALL offer two buttons, By turn and By file, with the chosen grouping drawn as the selected one. By turn SHALL be chosen until the person picks By file. Pressing a button SHALL group the list that way at once. The grouping SHALL NOT change what plays, in what order, or whether playback is paused.
+
+#### Scenario: By turn at first
+- **WHEN** Claude has made its first change of the session
+- **THEN** the `Changes` line shows By turn selected and By file not, and the list is grouped by turn
+
+#### Scenario: Switch to By file
+- **WHEN** the list is grouped by turn and the user presses By file
+- **THEN** By file shows selected, the list is grouped by file, and the change being typed goes on being typed
+
+#### Scenario: Switch back
+- **WHEN** the list is grouped by file and the user presses By turn
+- **THEN** the list is grouped by turn again
+
+### Requirement: The changes list is grouped by file
+While By file is chosen, the list SHALL group the kept changes into one group per file they changed. Two Windows paths that differ only in `\` or `/` or in letter case SHALL count as one file; any other paths SHALL count as one file only when spelled the same. Within a group, changes SHALL be listed in recorded order. Groups SHALL be ordered by their earliest kept change, so the file whose first kept change was recorded last is listed last. A file with no kept change SHALL have no group.
+
+#### Scenario: Three files
+- **WHEN** Claude edits `src/a.ts` (change 1), `src/b.ts` (change 2), `src/a.ts` again (change 3) and then writes `test/a.test.ts` (change 4), and the list is grouped by file
+- **THEN** the list shows a group for `src/a.ts` holding changes 1 and 3, then one for `src/b.ts` holding change 2, then one for `test/a.test.ts` holding change 4
+
+#### Scenario: A file changed again later
+- **WHEN** the list is grouped by file, `src/a.ts` and `src/b.ts` have groups, and Claude edits `src/a.ts` again
+- **THEN** the new change is listed last in the `src/a.ts` group, which stays above the `src/b.ts` group
+
+#### Scenario: Changes from every lane and turn
+- **WHEN** in turn 1 Claude edits `src/limiter.ts`, and in turn 2 a subagent edits `src/limiter.ts` again
+- **THEN** both changes are listed in the one `src/limiter.ts` group, in recorded order
+
+#### Scenario: Same name in two folders
+- **WHEN** Claude edits `src/index.ts` and `test/index.ts`, and the list is grouped by file
+- **THEN** the list shows two groups, one per path
+
+#### Scenario: Two spellings of one Windows file
+- **WHEN** Claude edits `C:\w\src\a.ts` and later `c:/w/src/A.ts`, and the list is grouped by file
+- **THEN** both changes are listed in one group, headed as the first change named the file
+
+#### Scenario: Letter case elsewhere
+- **WHEN** Claude edits `/w/README.md` and `/w/readme.md`, and the list is grouped by file
+- **THEN** the list shows two groups
+
+### Requirement: A file group's header
+Each file group SHALL open with a header: the file name in bold, its folder named as the pane names a file and dim, how many of the file's changes the pane keeps, and a Play from first button. When the header does not fit the pane, the folder SHALL be cut first, with an ellipsis.
+
+#### Scenario: What the header shows
+- **WHEN** the session runs in `/w`, the list is grouped by file, and the pane keeps two changes to `/w/src/routes/signup.ts`
+- **THEN** that group's header shows `signup.ts` in bold, `src/routes/` dim, `2 changes` and Play from first
+
+#### Scenario: One change
+- **WHEN** the pane keeps one change to a file
+- **THEN** its group's header says `1 change`
+
+#### Scenario: File outside the session folder
+- **WHEN** the session runs in `/w` and Claude edits `/etc/hosts`
+- **THEN** that group's header shows `hosts` and the folder `/etc/`
+
+#### Scenario: Long folder
+- **WHEN** a file's folder is longer than the room the pane leaves in its header
+- **THEN** the header shows the file name, count and Play from first in full, and the folder cut with an ellipsis
+
+### Requirement: Play from first
+Pressing a file group's Play from first SHALL act as pressing the group's first change in the list: that change is typed next from its before text, every change recorded after it follows in recorded order whatever file it changed, the changes recorded before it count as played, and whether playback is paused does not change.
+
+#### Scenario: Replay a file's first change
+- **WHEN** every change has played, the `src/a.ts` group holds changes 1 and 3, and the user presses its Play from first
+- **THEN** change 1 is typed from its before text, followed by changes 2, 3 and every later change in recorded order
+
+#### Scenario: Play from first while paused
+- **WHEN** playback is paused and the user presses Play from first on the `src/b.ts` group, whose first change is change 2
+- **THEN** playback stays paused, the pane shows `src/b.ts` as it was before change 2, and that change's row reads Next
+
+#### Scenario: A file whose first changes were dropped
+- **WHEN** changes 1 to 3 edited `src/a.ts`, changes 1 and 2 were dropped to stay within the limits, and the user presses Play from first on the `src/a.ts` group
+- **THEN** change 3 is typed next
+
+### Requirement: The chosen grouping survives a reload
+The grouping the person chose SHALL survive a reload of the plugin within the session.
+
+#### Scenario: Reload while grouped by file
+- **WHEN** the user picks By file and the plugin reloads
+- **THEN** the list is grouped by file and By file shows selected
