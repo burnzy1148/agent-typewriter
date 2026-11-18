@@ -42,12 +42,12 @@ Alternatives:
 type FileGroup = { path: string; rows: Row[] };          // rows in recorded order, never empty
 fileGroupsOf(listing: Listing): FileGroup[]
 fileHeaderLabel(group: FileGroup, name: string, width: number):
-  { file: string; dir: string; count: string }           // name = relativePath(group.path, cwd)
+  { file: string; dir: string; count: string; play: string } // name = relativePath(group.path, cwd)
 ```
 
-`fileHeaderLabel` splits `name` at its last separator as `rowLabel` does, writes `1 change` / `<n> changes`, and cuts the folder first with `…`, then the file name, so the count and the button always fit. The count's wording is the same function at-o3z.13's `headerLabel` uses; if it has none to share, both use one small `countLabel(n)`.
+`fileHeaderLabel` splits `name` at its last separator as `rowLabel` does, writes `1 change` / `<n> changes`, and cuts the folder first with `…`, then the file name, so the count and the button always fit. The count's wording is `changeCount`, the function at-o3z.13's `headerLabel` uses.
 
-The pane turns either grouping into the same line items: a header line (`{ kind: 'header', key, … }`) followed by row lines. Where at-o3z.13 builds its line list from chapters, this change adds the branch that builds it from file groups. Keys: a file header's Play button is `play-file:<path>`, distinct from at-o3z.13's `play:<turn key>`, so a surface never confuses the two after a switch.
+The pane turns either grouping into the same line items: at-o3z.13's `listLines` takes chapters or file groups, and a file group's header is a `{ kind: 'file', group }` line beside its `{ kind: 'header', chapter }`. Keys: a file header's Play button is `play-file:<path>`, distinct from at-o3z.13's `play:<turn key>`, so a surface never confuses the two after a switch.
 
 ### Play from first is a seek
 

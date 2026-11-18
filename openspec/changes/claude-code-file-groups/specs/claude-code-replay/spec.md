@@ -93,7 +93,7 @@ While By turn is chosen, the list SHALL group the kept changes into one chapter 
 - **THEN** change 7 is listed in turn 1's chapter, after turn 1's earlier changes, and turn 2's chapter still follows turn 1's
 
 ### Requirement: Pane lists the session's changes
-Below the code and the playback controls, the pane SHALL list every change the plugin keeps, grouped into chapters by turn or into groups by file, as the person chose. Each row SHALL show whether its change has played, is being typed, or waits; its number, counting the session's recorded changes from 1 in recorded order; the tool that made it, `Edit` or `Write`; its path, named as the pane names a file; and the lines it adds and removes. A row SHALL show the same in either grouping, and its number SHALL NOT change for the rest of the session.
+Below the code and the playback controls, the pane SHALL list every change the plugin keeps, grouped by turn or by file, as the person chose. Each row SHALL show whether its change has played, is being typed, or waits; its number, counting the session's recorded changes from 1 in recorded order; the tool that made it, `Edit` or `Write`; its path, named as the pane names a file; and the lines it adds and removes. A row's number SHALL NOT change for the rest of the session.
 
 #### Scenario: Played, playing and queued
 - **WHEN** Claude has made five changes, two have played, the third is being typed and two wait
@@ -106,6 +106,10 @@ Below the code and the playback controls, the pane SHALL list every change the p
 #### Scenario: Numbers stay
 - **WHEN** the user plays from an earlier change, switches grouping, or the plugin reloads
 - **THEN** every row keeps the number it had
+
+#### Scenario: Same row in either grouping
+- **WHEN** the user switches from By turn to By file
+- **THEN** each change's row shows the same state, number, tool, path and lines as before, under its file's group
 
 #### Scenario: Nothing recorded yet
 - **WHEN** no change has been recorded
@@ -123,7 +127,7 @@ When older changes have been dropped to stay within the limits on kept changes, 
 - **THEN** the list begins by saying 12 older changes were dropped, above its first file group
 
 ### Requirement: The list keeps up with playback
-When more changes are kept than the pane has room to list, the list SHALL show the rows that fit and keep the row of the change the pane shows among them as playback moves on. When the person scrolls the list, it SHALL stay where they scrolled it, until they press a change in the list or its chip in the conversation, press Play turn, a Play turn chip or Play from first, switch grouping, or press From start, Finish current or Skip to latest, after which it keeps up with playback again. Scrolling with the pointer over the code SHALL NOT move the list.
+When more changes are kept than the pane can list, the list SHALL show the rows that fit and keep the shown change's row among them as playback moves on. A list the person scrolled SHALL stay where they put it until they press a change in the list or its chip in the conversation, Play turn or its chip, Play from first, By turn or By file, or From start, Finish current or Skip to latest; then it keeps up again. Scrolling with the pointer over the code SHALL NOT move the list.
 
 #### Scenario: Long session
 - **WHEN** 80 changes are kept, the pane lists 10 rows, and change 40 starts
