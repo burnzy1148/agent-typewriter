@@ -1073,6 +1073,22 @@ test('the same file name in two folders makes two groups', () => {
   assert.deepEqual(groupsOf([fileRow(1, '/w/src/index.ts'), fileRow(2, '/w/test/index.ts')]).map(([p]) => p), ['/w/src/index.ts', '/w/test/index.ts']);
 });
 
+test('Windows paths that differ only in separators or letter case are one file, shown by the first spelling', () => {
+  const rows = [fileRow(1, 'C:\\w\\src\\a.ts'), fileRow(2, 'C:\\w\\b.ts'), fileRow(3, 'c:/w/src/A.ts'), fileRow(4, 'C:/W/SRC/a.TS')];
+  assert.deepEqual(groupsOf(rows), [
+    ['C:\\w\\src\\a.ts', [1, 3, 4]],
+    ['C:\\w\\b.ts', [2]],
+  ]);
+  assert.deepEqual(groupsOf([fileRow(1, '\\\\srv\\share\\a.ts'), fileRow(2, '\\\\SRV\\Share\\A.ts')]).map(([, n]) => n), [[1, 2]], 'a UNC share too');
+});
+
+test('other paths are one file only when spelled the same', () => {
+  assert.deepEqual(groupsOf([fileRow(1, '/w/README.md'), fileRow(2, '/w/readme.md'), fileRow(3, '/w/README.md')]), [
+    ['/w/README.md', [1, 3]],
+    ['/w/readme.md', [2]],
+  ]);
+});
+
 test("the change being typed after the timeline dropped it falls in its file's group", () => {
   const d = typingPastTheLimit();
   const groups = fileGroupsOf(listingOf(d));

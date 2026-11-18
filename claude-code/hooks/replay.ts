@@ -602,15 +602,26 @@ export function headerLabel(ch: Chapter, width: number): HeaderLabel {
 export type FileGroup = { path: string; rows: Row[] };
 
 /**
- * The listing's rows grouped by file: a group per path some row names, keyed
- * by the path as recorded, rows in recorded order, groups in the order of
- * their first row, so the file first changed most recently comes last.
+ * The file `path` names, as grouping by file tells files apart: a Windows path
+ * with either separator and in any letter case, since Windows reads them all
+ * as one file; any other path exactly as spelled.
+ */
+export function fileKey(path: string): string {
+  return WINDOWS_PATH.test(path) ? path.replace(/\\/g, '/').toLowerCase() : path;
+}
+
+/**
+ * The listing's rows grouped by file: a group per file some row names (see
+ * fileKey), shown by the path its first row recorded, rows in recorded order,
+ * groups in the order of their first row, so the file first changed most
+ * recently comes last.
  */
 export function fileGroupsOf(listing: Listing): FileGroup[] {
   const groups = new Map<string, FileGroup>();
   for (const row of listing.rows) {
-    let g = groups.get(row.path);
-    if (!g) groups.set(row.path, (g = { path: row.path, rows: [] }));
+    const key = fileKey(row.path);
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { path: row.path, rows: [] }));
     g.rows.push(row);
   }
   return [...groups.values()];

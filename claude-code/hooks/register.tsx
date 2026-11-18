@@ -489,17 +489,20 @@ function move($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
 }
 
 /**
- * Groups the changes list by `to`. The list follows playback again, and any
- * note goes, as after any press; the write redraws the pane, which reads it.
+ * Groups the changes list by `to`, grouped by `from` until now. The list
+ * follows playback again, and any note goes, as after any press, the chosen
+ * grouping's button included; only a change of grouping is written.
  */
-function regroup($: EngineInterface, live: Live, to: Grouping): void {
+function regroup($: EngineInterface, live: Live, from: Grouping, to: Grouping): void {
   live.listTop = undefined;
   live.note = undefined;
-  live.writes = live.writes
-    .then(async () => {
-      await update($, grouping, () => to);
-    })
-    .catch(() => undefined);
+  if (to !== from) {
+    live.writes = live.writes
+      .then(async () => {
+        await update($, grouping, () => to);
+      })
+      .catch(() => undefined);
+  }
   $.ui.invalidate('ui.render');
 }
 
@@ -760,7 +763,7 @@ export const register: Register = (on, options) => {
                     variant={isChosen ? 'primary' : 'secondary'}
                     dimColor={!isChosen}
                     label={isChosen ? `${word}, shown` : `Group by ${to}`}
-                    onPress={() => (isChosen ? undefined : regroup($, live, to))}
+                    onPress={() => regroup($, live, g, to)}
                   >
                     {word}
                   </Button>

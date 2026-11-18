@@ -246,6 +246,22 @@ test('a switch or Play from first brings a scrolled list back to following playb
   expect((await lines($)).at(-1)).toBe('#30');
 });
 
+test('pressing the grouping already chosen brings a scrolled list back, without a write', async ($, on) => {
+  const w = world(on);
+  const writes = groupingState(on);
+  await start($);
+  for (let i = 1; i <= 30; i++) await write($, `a${i}.ts`, `toolu_${i}`);
+  await w.clock.advance(60_000);
+  expect((await lines($)).at(-1)).toBe('#30');
+  await scroll($, -20);
+  expect(await lines($)).not.toContain('#30');
+
+  await pressPane($, 'group:turn');
+  await w.clock.settle();
+  expect((await lines($)).at(-1)).toBe('#30');
+  expect(writes).toEqual([]);
+});
+
 test('the chosen grouping survives a reload', async ($, on) => {
   const w = world(on);
   const saved = {

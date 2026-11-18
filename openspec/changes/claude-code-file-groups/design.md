@@ -36,6 +36,8 @@ Alternatives:
 - Sort by path. Rejected: loses the session's order, which is what the list is for.
 - Normalize paths (case, separators, symlinks) before grouping. Rejected for now: the recorder keys files by the path the tool used, and before and after texts follow that path; two spellings of one file are already two lines of history. See Risks.
 
+**Corrected in implementation.** Review round 1 showed the rejection cost more than it said. On Windows, Play from first on a file's second group skips that file's changes in the first group, and the requirement promised "one group per file", which the raw key did not keep. `fileGroupsOf` now keys on `fileKey(path)`. A Windows path (a drive letter or a UNC share, as `WINDOWS_PATH` matches) gets `/` separators and lower case; any other path stays exactly as spelled. A group is shown by its first row's path. Symlinks and case on case-insensitive POSIX disks are still not folded, because a path alone cannot tell. This was my recommendation, and the owner approved it with the round-1 plan; the requirement now states the rule.
+
 ### Shapes in `replay.ts`
 
 ```ts
@@ -57,6 +59,8 @@ Pressing it calls `seek(deck, group.rows[0].id)` through the same `move` path a 
 
 `Changes`, then `By turn` and `By file`, then the hint. The chosen one is `variant="primary"`; the other is `variant="secondary"` with `dimColor`. Neither is `plain`, since `plain` ignores `variant`. Each has a `label` that names the state for a screen reader: `By turn, shown` / `Group by turn`, and likewise for file. Keys `group:turn` and `group:file`. Pressing the chosen one does nothing; pressing the other saves the choice, clears `live.listTop` and invalidates the pane.
 
+**Corrected in implementation.** The spec promised that pressing By turn or By file brings a scrolled list back, and the README repeated it. The chosen button pressed nothing, which review round 1 caught. Now either button clears `live.listTop` and the note and redraws, as every press in the pane does. Only a change of grouping writes `grouping`. This was my recommendation, approved by the owner with the round-1 plan.
+
 No hotkey. Tab reaches both buttons before the list's.
 
 The buttons show only when the list does (`count > 0`), as the `Changes` line does today.
@@ -76,7 +80,7 @@ The current row, the dropped note's place (first line), the window centering on 
 
 ## Risks / Trade-offs
 
-- [Two spellings of one file (`/w/src/A.ts` and `/w/src/a.ts` on a case-insensitive disk, or a symlinked folder) make two groups] → rare in practice, since Claude reuses the path it read; the rows still play correctly. Normalizing is a later change if the desktop check shows it.
+- [Two spellings of one file (`/w/src/A.ts` and `/w/src/a.ts` on a case-insensitive disk, or a symlinked folder) make two groups] → rare in practice, since Claude reuses the path it read; the rows still play correctly. Normalizing is a later change if the desktop check shows it. *Corrected in implementation:* Windows paths are folded (see the alternatives under the first decision); POSIX case and symlinks remain.
 - [Groups ordered by first change mean a file edited again much later gets its new row in the middle of the list] → the list keeps the current row in view, and the row's number shows where it falls in the session.
 - [By file shows a file's history with gaps: Play from first plays the other files' changes in between] → that is the seek's meaning everywhere in the pane; the proposal keeps one-file playback out of scope.
 - [The switch takes width on the `Changes` line, leaving less for the hint and `live.note`] → the hint is dim and may be cut; the buttons and the title come first.

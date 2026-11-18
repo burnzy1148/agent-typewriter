@@ -16,7 +16,7 @@ The `Changes` line above the list SHALL offer two buttons, By turn and By file, 
 - **THEN** the list is grouped by turn again
 
 ### Requirement: The changes list is grouped by file
-While By file is chosen, the list SHALL group the kept changes into one group per file they changed, each change in the group of its path. Within a group, changes SHALL be listed in recorded order. Groups SHALL be ordered by their earliest kept change, so the file whose first kept change was recorded last is listed last. A file with no kept change SHALL have no group.
+While By file is chosen, the list SHALL group the kept changes into one group per file they changed. Two Windows paths that differ only in `\` or `/` or in letter case SHALL count as one file; any other paths SHALL count as one file only when spelled the same. Within a group, changes SHALL be listed in recorded order. Groups SHALL be ordered by their earliest kept change, so the file whose first kept change was recorded last is listed last. A file with no kept change SHALL have no group.
 
 #### Scenario: Three files
 - **WHEN** Claude edits `src/a.ts` (change 1), `src/b.ts` (change 2), `src/a.ts` again (change 3) and then writes `test/a.test.ts` (change 4), and the list is grouped by file
@@ -33,6 +33,14 @@ While By file is chosen, the list SHALL group the kept changes into one group pe
 #### Scenario: Same name in two folders
 - **WHEN** Claude edits `src/index.ts` and `test/index.ts`, and the list is grouped by file
 - **THEN** the list shows two groups, one per path
+
+#### Scenario: Two spellings of one Windows file
+- **WHEN** Claude edits `C:\w\src\a.ts` and later `c:/w/src/A.ts`, and the list is grouped by file
+- **THEN** both changes are listed in one group, headed as the first change named the file
+
+#### Scenario: Letter case elsewhere
+- **WHEN** Claude edits `/w/README.md` and `/w/readme.md`, and the list is grouped by file
+- **THEN** the list shows two groups
 
 ### Requirement: A file group's header
 Each file group SHALL open with a header: the file name in bold, its folder named as the pane names a file and dim, how many of the file's changes the pane keeps, and a Play from first button. When the header does not fit the pane, the folder SHALL be cut first, with an ellipsis.
