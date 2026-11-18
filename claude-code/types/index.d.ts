@@ -51,6 +51,8 @@ export type View = {
   /** 0-based line and column of the caret in the file. */
   caretLine: number;
   caretColumn: number;
+  /** The shown change's caption, what the agent wrote before its call, on one line; absent when it has none. */
+  caption?: string;
 };
 
 /**
@@ -59,6 +61,8 @@ export type View = {
  * waits, and the lines it adds and removes. `mainTurnId` and `agentCallId`
  * are the change's links (CallLinks), which group it into its turn's chapter
  * and anchor that turn's chip; each is absent when the change lacks it.
+ * `caption` is the change's caption cut with `…` to 300 characters, for the
+ * row's hover card; absent when the change has none.
  */
 export type Row = {
   id: string;
@@ -71,6 +75,7 @@ export type Row = {
   removed: number;
   mainTurnId?: string;
   agentCallId?: string;
+  caption?: string;
 };
 
 /**
@@ -116,7 +121,11 @@ declare module 'claude-code' {
       agents: Shaped<AgentLink[]>;
       /** The main conversation's turns, for the changes list's chapters. */
       turns: Shaped<Turns>;
-      /** Member `<change id>:before` or `<change id>:after`; '' once the change is gone. */
+      /**
+       * Member `<change id>:before` or `<change id>:after`, the change's texts,
+       * and `<change id>:caption`, its caption, absent or '' when it has none;
+       * each '' once the change is gone.
+       */
       text: StateFamily<string>;
     };
   }
