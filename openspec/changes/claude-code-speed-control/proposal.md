@@ -8,8 +8,8 @@ The Claude Code pane types every change at the one speed the `charsPerMinute` op
 
 - **A speed control on the transport.** After Skip to latest, the pane draws a Speed control with four choices: 0.5×, 1×, 2× and 4×, 1× until the person picks another. The chosen speed multiplies the typing speed and shortens every wait playback makes, the pause between changes included, by the same factor. A pick applies from the next keystroke and does not change whether playback is paused.
 - **The chosen speed survives a reload** of the plugin within the session.
-- **Catch-up.** While changes queue behind the one being typed, typing speeds up by the shared catch-up rule from at-o3z.7: 1 + `catchUpFactor` × the queued count, capped at `maxSpeedup` (defaults 0.5 and 8), counting the followed lane's queue. It multiplies on top of the chosen speed.
-- **A catching-up chip.** While a change is typed, playback is not paused, and the followed lane has three or more changes queued, the transport ends with a chip reading `catching up <n>×`, `<n>` being the catch-up factor in effect.
+- **On top of catch-up.** at-o3z.6 (`claude-code-shared-typing-steps`) brings the extension's catch-up speedup into the plugin, with the manual factor fixed at 1. This change makes the chosen speed that manual factor; it does not define catch-up again.
+- **A catching-up chip.** While a change is typed, playback is not paused, and the followed lane has three or more changes queued, the transport ends with a chip reading `catching up <n>×`, `<n>` being the catch-up speedup in effect.
 - **Hotkeys.** `r`, `p`, `f` and `l` already press From start, Pause or Resume, Finish current and Skip to latest (requirement *Playback hotkeys*). This change keeps them and adds none.
 
 Out of scope, and kept possible:
@@ -26,12 +26,12 @@ None.
 
 ### Modified Capabilities
 
-- `claude-code-replay`: adds requirements for the speed control, what the speed applies to, keeping it over a reload, catch-up, the catching-up chip, and leaving the control off a surface without a Select. No existing requirement's text changes.
+- `claude-code-replay`: adds requirements for the speed control, what the speed applies to, keeping it over a reload, the catching-up chip, and leaving the control off a surface without a Select. No existing requirement's text changes. Catch-up itself is at-o3z.6's *Catch-up speed* requirement, which the chip refers to.
 
 ## Impact
 
-- `src/pace.ts` (shared, in `core.mjs`): a pure catch-up function over the queued count, `catchUpFactor` and `maxSpeedup`, which the extension's player also uses, unless at-o3z.6 has already shared one. Rebuild `claude-code/hooks/core.mjs` and `core.d.mts`.
-- `claude-code/hooks/replay.ts`: the four speeds, a speed check, the chip label, and `tick` taking the speed and catch-up as one multiplier on the typing rate and on the waits it counts.
+- No shared module changes: the catch-up function is at-o3z.6's `catchUpSpeed` in `src/typingSteps.ts`.
+- `claude-code/hooks/replay.ts`: the four speeds, a speed check, the chip label, and the chosen speed passed as at-o3z.6's manual factor, which multiplies the typing rate and divides every wait.
 - `claude-code/hooks/register.tsx`: a `pace` atom (`pace-1`: the chosen speed, the catch-up factor and whether the chip shows) written in `flush` and read back on load; the Speed Select and the chip on the transport row. `saved`, `view` and `listing` keep their shapes, so this does not collide with at-o3z.15 and at-o3z.16 bumping them.
 - `claude-code/types/index.d.ts`: the `Pace` type and the `pace` key in `PluginState`.
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for the speed, the reload, catch-up and the chip.
