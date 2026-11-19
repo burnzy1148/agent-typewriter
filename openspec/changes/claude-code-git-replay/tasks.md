@@ -17,15 +17,15 @@
 ## 3. Replayed changes in the deck
 
 - [ ] 3.1 `Change` and `SavedChange`: `kind` adds `delete` and `rename`, `fromPath?`, `commit?`; ids `git:<label>/<sha>:<path>`; caption from the subject through `normalizeCaption`.
-- [ ] 3.2 Building a replay into the deck in one step: cut to the newest changes that fit the limits on their own, drop a lane of the same label with .20's lane-replacing restore, define the lane (`git:<label>`, `recording: false`, `kind: 'git'`, color from `colorSlot`), push, follow and seek to its first change through .20's load path (pause kept); return loaded and total counts.
+- [ ] 3.2 Building a replay into the deck in one step: cut to the newest changes that fit the limits on their own, drop any existing `git:` lane with .20's lane-replacing restore (leaving `saved:` lanes), define the lane (`git:<label>`, `recording: false`, `kind: 'git'`, color from `colorSlot`), push, follow, seek to its first change, unpause, through `move()`; return loaded and total counts.
 - [ ] 3.3 Playback of deletes and renames (rename typed from the old text under the new path; pure rename finishes at once), and the equal-text exception for renames.
 - [ ] 3.4 `savedOf` / `savedFrom` with the new tag after at-o3z.15's, reading every older tag; `SavedLane.kind`.
-- [ ] 3.5 Tests: numbering goes on, limits cut and drop rule, replaying the same range again, two ranges in two lanes, pause kept, reload mid-replay, old tags load.
-- [ ] 3.6 `/typewriter save` (.20) leaves out changes with a `commit`, as it leaves out loaded ones; test it.
+- [ ] 3.5 Tests: numbering goes on, limits cut and drop rule, a new replay replacing the last and leaving a loaded replay's lane, unpausing, reload mid-replay, old tags load.
+- [ ] 3.6 Check .20's save leaves the `git:` lane out (its *Save with a git replay* scenario) once the lane exists, and add a test with a git lane kept beside recorded changes. Its `replay-1` format keeps no kind, `fromPath` or `commit`; nothing here needs to change it.
 
 ## 4. List and pane
 
-- [ ] 4.1 `chaptersOf`: commit chapters keyed `git:<label>/<sha>` with the lane label, title (7-character hash), subject as prompt, count and `Play commit`; replayed changes never in `Outside a turn`.
+- [ ] 4.1 `chaptersOf`: commit chapters keyed `git:<label>/<sha>` with title (7-character hash), subject as prompt, count and `Play commit`; replayed changes never in `Outside a turn`.
 - [ ] 4.2 `rowLabel` / `listingOf`: `Add`, `Modify`, `Delete`, `Rename` in the tool column; a rename named by its new path; new listing tag.
 - [ ] 4.3 register.tsx: no Show in conversation button and no ↗ for a change without a call; Play commit keyed `play-commit:<label>/<sha>` through `move()`; header `(git)` for the replay lane's kind.
 - [ ] 4.4 Tests in `claude-code/tests/` for chapters, rows, the header and the missing buttons.
@@ -46,6 +46,6 @@
 ## 7. Before archiving
 
 - [ ] 7.1 After at-o3z.15 archives, rebase the delta onto the living spec and add MODIFIED blocks for *A lane per loop* and *Running and finished lanes* naming the replay's lane.
-- [ ] 7.2 After at-o3z.20 archives, add a MODIFIED block of its *`/typewriter` takes a word* naming `replay` and `pr` among the words and in the hint, and of *Every word in a terminal session points to the extension* saying git and gh do not run either; fold *Replays wait for a surface other than the terminal* into them where it repeats.
+- [ ] 7.2 After at-o3z.20 archives, rebase onto its MODIFIED *Pane opens on request or on the first change* (this delta writes no competing block), then add a MODIFIED block of its *`/typewriter` takes a word* naming `replay` and `pr` among the words and in the hint, and of *Every word in a terminal session points to the extension* saying git and gh do not run either; fold *Replays wait for a surface other than the terminal* into them where it repeats.
 - [ ] 7.3 Check at-o3z.19's scrubber gaps between commits; adjust this delta if it archived first.
 - [ ] 7.4 `openspec validate claude-code-git-replay --strict`.
