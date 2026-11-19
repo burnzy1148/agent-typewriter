@@ -1604,3 +1604,22 @@ test('a pinned file shows as last typed, with its marks and no caret, while anot
   assert.deepEqual(v.rows, [' one', '+two', ' ']);
   assert.equal(viewOf(d, { pin: '/w/b.ts', opts: FAST }).pinned, undefined, 'pinning playback is following it');
 });
+
+test('a tick and its view on a 1 MB file stay well within the 50 ms tick', () => {
+  const lines = Array.from({ length: 20_000 }, (_, i) => `  const value${i} = compute(${i}, "some padding text");`);
+  const before = lines.join('\n') + '\n';
+  assert.ok(before.length > 1_000_000);
+  const mid = before.indexOf('value10000');
+  const d = deckOf(change('big', before, before.slice(0, mid) + 'NEW LINE OF TEXT\n' + before.slice(mid), '/w/big.ts'));
+  const opts = { charsPerMinute: 1000, naturalOrder: true };
+  tick(d, opts);
+  const times: number[] = [];
+  for (let i = 0; i < 15; i++) {
+    const t = performance.now();
+    tick(d, opts);
+    viewOf(d, { opts });
+    times.push(performance.now() - t);
+  }
+  const median = times.sort((x, y) => x - y)[7]!;
+  assert.ok(median < 40, `median ${median.toFixed(1)} ms`);
+});

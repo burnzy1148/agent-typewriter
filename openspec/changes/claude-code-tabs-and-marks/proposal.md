@@ -33,7 +33,8 @@ None.
 
 - `src/highlights.ts`: `netHunks` and the helpers it uses move to a new `src/netHunks.ts`, which imports neither `vscode` nor Node built-ins. `highlights.ts` and its tests import it from there. The extension's behavior is unchanged.
 - `scripts/build-claude-code.mjs`: the bundle's entry adds `netHunks`. `claude-code/hooks/core.mjs` and `core.d.mts` are rebuilt.
-- `claude-code/hooks/replay.ts`: per-file baselines and clears; diff rows for the view; the deletion preview beat in `tick`; the tab list; the view of a pinned file.
+- `claude-code/hooks/marks.ts` (new): whole-line diff rows, tab labels and the tab layout, as pure functions.
+- `claude-code/hooks/replay.ts`: per-file baselines and clears; the view's window of diff rows and its hunk header; the deletion preview beat in `tick`; the tab list; the view of a pinned file.
 - `claude-code/hooks/register.tsx`: the tab row, the pinned line with Follow playback, Clear marks, the Code element under `format: 'diff'`, and new `tabs` and `marks` atoms.
 - `claude-code/types/index.d.ts`: `View` carries diff rows; new `Tabs` and `Marks` types and state keys.
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for each behavior above.

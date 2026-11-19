@@ -38,7 +38,7 @@ Pressing the tab of a file other than the one playback shows SHALL pin it: the c
 - **THEN** the code view still shows `a.ts`
 
 ### Requirement: A pin ends when the person returns to playback
-A pin SHALL end, and the code view follow playback again, when the person presses Follow playback, presses the tab of the file playback shows, or presses anything that moves playback: a change in the list, its chip in the conversation, From start, Finish current or Skip to latest. A pin SHALL also end when its file loses its tab. Pause and Resume SHALL NOT end a pin. A pin SHALL NOT survive a reload.
+A pin SHALL end, and the code view follow playback again, when the person presses Follow playback, presses the tab of the file playback shows, or presses anything that moves playback: a change in the list, its chip in the conversation, From start, Finish current or Skip to latest. A pin SHALL also end when its file loses its tab or playback moves into its file. Pause and Resume SHALL NOT end a pin. A pin SHALL NOT survive a reload.
 
 #### Scenario: Follow playback
 - **WHEN** `a.ts` is pinned while `b.ts` is typed, and the user presses Follow playback
@@ -47,6 +47,10 @@ A pin SHALL end, and the code view follow playback again, when the person presse
 #### Scenario: Picking a change
 - **WHEN** `a.ts` is pinned and the user presses a change to `c.ts` in the list
 - **THEN** the pin ends and the code view shows `c.ts`
+
+#### Scenario: Playback reaches the pinned file
+- **WHEN** `a.ts` is pinned while `b.ts` is typed, and the next change to play is to `a.ts`
+- **THEN** the pin ends, and the code view shows `a.ts` being typed with the caret
 
 #### Scenario: Pause keeps the pin
 - **WHEN** `a.ts` is pinned and the user presses Pause

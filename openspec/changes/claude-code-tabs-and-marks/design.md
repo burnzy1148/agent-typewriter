@@ -34,15 +34,15 @@ Alternative: a line diff of the plugin's own, or `diffLines` from the bundled `d
 
 `diffRows(baseline, text)` turns `netHunks(baseline, text)` into rows `{ kind: ' ' | '+' | '-', text, oldLine?, newLine? }`. Every line a hunk touches, on either side, becomes a `-` row (its baseline version) and a `+` row (its current version). Rows come in file order, a hunk's `-` rows before its `+` rows. Two invariants hold and are fuzz-tested: the ` ` and `+` rows give back `text`, and the ` ` and `-` rows give back `baseline`.
 
-`viewOf` keeps `VIEW_LINES` rows around the caret's row instead of lines, and `View` changes from `lines` and `firstLine` to `rows`, with each row's numbers (`view-2`). `frame()` cuts the rows to the pane and puts the caret into its row. It writes one hunk header for the rows it keeps: `-a,b` from the first old line and the count of ` ` and `-` rows, `+c,d` likewise for new lines. A file with no marks is one hunk of context rows, so the pane always draws `format: 'diff'`, and the layout does not jump when the first mark appears.
+`diffRows`, the tab labels and the tab layout live in a new `claude-code/hooks/marks.ts`, pure functions with no deck, since `replay.ts` is already long. `viewOf` keeps `VIEW_LINES` rows around the caret's row instead of lines. `View` changes from `lines` and `firstLine` to `rows` (each a marker then its line) and the counts of baseline and text lines before them. Captions took `view-2`, so this is `view-3`. `frame()` cuts the rows to the pane and puts the caret into its row. It writes one hunk header for the rows it keeps: `-a,b` from the first old line and the count of ` ` and `-` rows, `+c,d` likewise for new lines. A file with no marks is one hunk of context rows, so the pane always draws `format: 'diff'`, and the layout does not jump when the first mark appears.
 
 The diff runs once per tick while typing, on the whole file. `diffRows` memoizes its last result by baseline and text. `netHunks` trims common lines at both ends before it looks further, so a tick on a large file costs about one pass over its lines.
 
 ### Baselines from kept changes and clears
 
-`baselineOf(deck, path, clears)` follows `baselines()` in the extension, minus renames, which Edit and Write never make. Walk the lane's played changes in order. A file's baseline is the before text of its first kept change, and at each clear whose point has passed, every file's text so far becomes its baseline. A clear is `{ at: number; heldBack?: string }`: `at` is the recording number of the first change not played at the press, counting the change being typed as played. `heldBack` names that change's file. While the held-back change is typed, its file draws no marks (baseline = shown text). Once it finishes, the clear applies to that file too.
+`baselineOf(deck, path, clears)` follows `baselines()` in the extension, minus renames, which Edit and Write never make. Walk the lane's played changes in order. A file's baseline is the before text of its first kept change, and at each clear whose point has passed, every file's text so far becomes its baseline. A clear is `{ at: number }`: `at` is the recording number of the first change not played at the press, counting the change being typed as played. A clear made while change H is typed has `at` = H + 1, and while H is typed its file draws no marks. Once H finishes, the clear applies to that file too. No field marks the held-back file: a clear at H + 1 while H is typed arises only that way, since a seek back to H undoes the clear, and only the change being typed restarts on a reload.
 
-Clears live in a new `marks` atom (`marks-1`, `{ clears: Clear[] }`), newest last, at most 50. `seek` drops every clear whose `at` is past the picked change's number, which undoes a clear when playback goes back before it. A clear outlives the changes it was made among: with none of them kept, it has nothing left to reset.
+Clears live in a new `marks` atom (`marks-1`, `{ clears: Clear[] }`), newest last, at most 50. After every press that moves playback, `move()` calls `pruneClears`. It drops every clear whose `at` is past the change playback now starts from: the change being typed, or else the next to play. That undoes a clear when playback goes back before it, and leaves it after Finish current or Skip to latest. `seek` itself does not change. Pruning in one place covers the row, the chip, Play turn, Play from first and From start alike. A clear outlives the changes it was made among: with none of them kept, it has nothing left to reset.
 
 Alternative: save each file's text at the press as `text` members. Rejected: up to 200 files of up to 1 MB each, a second copy of what the kept changes already hold, and seeking back past a clear would still need the clear's position.
 
@@ -62,17 +62,19 @@ Labels are base names. When base names clash, a pure `tabLabels(paths, cwd)` add
 
 ### The pin lives in module memory
 
-`live.pin` holds a path. A tab press sets it, or clears it when the tab is the playback file's. `move()` clears it, which covers every press that moves playback. Follow playback clears it. `sync` clears it when `tabsOf` no longer lists the path. Pause goes through `act()`, not `move()`, so it keeps the pin. The `view` atom then holds the pinned file's view, and a new `tabs` atom (`tabs-1`) holds `{ tabs: { path, label }[], shown?: string, pinned?: string }` for the tab row and the Viewing line.
+`live.pin` holds a path. A tab press sets it, or clears it when the tab is the playback file's. `move()` clears it, which covers every press that moves playback. Follow playback clears it. `flush` clears it when `tabsOf` no longer lists the path, or when playback shows that file. Pause goes through `act()`, not `move()`, so it keeps the pin. The `view` atom then holds the pinned file's view, and a new `tabs` atom (`tabs-1`) holds `{ tabs: { path, label }[], shown?: string, pinned?: string }` for the tab row and the Viewing line.
 
 While pinned, the header still names playback's file, number and status ("Pane names the file" stands). The Viewing line under the tabs reads "Viewing a.ts as last typed. Playback is in b.ts." with a Follow playback button.
 
+`flush` writes `tabs` and `marks` after `saved`, `view` and `listing`, and starts from their defaults (or from what a reload finds stored). The first flush then writes neither, so the writes of `saved` keep their place in the queue.
+
 ### Layout
 
-From the top: the header, the tab rows (none before the first change), the Viewing line while pinned, the code, the controls with Clear marks after Skip to latest, then the Changes line and list. The code's rows are the body less all of those. Clear marks gets no hotkey, so "Playback hotkeys" stands.
+From the top: the header, the caption (at-o3z.14), the tab rows (none before the first change), the Viewing line while pinned, the code, the controls with Clear marks after Skip to latest, then the Changes line and list. The code's rows are the body less all of those. Clear marks gets no hotkey, so "Playback hotkeys" stands.
 
 ## Risks / Trade-offs
 
-- [A tick on a large file rewritten all over costs a full `netHunks`] → `netHunks` anchors and caps its own search. If the plugin test on a 1 MB file runs over budget, cache the rows outside the current change's touched lines at the change's start, and diff only that span on each tick.
+- [A tick on a large file rewritten all over costs a full `netHunks`] → `netHunks` anchors and caps its own search. Measured on a 1.4 MB file: about 6 ms per tick and view for one edit, about 16 ms with 250 edits spread through it. A unit test holds the median under 40 ms. If that ever fails, cache the rows outside the current change's touched lines at the change's start, and diff only that span on each tick.
 - [During the beat, a `-` row made from a line typed since the baseline has no old line, so the old-side numbers below it read one higher until the deletion lands] → New-side numbers, the file's real line numbers, stay right. If a surface shows the slip, close the hunk before such rows and open another after them.
 - [The surface may draw the hunk header as a row of its own] → `frame()` takes the header's row from the code's budget. The pane tests check the row count, and the first run on desktop shows whether that budget is needed.
 - [Old-side numbers are the baseline's, which a viewer may not expect after many changes] → That is what a unified diff means. The new side carries the file's numbers.
@@ -80,7 +82,7 @@ From the top: the header, the tab rows (none before the first change), the Viewi
 
 ## Migration Plan
 
-`view` moves to `view-2`, and a reload drops the old view and redraws it from the deck. `tabs` and `marks` are new, so a reload of a session from an earlier version starts with no clears. The extension is unchanged.
+`view` moves to `view-3`, and a reload drops the old view and redraws it from the deck. `tabs` and `marks` are new, so a reload of a session from an earlier version starts with no clears. The extension is unchanged.
 
 ## Open Questions
 
