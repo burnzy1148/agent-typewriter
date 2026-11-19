@@ -68,15 +68,19 @@ gh missing (`ENOENT` from `$.process.run`) answers that replaying a pull request
 
 *at-dqb.4 consistency:* the extension's pull request replay is still `needs-spec`. This design takes "only what is already local, never fetch" and "the commits GitHub lists"; a note on at-dqb.4 proposes the same so the two frontends agree. Nothing in this change touches the extension's commands.
 
-### The replay is one lane, labeled by what was asked
+### A replay is a finished lane, as a loaded replay is
 
-The lane id is `git-replay:<label>`, the extension's `replayLane` id scheme, which cannot collide with an `agentId`. Its label is the range as typed (trimmed, whitespace runs as single spaces), the replayed default (`origin/develop..HEAD`), or `PR #123`. It is defined with `recording: false`, so `giveWay` hands over once it plays out, and with the color `colorSlot` gives any new lane. `LaneInfo` gains `kind: 'git'`, which the header draws as `(git)` where a subagent's lane draws its type.
+at-o3z.20 (`claude-code-saved-replays`, implemented before this) loads a saved replay into a finished lane `saved:<key>`, followed as by hand, a second load of the same name replacing that lane. A git replay takes the same pattern so the two read alike in the pane and share code.
 
-Building the replay is asynchronous and the deck is not touched until the history is read. Then, in one synchronous step: drop the earlier replay lane's changes and the lane (one replay lane at a time keeps a long session from stacking histories in the shared limits; a second replay is what someone does to look at something else), push the new changes in their lane, `follow` it, `seek` to its first change, unpause, and treat it as `move()` (the list keeps up again, a pinned tab from at-o3z.16 is cleared). Then `$.ui.open` as `/typewriter` does, and answer.
+The lane id is `git:<label>`, beside .20's `saved:<key>`; neither can collide with an `agentId` or with each other. Its label is the range as typed (trimmed, whitespace runs as single spaces), the replayed default (`origin/develop..HEAD`), or `PR #123`. It is defined with `recording: false`, so `giveWay` hands over once it plays out, and with the color `colorSlot` gives any new lane. `LaneInfo` gains `kind: 'git'`, which the header draws as `(git)` where a subagent's lane draws its type.
+
+Building the replay is asynchronous and the deck is not touched until the history is read. Then, in one synchronous step: when a lane `git:<label>` already exists, drop it with the lane-replacing `restore` .20 adds for reloading a name; push the new changes in their lane; follow it and seek to its first change through the same path as pressing a lane chip (.20's load path), so whether playback is paused is kept, the change being typed stays queued in its lane, the list keeps up again and a pinned tab from at-o3z.16 is cleared. Then `$.ui.open` as bare `/typewriter` does, and answer.
 
 *Alternative:* the extension's behavior, replacing the whole buffer and stopping recording. Rejected: the pane's job in Claude Code is the session, and the bead asks for the replay "in its own lane". The session keeps recording into its lanes, and auto-follow brings them back once the replay plays out and the 3 s quiet passes.
 
-*Alternative:* keep every replay as its own lane. More chips and a buffer that fills with histories; a person who wants an earlier replay back runs it again.
+*Alternative:* one replay lane at a time, a new replay replacing the last. Fewer chips, but it would differ from .20's loaded replays, where each name keeps its lane; the shared limits already bound what replays can hold.
+
+*Alternative:* unpause on a replay, as the extension's interactive replay starts playing. Rejected to match .20's load, which keeps pause state as following a lane by hand does; a paused pane shows the replay's first change cued.
 
 ### Limits
 
@@ -89,32 +93,32 @@ Building the replay is asynchronous and the deck is not touched until the histor
 - `commit?: { sha: string; subject: string }`, present exactly on replayed changes; no `tool`, no call links;
 - `caption` = the commit's subject, through `normalizeCaption`, so the caption band and hover card need no new code.
 
-Ids are `git:<sha>:<path>`, which no `tool_use_id` matches, so the text family, `changeById` and the conversation chip (which looks up by call id) work without a branch. `scrollTargets` returns nothing for a change without a call; register draws no Show in conversation and no ↗ when it is empty.
+Ids are `git:<label>/<sha>:<path>`, namespaced by lane as .20's `saved:<key>/<id>` are, which no `tool_use_id` matches, so the text family, `changeById` and the conversation chip (which looks up by call id) work without a branch. `scrollTargets` returns nothing for a change without a call; register draws no Show in conversation and no ↗ when it is empty.
 
 A delete plays as removing the file's whole text, which the long-deletion rule shows in one step, and its row reads `Delete`. A rename types from the old path's text in a change named by the new path; at-o3z.16's tabs replace the old path's tab with the new one, and a delete closes its tab. A pure rename has nothing to type and finishes at once, still listed. Too-large changes are skipped rather than listed as Too large: their size is known before reading, and listing history the pane will not type adds rows without content.
 
 ### Chapters and rows
 
-`chaptersOf` puts a change with `commit` in a chapter keyed `commit:<sha>`, with header label `{ title: sha.slice(0,7), prompt: subject, count, play: 'Play commit' }` through the same `headerLabel` cutting as a turn. Chapter ordering is unchanged (earliest kept change), so a replay's commits follow the session's earlier turns. `rowLabel` takes `kind` in the tool column when there is no tool: `Add`, `Modify`, `Delete`, `Rename`. By-file grouping needs nothing new: a replayed change's absolute path is `cwd` joined with the repo-relative-to-cwd path, the same key a session `Edit` of that file has.
+`chaptersOf` puts a change with `commit` in a chapter keyed `git:<label>/<sha>`, so two replays holding one commit keep separate chapters, with header label `{ lane: label, title: sha.slice(0,7), prompt: subject, count, play: 'Play commit' }` through the same `headerLabel` cutting as a turn; the lane label goes first, where .20 puts a loaded replay's name before `Turn n`. Chapter ordering is unchanged (earliest kept change), so a replay's commits follow the session's earlier turns. `rowLabel` takes `kind` in the tool column when there is no tool: `Add`, `Modify`, `Delete`, `Rename`. By-file grouping needs nothing new: a replayed change's absolute path is `cwd` joined with the repo-relative-to-cwd path, the same key a session `Edit` of that file has.
 
 ### Commands
 
-`$.command.register({ name: 'typewriter', description: 'Open the Agent Typewriter pane, or replay git history', argumentHint: '[replay [range] | pr <number>]' })`. `command.run` splits `args` on the first whitespace: empty opens the pane (today's behavior), `replay` and `pr` replay, anything else answers usage. A terminal-only session answers `TERMINAL_POINTER` before parsing. `live.replaying` refuses a second replay while one is read; it is module memory, so a reload drops an in-flight read, whose results never reach the deck.
+at-o3z.20 adds the word table (`claude-code/hooks/saved.ts`, or a `commands.ts` beside it): `args` split at the first whitespace into a word, matched ignoring case, and the rest; bare opens the pane; a word it does not take answers with every word it takes; a terminal-only session answers `TERMINAL_POINTER` for every form before parsing. This change adds `replay` and `pr` rows to that table, so the usage answer and the command hint (`argumentHint`) name all six words, and adds nothing of its own for unknown words. The delta therefore has no usage requirement: .20's *`/typewriter` takes a word* names its four words, and task 7.2 adds a MODIFIED block of it naming `replay` and `pr` once .20 archives. `live.replaying` refuses a second replay while one is read; it is module memory, so a reload drops an in-flight read, whose results never reach the deck.
 
 ### State shapes
 
-- `SavedChange` gains `fromPath?`, `commit?` and the wider `kind`. `Saved` takes the tag after at-o3z.15's `saved-5` (expected `saved-6`); `savedFrom` reads every older tag, where no change has a commit. `SavedLane` gains `kind?: 'git'`.
+- `SavedChange` gains `fromPath?`, `commit?` and the wider `kind`. `Saved` takes the tag after at-o3z.20's `saved-6` (expected `saved-7`); `savedFrom` reads every older tag, where no change has a commit. `SavedLane` gains `kind?: 'git'`.
 - `Listing`'s `Row` gains `kind` and `commit?: { sha, subject }` (new tag); `View` gains nothing, since the header's lane fields come from at-o3z.15 and `(git)` rides on its `kind`.
 - Replayed changes' texts go in the `text` family like any change, so they survive a reload and count toward the same budget.
 
 ### Order with the in-flight changes
 
-Implementation comes after at-o3z.15 (lanes are required), and in the plugin queue after .16, .6, .17, .18 and .20. Effects:
+Implementation comes after at-o3z.15 (lanes are required) and .20 (the word table and lane-replacing restore), and in the plugin queue after .16, .6, .17 and .18. Effects:
 - **.15:** its *A lane per loop* says every kept change belongs to "the lane of the loop that made it", and *Running and finished lanes* names only Main and subagents. This delta's *A replay has its own lane* adds the replay's lane; once .15 archives, task 7.1 adds MODIFIED blocks so those two requirements name it.
 - **.16:** delete closes a tab, rename moves it; Play commit and starting a replay go through `move()`.
-- **.20 (saved replays):** its saved shape must carry `kind`, `fromPath` and `commit` so a saved git replay loads with its chapters. Its design is in flight; task 7.2 checks it.
+- **.20 (saved replays):** `/typewriter save` keeps "every change this session recorded", which a git-replayed change is not: save leaves out changes with a `commit` as it leaves out loaded ones (task 3.6). `replay` and `pr` join its word table, and its *`/typewriter` takes a word* gets a MODIFIED block once it archives (task 7.2). Lane, id and chapter naming follow its `saved:<key>` pattern.
 - **.19 (scrubber):** a gap between commits plays the part of a gap between turns.
-- No MODIFIED block here touches a requirement any in-flight delta modifies (checked against .15, .16, .6, .17 and .18; .19 and .20 had no delta pushed when this was written).
+- No MODIFIED block here touches a requirement any in-flight delta modifies (checked against .15, .16, .6, .17, .18 and .20; .19 had no delta pushed when this was written). .20 modifies *Pane opens on request or on the first change*, which this delta leaves alone.
 
 ## Risks / Trade-offs
 
@@ -131,4 +135,4 @@ Within a session, a reload into this version reads the previous `saved` tag; no 
 
 ## Open Questions
 
-None blocking. The owner may prefer the extension's "replace the buffer" model or keeping several replay lanes; both are local to the replay's lane step.
+None blocking. The owner may prefer the extension's "replace the buffer" model; it is local to the replay's lane step.

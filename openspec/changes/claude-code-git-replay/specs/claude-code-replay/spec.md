@@ -86,13 +86,6 @@ While a replay is being read, another `/typewriter replay` or `/typewriter pr` S
 - **WHEN** a replay of a long range is still being read and the user runs `/typewriter pr 123`
 - **THEN** the answer says a replay is already being read, and the first replay goes on
 
-### Requirement: Unknown subcommands answer with usage
-`/typewriter` followed by anything other than `replay` or `pr` SHALL answer with how to use it and SHALL NOT open the pane.
-
-#### Scenario: Unknown subcommand
-- **WHEN** the user runs `/typewriter rewind`
-- **THEN** the answer names `/typewriter`, `/typewriter replay [range]` and `/typewriter pr <number>`, and the pane does not open
-
 ### Requirement: What a replay keeps
 Only regular files inside the session's working directory SHALL be replayed, each named as the pane names a file there. A file a commit added SHALL replay as an add, a removed file as a delete, a file git detects at its default similarity as renamed as a rename, and any other changed file as a modify. When one side of a rename is skipped or lies outside the working directory, the other side SHALL replay as a delete of the old path or an add of the new one.
 
@@ -152,19 +145,27 @@ While more than one lane holds a kept change and the replay's lane is followed, 
 - **WHEN** Main holds changes and the `main..feature` replay's lane is followed
 - **THEN** the header begins with that lane's color and `main..feature (git)`
 
-### Requirement: A new replay replaces the last
-A new replay SHALL replace the earlier replay's lane and its changes, and SHALL leave the session's own lanes as they are.
+### Requirement: Replaying the same range again replaces its lane
+A replay whose label a kept replay's lane already has SHALL replace that lane's changes with the new replay's and play it from its first change. A replay with another label SHALL get a lane of its own. Other lanes SHALL keep their changes and positions.
 
 #### Scenario: Replay again
-- **WHEN** a replay of `main..feature` is kept and the user runs `/typewriter pr 123`
-- **THEN** the `main..feature` lane and its changes are gone, and a lane labeled `PR #123` holds the pull request's changes
+- **WHEN** a replay of `main..feature` has played halfway and the user runs `/typewriter replay main..feature` again
+- **THEN** the `main..feature` lane holds the range's changes once, read afresh, and plays from its first change
+
+#### Scenario: Two replays
+- **WHEN** the user replays `main..feature` and then runs `/typewriter pr 123`
+- **THEN** each has a lane of its own, and `PR #123` is followed
 
 ### Requirement: A replay starts playing
-When a replay is built, the pane SHALL open as `/typewriter` opens it, the replay's lane SHALL be followed, and its first change SHALL start typing, even if playback was paused. Starting a replay SHALL count as moving playback, as pressing a change in the list does.
+When a replay is built, the pane SHALL open as bare `/typewriter` opens it, and the replay's lane SHALL be followed from its first change, as following a lane by hand does: a change being typed stays queued in its own lane, and whether playback is paused is kept.
+
+#### Scenario: Replay while Main types
+- **WHEN** Main is typing change #4 and the user replays a range
+- **THEN** the replay's lane is followed and its first change is typed, and Main's change #4 waits in Main
 
 #### Scenario: Replay while paused
-- **WHEN** playback is paused on a change of Main and the user replays a range
-- **THEN** playback resumes with the replay's first change, and Main's queued changes wait in its lane
+- **WHEN** playback is paused and the user replays a range
+- **THEN** playback stays paused, and the pane shows the replay's first change cued
 
 #### Scenario: Pane closed
 - **WHEN** the pane is closed and the user runs `/typewriter pr 123` in the desktop app
@@ -178,11 +179,15 @@ In a session that draws only on the terminal surface, `/typewriter replay` and `
 - **THEN** git is not run, nothing is replayed, and the answer points to the Agent Typewriter extension for VS Code
 
 ### Requirement: Replayed commits are chapters
-While By turn is chosen, each replayed commit with a kept change SHALL be a chapter of its own, holding that commit's kept changes in their order. Its header SHALL show the commit's hash cut to 7 characters, its subject on one line, cut as a turn's prompt is, how many of its changes the pane keeps, and a Play commit button that acts as Play turn does. Commit chapters SHALL be ordered among the turns' chapters by their earliest kept change, as chapters are.
+While By turn is chosen, each replayed commit with a kept change SHALL be a chapter of its own, holding that commit's kept changes in their order. Its header SHALL name the replay's lane, then show the commit's hash cut to 7 characters, its subject on one line, cut as a turn's prompt is, how many of its changes the pane keeps, and a Play commit button that acts as Play turn does. Commit chapters SHALL be ordered among the turns' chapters by their earliest kept change, as chapters are.
 
 #### Scenario: Two commits
-- **WHEN** a replay holds two changes from commit `1a2b3c4d` "Add the limiter" and one from `5e6f7a8b` "Guard signup"
-- **THEN** the list shows a chapter headed `1a2b3c4`, "Add the limiter", `2 changes` and Play commit, then one headed `5e6f7a8`, "Guard signup", `1 change` and Play commit
+- **WHEN** a replay of `main..feature` holds two changes from commit `1a2b3c4d` "Add the limiter" and one from `5e6f7a8b` "Guard signup"
+- **THEN** the list shows a chapter headed `main..feature`, `1a2b3c4`, "Add the limiter", `2 changes` and Play commit, then one headed `main..feature`, `5e6f7a8`, "Guard signup", `1 change` and Play commit
+
+#### Scenario: A commit in two replays
+- **WHEN** `main..feature` and `PR #123` both hold changes of commit `1a2b3c4d`
+- **THEN** each replay has its own chapter for that commit, holding its own lane's changes
 
 #### Scenario: Play commit
 - **WHEN** every change has played and the user presses Play commit on the second commit's chapter
