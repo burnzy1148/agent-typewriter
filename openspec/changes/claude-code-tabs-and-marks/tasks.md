@@ -2,8 +2,8 @@
 
 ## 1. Share the net diff
 
-- [ ] 1.1 Move `netHunks` and the helpers and constants it uses from `src/highlights.ts` to a new `src/netHunks.ts` that imports neither `vscode` nor Node built-ins, and re-export `netHunks` from `highlights.ts`. Verify with `npm test` (the highlight tests pass unchanged) and `npm run typecheck`.
-- [ ] 1.2 Add `netHunks` to `CORE_ENTRY` and the header in `scripts/build-claude-code.mjs`, run `npm run build:claude-code`, and add `src/netHunks.ts` to the shared core list in `CLAUDE.md`. Verify the bundle builds and `npm run typecheck:claude-code` passes.
+- [x] 1.1 Move `netHunks` and the helpers and constants it uses from `src/highlights.ts` to a new `src/netHunks.ts` that imports neither `vscode` nor Node built-ins; `highlights.ts` and `test/highlights.test.ts` import it from there. Verify with `npm test` (the highlight tests pass) and `npm run typecheck`.
+- [x] 1.2 Add `netHunks` to `CORE_ENTRY` and the header in `scripts/build-claude-code.mjs`, run `npm run build:claude-code`, and add `src/netHunks.ts` to the shared core list in `CLAUDE.md`. Verify the bundle builds and `npm run typecheck:claude-code` passes.
 
 ## 2. Diff rows and the view
 

@@ -112,17 +112,6 @@ interface Marks {
 }
 /** Marks that turn `current` back into `baseline`: a net diff, so text added and later removed leaves none. */
 declare function diffMarks(baseline: string, current: string): Marks;
-/**
- * Hunks that turn `baseline` into `current`, in planHunks' form, from a
- * patience diff. The texts are anchored on lines both hold only once; a
- * stretch between anchors too big for the planner to be sure of finishing is
- * split the same way, on lines held once within it, until none has such a
- * line. So a net diff that built up over many changes stays exact where one
- * planHunks call would pass its edit limit and mark a single region from the
- * first difference to the last, while a stretch the planner can finish gets
- * its minimal diff: a line moved past repeated braces is marked, not the braces.
- */
-declare function netHunks(baseline: string, current: string): Hunk[];
 /** Marks by line: what the editor decorates. Lines and columns are the same in LF and CRLF documents. */
 interface LineMarks {
     /** Lines holding added text, ascending. */
@@ -224,6 +213,20 @@ declare function baselines(events: readonly ChangeEvent[], through: number, clea
     seq: number;
     paths: readonly string[];
 }, read?: ReadText): Map<string, string>;
+
+// src/netHunks.ts
+
+/**
+ * Hunks that turn `baseline` into `current`, in planHunks' form, from a
+ * patience diff. The texts are anchored on lines both hold only once; a
+ * stretch between anchors too big for the planner to be sure of finishing is
+ * split the same way, on lines held once within it, until none has such a
+ * line. So a net diff that built up over many changes stays exact where one
+ * planHunks call would pass its edit limit and mark a single region from the
+ * first difference to the last, while a stretch the planner can finish gets
+ * its minimal diff: a line moved past repeated braces is marked, not the braces.
+ */
+declare function netHunks(baseline: string, current: string): Hunk[];
 
 // src/numberSetting.ts
 
@@ -736,3 +739,4 @@ export { Timeline, type ChangeEvent, type NewChangeEvent };
 export { resolvePlaybackSettings, resolveNumber, recordGetter, PLAYBACK_NUMBERS, PLAYBACK_SWITCHES, type PlaybackSettings, type SettingGetter, type NumberSpec };
 export { resolveCharsPerMinute, DEFAULT_CHARS_PER_MINUTE };
 export { resolveReadPauseSeconds, DEFAULT_READ_PAUSE_SECONDS, MAX_READ_PAUSE_SECONDS };
+export { netHunks };

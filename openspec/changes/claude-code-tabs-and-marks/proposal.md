@@ -31,7 +31,7 @@ None.
 
 ## Impact
 
-- `src/highlights.ts`: `netHunks` and the helpers it uses move to a new `src/netHunks.ts`, which imports neither `vscode` nor Node built-ins, and `highlights.ts` re-exports it. The extension's behavior is unchanged.
+- `src/highlights.ts`: `netHunks` and the helpers it uses move to a new `src/netHunks.ts`, which imports neither `vscode` nor Node built-ins. `highlights.ts` and its tests import it from there. The extension's behavior is unchanged.
 - `scripts/build-claude-code.mjs`: the bundle's entry adds `netHunks`. `claude-code/hooks/core.mjs` and `core.d.mts` are rebuilt.
 - `claude-code/hooks/replay.ts`: per-file baselines and clears; diff rows for the view; the deletion preview beat in `tick`; the tab list; the view of a pinned file.
 - `claude-code/hooks/register.tsx`: the tab row, the pinned line with Follow playback, Clear marks, the Code element under `format: 'diff'`, and new `tabs` and `marks` atoms.

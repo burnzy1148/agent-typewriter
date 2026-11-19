@@ -26,7 +26,7 @@ The design is the at-o3z.8 mockup's Main board (tabs, the Viewing line with Foll
 
 ### Share `netHunks` through the bundle
 
-Move `netHunks`, `splitLines`, `uniqueShared`, `increasingRun` and their constants from `src/highlights.ts` to `src/netHunks.ts`. `highlights.ts` imports and re-exports them, so the extension's callers and tests stay as they are. Add `netHunks` to `CORE_ENTRY` and rebuild `core.mjs`.
+Move `netHunks`, `splitLines`, `uniqueShared`, `increasingRun` and their constants from `src/highlights.ts` to `src/netHunks.ts`, which `highlights.ts` and its tests import. A re-export from `highlights.ts` would not do: `timeline.ts` imports types from it, so the bundle's declarations take it in, and they cannot carry an `export … from` line. Add `netHunks` to `CORE_ENTRY` and rebuild `core.mjs`.
 
 Alternative: a line diff of the plugin's own, or `diffLines` from the bundled `diff` package. Rejected: `diffLines` is quadratic on big rewrites, and the extension already solved that with anchors. Two diffs would also mark the same file differently in the two frontends.
 
