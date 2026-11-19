@@ -156,3 +156,24 @@ export function seed(on: On, saved: unknown, texts: Record<string, string> = {})
     return { value: { value: texts[id], version: stored.value.version } };
   });
 }
+
+/** The text a code view's diff rows show: its context and added rows, markers dropped. */
+export function viewText(v: View): string {
+  return v.rows
+    .filter((r) => !r.startsWith('-'))
+    .map((r) => r.slice(1))
+    .join('\n');
+}
+
+/**
+ * A Code element's diff source read back: the text its context and added rows
+ * show, markers dropped, and the line number its hunk header starts the text at.
+ */
+export function readDiff(source: string): { text: string; startLine: number; rows: string[] } {
+  const [header, ...rows] = source.split('\n');
+  const m = /^@@ -\d+,\d+ \+(\d+),(\d+) @@$/.exec(header ?? '');
+  if (!m) throw new Error(`not a diff hunk: ${JSON.stringify(source.slice(0, 80))}`);
+  const text = rows.filter((r) => !r.startsWith('-')).map((r) => r.slice(1)).join('\n');
+  return { text, startLine: Number(m[2]) === 0 ? Number(m[1]) + 1 : Number(m[1]), rows };
+}
+

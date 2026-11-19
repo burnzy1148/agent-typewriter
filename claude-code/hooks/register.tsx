@@ -8,27 +8,32 @@
 // only what must outlive a reload (`saved`, and each kept change's texts in
 // the `text` family with their captions, the agents' links in `agents`, the
 // main conversation's turns in `turns`, how the person groups the changes list
-// in `grouping`) and what the pane draws (`view`, and the changes list in
-// `listing`, which changes far less often).
+// in `grouping`, what Clear marks pressed in `marks`) and what the pane draws
+// (`view`, the changes list in `listing`, which changes far less often, and
+// the file tabs in `tabs`).
 
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, Register, UiOpenResult } from 'claude-code';
 
-import type { AgentLink, Grouping, Turns } from '../types';
+import type { AgentLink, Clear, Grouping, Marks, Tabs, Turns } from '../types';
 
 import { normalizeEol } from './core.mjs';
+import { tabLabels, tabRows } from './marks';
 import {
   MAX_REPLAY_BYTES,
   SAVED_SHAPE,
   TICK_MS,
   captionLines,
   captionsOf,
+  cellWidth,
   changeById,
   chaptersOf,
   chipLabel,
+  clearMarks,
   enqueue,
   fileGroupsOf,
   fileHeaderLabel,
+  fileKey,
   finish,
   forgetLoop,
   frame,
@@ -43,6 +48,7 @@ import {
   newDeck,
   playOptions,
   promptOf,
+  pruneClears,
   relativePath,
   replayFromStart,
   restore,
@@ -54,6 +60,7 @@ import {
   seek,
   setCaption,
   skipToLatest,
+  tabsOf,
   tick,
   togglePause,
   turnChipLabel,
@@ -97,13 +104,15 @@ const BAND_LINES = 3;
 /** Most lines a row's hover card takes, and the columns it may take at most. */
 const CARD_LINES = 6;
 const CARD_COLUMNS = 60;
+/** Columns a tab takes beyond its label, for a desktop's button padding. */
+const TAB_PADDING = 2;
 
 // Change a tag when its value's fields change: a reload then starts fresh
 // instead of reading what an earlier version stored. `saved` reads its earlier
 // tag through savedFrom.
 const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
 const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
-const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-2' });
+const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-3' });
 const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-4' });
 const agentsRef = { plugin: 'agent-typewriter', key: 'agents' } as const;
 const AGENTS_SHAPE = 'agents-1';
@@ -113,6 +122,14 @@ const TURNS_SHAPE = 'turns-1';
 const NO_TURNS: Turns = { next: 1, turns: [] };
 const turns = atom(turnsRef, NO_TURNS, { shape: TURNS_SHAPE });
 const grouping = atom({ plugin: 'agent-typewriter', key: 'grouping' } as const, 'turn' as Grouping, { shape: 'grouping-1' });
+const marksRef = { plugin: 'agent-typewriter', key: 'marks' } as const;
+const MARKS_SHAPE = 'marks-1';
+const NO_MARKS: Marks = { clears: [] };
+const marks = atom(marksRef, NO_MARKS, { shape: MARKS_SHAPE });
+const tabsRef = { plugin: 'agent-typewriter', key: 'tabs' } as const;
+const TABS_SHAPE = 'tabs-1';
+const NO_TABS: Tabs = { tabs: [] };
+const tabs = atom(tabsRef, NO_TABS, { shape: TABS_SHAPE });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -127,10 +144,16 @@ type Live = {
   narration: Narration;
   /** Captions settled for calls not yet recorded as changes, by `tool_use_id`, oldest first, at most MAX_WAITING_CAPTIONS. */
   captions: Map<string, string>;
-  /** What was last written to `saved`, `view` and `listing`, to skip writes that change nothing. */
+  /** What was last written to `saved`, `view`, `listing`, `tabs` and `marks`, to skip writes that change nothing. */
   savedJson: string;
   viewJson: string;
   listingJson: string;
+  tabsJson: string;
+  marksJson: string;
+  /** What Clear marks pressed and a move of playback has not undone, oldest first; kept in $.state (`marks`) for a reload. */
+  clears: Clear[];
+  /** The file whose tab the person pinned; undefined while the code view follows playback. Not kept across a reload. */
+  pin?: string;
   /** The changes list's first row once the person scrolled it; undefined while it follows playback. */
   listTop?: number;
   /** The list as the pane last drew it. */
@@ -163,7 +186,7 @@ type Live = {
 
 const text = { plugin: 'agent-typewriter', key: 'text' } as const;
 
-/** Queues a write of what changed since the last one: cleared texts, `saved`, `view`, `listing`. */
+/** Queues a write of what changed since the last one: cleared texts, `saved`, `view`, `listing`, `tabs`, `marks`. */
 function sync($: EngineInterface, live: Live): void {
   live.writes = live.writes.then(() => flush($, live)).catch(() => undefined);
 }
@@ -193,7 +216,19 @@ async function flush($: EngineInterface, live: Live): Promise<void> {
     live.savedJson = savedJson;
     await update($, saved, () => nextSaved);
   }
-  const nextView = viewOf(live.deck);
+  // A pin ends once its file has no tab, or once playback shows that file.
+  const tabList = tabsOf(live.deck);
+  const pin = live.pin;
+  if (pin !== undefined) {
+    const shown = live.deck.shown?.path;
+    if ((shown !== undefined && fileKey(shown) === fileKey(pin)) || !tabList.some((x) => fileKey(x.path) === fileKey(pin))) live.pin = undefined;
+  }
+  const nextTabs: Tabs = {
+    tabs: tabList.map(({ path, last }) => ({ path, last })),
+    ...(live.deck.shown && { shown: live.deck.shown.path }),
+    ...(live.pin !== undefined && { pinned: live.pin }),
+  };
+  const nextView = viewOf(live.deck, { clears: live.clears, ...(live.pin !== undefined && { pin: live.pin }), opts: live.opts });
   const viewJson = JSON.stringify(nextView);
   if (viewJson !== live.viewJson) {
     live.viewJson = viewJson;
@@ -204,6 +239,17 @@ async function flush($: EngineInterface, live: Live): Promise<void> {
   if (listingJson !== live.listingJson) {
     live.listingJson = listingJson;
     await update($, listing, () => nextListing);
+  }
+  const tabsJson = JSON.stringify(nextTabs);
+  if (tabsJson !== live.tabsJson) {
+    live.tabsJson = tabsJson;
+    await update($, tabs, () => nextTabs);
+  }
+  const nextMarks: Marks = { clears: live.clears };
+  const marksJson = JSON.stringify(nextMarks);
+  if (marksJson !== live.marksJson) {
+    live.marksJson = marksJson;
+    await update($, marks, () => nextMarks);
   }
 }
 
@@ -230,6 +276,14 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     changes.push({ ...c, before, after, ...caption });
   }
   live.deck = restore(was, changes, live.opts, live.cwd);
+  const storedMarks = (await $.state.get(marksRef)).value;
+  if (storedMarks?.shape === MARKS_SHAPE) {
+    live.clears = storedMarks.value.clears;
+    live.marksJson = JSON.stringify(storedMarks.value);
+  }
+  // The tabs as an earlier load left them, so the first flush writes them only when they change.
+  const storedTabs = (await $.state.get(tabsRef)).value;
+  if (storedTabs?.shape === TABS_SHAPE) live.tabsJson = JSON.stringify(storedTabs.value);
   const stored = (await $.state.get(agentsRef)).value;
   if (stored?.shape === AGENTS_SHAPE) {
     // Spawns seen since the module loaded are newer than what was stored.
@@ -482,10 +536,26 @@ async function reveal($: EngineInterface, live: Live, id: string): Promise<void>
   $.ui.invalidate('ui.render');
 }
 
-/** Applies a control's action that moves playback; the changes list follows playback again. */
+/**
+ * Applies a control's action that moves playback: the changes list and the
+ * code view follow playback again, and a clear made after where playback now
+ * starts is undone.
+ */
 function move($: EngineInterface, live: Live, fn: (deck: Deck) => void): void {
   live.listTop = undefined;
-  act($, live, fn);
+  live.pin = undefined;
+  act($, live, (deck) => {
+    fn(deck);
+    live.clears = pruneClears(deck, live.clears);
+  });
+}
+
+/** A press of the tab for `path`: pins that file, or follows playback again when playback shows it. */
+function pressTab($: EngineInterface, live: Live, path: string): void {
+  const shown = live.deck.shown?.path;
+  act($, live, () => {
+    live.pin = shown !== undefined && fileKey(shown) === fileKey(path) ? undefined : path;
+  });
 }
 
 /**
@@ -522,6 +592,10 @@ export const register: Register = (on, options) => {
     savedJson: '',
     viewJson: '',
     listingJson: '',
+    // What the atoms hold before anything is written; load() reads what an earlier load wrote.
+    tabsJson: JSON.stringify(NO_TABS),
+    marksJson: JSON.stringify(NO_MARKS),
+    clears: [],
     writes: Promise.resolve(),
     turns: new Map(),
     agents: new Map(),
@@ -679,6 +753,7 @@ export const register: Register = (on, options) => {
     const l = await read($, listing);
     const t = await read($, turns);
     const g = await read($, grouping);
+    const tb = await read($, tabs);
     const queued = v.queued > 0 ? ` · ${v.queued} queued` : '';
     const name = v.path === undefined ? undefined : relativePath(v.path, live.cwd);
     const current = l.rows.findIndex((r) => r.id === l.current);
@@ -695,12 +770,27 @@ export const register: Register = (on, options) => {
 
     // The shown change's caption, in quotes, between the header and the code.
     const band = v.caption ? captionLines(`“${v.caption}”`, bodyColumns - 2, BAND_LINES) : [];
-    // The code takes what the header, the caption, the controls and the list leave.
-    const rows = Math.max(3, bodyRows - 3 - band.length - (height > 0 ? height + 1 : 0));
+    // The file tabs, in at most two rows, under the caption: the code view's file marked, the files typed longest ago left out first.
+    const labels = tabLabels(tb.tabs.map((x) => relativePath(x.path, live.cwd)));
+    const codeFile = tb.pinned ?? tb.shown;
+    const showing = tb.tabs.findIndex((x) => codeFile !== undefined && fileKey(x.path) === fileKey(codeFile));
+    const priority = tb.tabs.map((_, k) => k).sort((x, y) => (x === showing ? -1 : y === showing ? 1 : tb.tabs[y]!.last - tb.tabs[x]!.last));
+    const tabLayout = tabRows(
+      labels.map((label) => cellWidth(label) + TAB_PADDING),
+      priority,
+      bodyColumns,
+      (left) => `${left} more`.length,
+    );
+    const pinnedName = v.pinned && relativePath(v.pinned.path, live.cwd);
+    const pinnedLabel = v.pinned && (labels[tb.tabs.findIndex((x) => fileKey(x.path) === fileKey(v.pinned!.path))] ?? pinnedName);
+    const above = band.length + tabLayout.rows.length + (v.pinned ? 1 : 0);
+    // The code takes what the header, the caption, the tabs, the pinned line, the controls and the list leave.
+    const rows = Math.max(3, bodyRows - 3 - above - (height > 0 ? height + 1 : 0));
     const columns = Math.max(10, bodyColumns - GUTTER);
-    const shown = v.path !== undefined && !v.isTooLarge ? frame(v, rows, columns) : undefined;
-    // Under the header and the caption, the code (or its one-line note), the controls and the "Changes" line.
-    const firstRow = 1 + band.length + (shown ? shown.source.split('\n').length : 1) + 2;
+    const isCodeTooLarge = v.pinned ? v.pinned.isTooLarge : v.isTooLarge;
+    const shown = v.path !== undefined && !isCodeTooLarge ? frame(v, rows, columns) : undefined;
+    // Under the header, the caption, the tabs and the pinned line: the code (or its one-line note), the controls and the "Changes" line.
+    const firstRow = 1 + above + (shown ? shown.source.split('\n').length : 1) + 2;
     live.list = { top, height, count, firstRow };
     const isPaused = v.status === 'paused';
 
@@ -729,10 +819,32 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         )}
+        {tabLayout.rows.map((row, r) => (
+          <Box key={`tabs:${r}`} flexDirection="row" gap={1}>
+            {row.map((k) => {
+              const tab = tb.tabs[k]!;
+              const isShowing = k === showing;
+              return (
+                <Button key={`tab:${tab.path}`} plain dimColor={!isShowing} label={isShowing ? `${labels[k]}, shown` : `Show ${labels[k]} as last typed`} onPress={() => pressTab($, live, tab.path)}>
+                  {isShowing ? <Text bold>{labels[k]}</Text> : labels[k]}
+                </Button>
+              );
+            })}
+            {r === tabLayout.rows.length - 1 && tabLayout.left > 0 && <Text dimColor>{`${tabLayout.left} more`}</Text>}
+          </Box>
+        ))}
+        {v.pinned && (
+          <Box flexDirection="row" gap={1}>
+            <Text dimColor>{`Viewing ${pinnedLabel} as last typed. Playback is in ${name}.`}</Text>
+            <Button key="follow" onPress={() => act($, live, () => (live.pin = undefined))}>
+              Follow playback
+            </Button>
+          </Box>
+        )}
         {shown ? (
-          <Code source={shown.source} path={v.path} startLine={shown.startLine} wrap="truncate-end" />
-        ) : v.isTooLarge ? (
-          <Text>{name} is too large to replay.</Text>
+          <Code source={shown.source} path={v.pinned?.path ?? v.path} format="diff" wrap="truncate-end" />
+        ) : isCodeTooLarge ? (
+          <Text>{pinnedName ?? name} is too large to replay.</Text>
         ) : (
           <Text dimColor>Edits Claude makes with Edit or Write are typed out here.</Text>
         )}
@@ -748,6 +860,9 @@ export const register: Register = (on, options) => {
           </Button>
           <Button key="skip" hotkey="l" onPress={() => move($, live, (d) => skipToLatest(d, live.opts))}>
             Skip to latest
+          </Button>
+          <Button key="clear-marks" onPress={() => act($, live, (d) => (live.clears = clearMarks(d, live.clears)))}>
+            Clear marks
           </Button>
         </Box>
         {count > 0 && (

@@ -394,12 +394,13 @@ test("the list's wheel scrolls the right rows with a band over the code", async 
   expect((await look($)).band).toBe('“Change 1.”');
   const before = await numbers();
   expect(before).toEqual([1, 2, 3, 4, 5, 6, 7]);
-  // Rows: the header, the band, the code, the controls, the Changes line, then the list.
+  // Rows: the header, the band, the file tab, the code (its hunk header, and the one line of the file as it was before it was
+  // written), the controls, the Changes line, then the list.
   const wheel = (row: number) =>
     scroll({ component: 'Pane', requestId: PANE_ID, offset: 0, by: 5, bodyRows: 20, contentRows: 19, origin: { kind: 'person' }, pointer: { row, column: 4 } });
-  await wheel(4);
+  await wheel(6);
   expect(await numbers()).toEqual(before);
-  await wheel(5);
+  await wheel(7);
   expect(await numbers()).toEqual([5, 6, 7, 8, 9, 10, 11, 12]);
   await w.clock.advance(0);
 });

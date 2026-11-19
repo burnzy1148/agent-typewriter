@@ -6,9 +6,10 @@
 // what the hooks write to $.state.
 
 import { Timeline, authoringOrder, backspaceStep, countChanges, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
-import type { CallLinks, Listing, Row, Saved, SavedChange, Tool, TurnInfo, Turns, View } from '../types';
+import type { CallLinks, Clear, Listing, Row, Saved, SavedChange, Tab, Tool, TurnInfo, Turns, View } from '../types';
+import { diffRows, lineAt, lineStarts, type DiffRow } from './marks';
 
-export type { CallLinks, Listing, Row, Saved, SavedChange, Tool, TurnInfo, Turns, View };
+export type { CallLinks, Clear, Listing, Row, Saved, SavedChange, Tab, Tool, TurnInfo, Turns, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
@@ -29,6 +30,10 @@ const MAX_STEPS_PER_TICK = 2000;
 /** The view keeps this many lines and columns around the caret. */
 export const VIEW_LINES = 120;
 export const VIEW_COLUMNS = 400;
+/** Ticks the lines a long deletion removes are drawn removed before it lands: 400 ms. */
+export const PREVIEW_TICKS = 8;
+/** Most clears kept; past this the oldest go first. */
+export const MAX_CLEARS = 50;
 
 /**
  * One recorded change, texts normalized to LF. A too-large change keeps no
@@ -111,6 +116,12 @@ export type Playback = {
   caret: number;
   /** Typing budget carried over from earlier ticks, in code units. */
   credit: number;
+  /**
+   * Ticks left of the beat before the current hunk's long deletion lands,
+   * while its lines are drawn removed; 0 once the beat is over, absent before
+   * it starts.
+   */
+  preview?: number;
 };
 
 /** What the pane shows, and the id and caption of the change it shows: the playing change, a change cued to play next, or the last one played. */
@@ -362,6 +373,8 @@ function keystroke(p: Playback, budget: number): { p: Playback; used: number; en
   const h = p.hunks[p.hunk]!;
   const remaining = h.deleteText.length - p.deleted;
   if (remaining > 0) {
+    // A long deletion first waits a beat of its own, its lines drawn removed.
+    if (isLongDeletion(h) && p.preview === undefined) return { p: { ...p, preview: PREVIEW_TICKS }, used: 0, endsTick: true };
     const n = isLongDeletion(h) ? remaining : backspaceStep(h.deleteText, remaining, budget);
     const end = h.offset + remaining;
     const text = p.text.slice(0, end - n) + p.text.slice(end);
@@ -379,7 +392,7 @@ function settle(p: Playback): Playback {
   for (;;) {
     const h = q.hunks[q.hunk];
     if (!h || q.deleted < h.deleteText.length || q.typed < h.insertText.length) return q;
-    q = { ...q, hunk: q.hunk + 1, deleted: 0, typed: 0, caret: caretBefore(q.hunks[q.hunk + 1], q.caret) };
+    q = { ...q, hunk: q.hunk + 1, deleted: 0, typed: 0, caret: caretBefore(q.hunks[q.hunk + 1], q.caret), preview: undefined };
   }
 }
 
@@ -395,6 +408,12 @@ export function tick(deck: Deck, opts: PlayOptions): boolean {
   const rate = (opts.charsPerMinute / 60) * (TICK_MS / 1000);
   let budget = deck.playing.credit + rate;
   let p = settle(deck.playing);
+  // The beat before a long deletion counts down; on its last tick the deletion lands.
+  if (p.preview !== undefined && p.preview > 1) {
+    deck.playing = { ...p, preview: p.preview - 1 };
+    return true;
+  }
+  if (p.preview === 1) p = { ...p, preview: 0 };
   for (let steps = 0; p.hunk < p.hunks.length && budget >= 1 && steps < MAX_STEPS_PER_TICK; steps++) {
     const step = keystroke(p, Math.floor(budget));
     budget -= step.used;
@@ -834,64 +853,205 @@ function cutColumns(line: string, from: number, width: number): string {
   return s;
 }
 
-/** 0-based line of offset `at`. */
-function lineOf(text: string, at: number): number {
-  let line = 0;
-  for (let i = text.indexOf('\n'); i !== -1 && i < at; i = text.indexOf('\n', i + 1)) line++;
-  return line;
+/**
+ * The recording number of the first change not played yet, the change being
+ * typed counting as played: where a press of Clear marks now takes effect.
+ */
+export function clearPoint(deck: Deck): number {
+  if (deck.playing) return deck.playing.change.number + 1;
+  const next = deck.timeline.peek() as Event | undefined;
+  return next ? next.number : deck.recorded + 1;
 }
 
-/** Offset where the line holding offset `at` starts. */
-function lineStart(text: string, at: number): number {
-  return at > 0 ? text.lastIndexOf('\n', at - 1) + 1 : 0;
-}
-
-/** What the pane draws for `deck`: status, and a window of the shown text around the caret. */
-export function viewOf(deck: Deck): View {
-  const status = deck.isPaused ? 'paused' : deck.playing ? 'typing' : 'idle';
-  const s = deck.shown;
-  const base = { status, queued: deck.timeline.pendingCount(), isTyping: deck.playing !== undefined, ...(s && captionOf(s)) } as const;
-  const empty = { lines: [], firstLine: 1, firstColumn: 0, caretLine: 0, caretColumn: 0 };
-  if (!s) return { ...base, ...empty };
-  if (s.isTooLarge) return { ...base, ...empty, path: s.path, isTooLarge: true };
-
-  const caret = Math.max(0, Math.min(s.caret, s.text.length));
-  const caretLine = lineOf(s.text, caret);
-  let start = lineStart(s.text, caret);
-  const caretColumn = caret - start;
-  // Walk back from the caret's line to the first line the window keeps.
-  let firstLine = caretLine;
-  while (firstLine > 0 && caretLine - firstLine < VIEW_LINES / 2) {
-    start = lineStart(s.text, start - 1);
-    firstLine--;
-  }
-  const lines: string[] = [];
-  const firstColumn = caretColumn < VIEW_COLUMNS - 100 ? 0 : caretColumn - VIEW_COLUMNS / 2;
-  for (let at = start; lines.length < VIEW_LINES; ) {
-    const nl = s.text.indexOf('\n', at);
-    lines.push(showControls(cutColumns(s.text.slice(at, nl === -1 ? undefined : nl), firstColumn, VIEW_COLUMNS)));
-    if (nl === -1) break;
-    at = nl + 1;
-  }
-  return { ...base, path: s.path, lines, firstLine: firstLine + 1, firstColumn, caretLine, caretColumn };
+/** `clears` with a press of Clear marks now added, the oldest dropped past MAX_CLEARS. */
+export function clearMarks(deck: Deck, clears: readonly Clear[]): Clear[] {
+  return [...clears, { at: clearPoint(deck) }].slice(-MAX_CLEARS);
 }
 
 /**
- * The rows of `view` that fit a pane `rows` high and `columns` wide, shifted
- * left when the caret would be past the right edge and cut at the right edge,
- * with the caret marked while typing. Returns the source to draw and the line number of its first row.
+ * `clears` without those a move of playback undid: every clear made after the
+ * change playback now starts from (the change being typed, or the next one to
+ * play) was next.
  */
-export function frame(view: View, rows: number, columns: number): { source: string; startLine: number } {
-  const caretRow = view.caretLine - (view.firstLine - 1);
-  const top = Math.max(0, Math.min(caretRow - Math.floor(rows / 2), view.lines.length - rows));
+export function pruneClears(deck: Deck, clears: readonly Clear[]): Clear[] {
+  const next = deck.playing ? deck.playing.change.number : clearPoint(deck);
+  return clears.filter((c) => c.at <= next);
+}
+
+/** Whether `path` is the file of the change being typed while a clear made during it holds that file's marks back. */
+function isHeldBack(deck: Deck, path: string, clears: readonly Clear[]): boolean {
+  const p = deck.playing;
+  return p !== undefined && fileKey(p.change.path) === fileKey(path) && clears.some((c) => c.at === p.change.number + 1);
+}
+
+/**
+ * The baseline of the file at `path`, as the extension's baselines() finds it:
+ * the before text of the lane's first kept change to it, made over by each
+ * clear that has taken effect into the file's text then. Only played changes
+ * count; a too-large one leaves no text, so the next change starts the file
+ * afresh. Undefined when no played change names the file.
+ */
+function playedBaseline(deck: Deck, path: string, clears: readonly Clear[]): string | undefined {
+  const sorted = [...clears].sort((x, y) => x.at - y.at);
+  const base = new Map<string, string>();
+  const text = new Map<string, string>();
+  let k = 0;
+  const apply = (upTo: number) => {
+    for (; k < sorted.length && sorted[k]!.at <= upTo; k++) for (const [p, t] of text) base.set(p, t);
+  };
+  const { timeline, playing } = deck;
+  // A change being typed that the timeline dropped is older than every change it keeps.
+  let stop = playing && !timeline.get(playing.seq) ? playing.change.number : Infinity;
+  for (const e of timeline.all() as Event[]) {
+    if (e.number >= stop) break;
+    if (timeline.stateOf(e.seq) !== 'played') {
+      stop = e.number;
+      break;
+    }
+    apply(e.number);
+    const p = fileKey(e.path);
+    if (e.isTooLarge) {
+      base.delete(p);
+      text.delete(p);
+      continue;
+    }
+    if (!base.has(p)) base.set(p, e.before);
+    text.set(p, e.after);
+  }
+  apply(stop);
+  return base.get(fileKey(path));
+}
+
+/**
+ * The file tabs: one per file the lane has played a change to or the pane
+ * shows, in the order of its first such change, each with the number and id
+ * of the latest. Playback's lane is the only one so far.
+ */
+export function tabsOf(deck: Deck): (Tab & { id: string })[] {
+  const tabs = new Map<string, Tab & { id: string }>();
+  const shown = deck.shown?.id;
+  const { timeline } = deck;
+  const kept = keptChanges(deck);
+  for (const c of kept) {
+    const e = timeline.all().find((x) => (x as Event).id === c.id);
+    const isPlayed = e !== undefined && timeline.stateOf(e.seq) === 'played';
+    if (!isPlayed && c.id !== shown) continue;
+    const key = fileKey(c.path);
+    const was = tabs.get(key);
+    tabs.set(key, { path: was?.path ?? c.path, last: c.number, id: c.id });
+  }
+  return [...tabs.values()];
+}
+
+/** Where typing each change kept ends, by its id, so a pinned tab need not plan its change again on every tick. */
+const typedTo = new Map<string, number>();
+
+function caretAfter(change: Change, opts: PlayOptions): number {
+  let at = typedTo.get(change.id);
+  if (at === undefined) {
+    at = finalCaret(plan(change, opts));
+    if (typedTo.size >= 2 * MAX_WAITING) typedTo.clear();
+    typedTo.set(change.id, at);
+  }
+  return at;
+}
+
+/** What viewOf needs beyond the deck: the clears in effect, the pinned file, and how changes are planned. */
+export type ViewOptions = { clears?: readonly Clear[]; pin?: string; opts?: PlayOptions };
+
+/**
+ * What the pane draws for `deck`: status, and a window of the code view's
+ * diff rows around the caret, of the file playback shows or of the pinned
+ * file. Rows are whole lines; during the beat before a long deletion lands,
+ * the lines it removes are drawn removed.
+ */
+export function viewOf(deck: Deck, o: ViewOptions = {}): View {
+  const clears = o.clears ?? [];
+  const status = deck.isPaused ? 'paused' : deck.playing ? 'typing' : 'idle';
+  const s = deck.shown;
+  const base = { status, queued: deck.timeline.pendingCount(), isTyping: deck.playing !== undefined, ...(s && captionOf(s)) } as const;
+  const empty = { rows: [], oldBefore: 0, newBefore: 0, firstColumn: 0, caretRow: 0, caretLine: 0, caretColumn: 0 };
+  if (!s) return { ...base, ...empty };
+  const at = s.isTooLarge ? { path: s.path, isTooLarge: true as const } : { path: s.path };
+
+  const tab = o.pin !== undefined && fileKey(o.pin) !== fileKey(s.path) ? tabsOf(deck).find((x) => fileKey(x.path) === fileKey(o.pin!)) : undefined;
+  const pinned = tab && changeById(deck, tab.id);
+  if (pinned) {
+    if (pinned.isTooLarge) return { ...base, ...empty, ...at, isTyping: false, pinned: { path: pinned.path, isTooLarge: true } };
+    const baseline = playedBaseline(deck, pinned.path, clears) ?? pinned.after;
+    const caret = o.opts ? caretAfter(pinned, o.opts) : pinned.after.length;
+    return { ...base, ...at, isTyping: false, pinned: { path: pinned.path }, ...windowOf(diffRows(baseline, pinned.after), pinned.after, caret) };
+  }
+  if (s.isTooLarge) return { ...base, ...empty, ...at };
+
+  let rows = diffRows(s.text, s.text);
+  if (!isHeldBack(deck, s.path, clears)) {
+    const before = changeById(deck, s.id)?.before ?? s.text;
+    rows = diffRows(playedBaseline(deck, s.path, clears) ?? before, s.text);
+    const p = deck.playing;
+    const h = p && p.change.id === s.id && p.preview !== undefined && p.preview > 0 ? p.hunks[p.hunk] : undefined;
+    if (p && h) {
+      // The lines the pending deletion takes, drawn removed until it lands.
+      const starts = lineStarts(s.text);
+      const from = lineAt(starts, h.offset);
+      const to = lineAt(starts, h.offset + h.deleteText.length - p.deleted - 1);
+      rows = rows.map((r) => (r.kind !== '-' && r.cur !== undefined && r.cur >= from && r.cur <= to ? { ...r, kind: '-' } : r));
+    }
+  }
+  return { ...base, ...at, ...windowOf(rows, s.text, s.caret) };
+}
+
+/** The rows around the caret at offset `caret` of `text`, each a marker then its line cut to the window's columns, made safe to draw. */
+function windowOf(all: readonly DiffRow[], text: string, caret: number): Pick<View, 'rows' | 'oldBefore' | 'newBefore' | 'firstColumn' | 'caretRow' | 'caretLine' | 'caretColumn'> {
+  const at = Math.max(0, Math.min(caret, text.length));
+  const starts = lineStarts(text);
+  const caretLine = lineAt(starts, at);
+  const caretColumn = at - starts[caretLine]!;
+  const index = Math.max(0, all.findIndex((r) => r.cur === caretLine));
+  const first = Math.max(0, index - VIEW_LINES / 2);
+  const firstColumn = caretColumn < VIEW_COLUMNS - 100 ? 0 : caretColumn - VIEW_COLUMNS / 2;
+  let oldBefore = 0;
+  let newBefore = 0;
+  for (let i = 0; i < first; i++) {
+    // By kind alone, as frame() counts the rows it keeps.
+    if (all[i]!.kind !== '+') oldBefore++;
+    if (all[i]!.kind !== '-') newBefore++;
+  }
+  const rows = all.slice(first, first + VIEW_LINES).map((r) => r.kind + showControls(cutColumns(r.text, firstColumn, VIEW_COLUMNS)));
+  return { rows, oldBefore, newBefore, firstColumn, caretRow: index - first, caretLine, caretColumn };
+}
+
+/**
+ * The code view's rows that fit a pane `rows` high, the hunk header among
+ * them, and `columns` wide: shifted left when the caret would be past the
+ * right edge and cut at it, with the caret marked while typing. Returns the
+ * source to draw under the Code element's `diff` format, one hunk whose
+ * header counts the rows it keeps.
+ */
+export function frame(view: View, rows: number, columns: number): { source: string } {
+  const body = Math.max(1, rows - 1);
+  const top = Math.max(0, Math.min(view.caretRow - Math.floor(body / 2), view.rows.length - body));
   const caretX = view.caretColumn - view.firstColumn;
   const shift = caretX < columns - 2 ? 0 : caretX - columns + Math.ceil(columns / 3);
-  const out = view.lines.slice(top, top + rows).map((line, i) => {
-    const shown = cutColumns(line, shift, columns);
-    if (!view.isTyping || top + i !== caretRow) return shown;
-    return shown.slice(0, caretX - shift) + '▍' + shown.slice(caretX - shift);
+  let oldStart = view.oldBefore;
+  let newStart = view.newBefore;
+  for (const r of view.rows.slice(0, top)) {
+    if (r[0] !== '+') oldStart++;
+    if (r[0] !== '-') newStart++;
+  }
+  let oldCount = 0;
+  let newCount = 0;
+  const out = view.rows.slice(top, top + body).map((row, i) => {
+    const kind = row[0]!;
+    if (kind !== '+') oldCount++;
+    if (kind !== '-') newCount++;
+    const shown = cutColumns(row.slice(1), shift, columns);
+    if (!view.isTyping || top + i !== view.caretRow) return kind + shown;
+    return kind + shown.slice(0, caretX - shift) + '▍' + shown.slice(caretX - shift);
   });
-  return { source: out.join('\n'), startLine: view.firstLine + top };
+  // A side with no lines in the hunk is numbered by the line before it, as unified diffs do.
+  const header = `@@ -${oldCount > 0 ? oldStart + 1 : oldStart},${oldCount} +${newCount > 0 ? newStart + 1 : newStart},${newCount} @@`;
+  return { source: [header, ...out].join('\n') };
 }
 
 /** Longest caption a change keeps, in code units, its ellipsis included. */

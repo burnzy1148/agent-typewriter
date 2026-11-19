@@ -35,25 +35,50 @@ export type CallLinks = { turnId?: string; agentId?: string; mainTurnId?: string
  */
 export type Saved = { changes: SavedChange[]; played: number; recorded: number; isPaused: boolean };
 
-/** What the pane draws: a window of the shown text around the caret, made safe to draw. */
+/**
+ * What the pane draws: a window of the code view's rows around the caret, made
+ * safe to draw. The code view is a unified diff of a file's baseline and its
+ * text: the file playback shows, or the file of a pinned tab.
+ */
 export type View = {
+  /** The file playback shows, which the header names. */
   path?: string;
   isTooLarge?: boolean;
   status: 'typing' | 'paused' | 'idle';
   queued: number;
   isTyping: boolean;
-  /** Lines around the caret, each cut to the columns from `firstColumn`. */
-  lines: string[];
-  /** 1-based number of `lines[0]` in the file. */
-  firstLine: number;
+  /** The pinned tab's file, which the code view shows instead of playback's; whether its change was too large to type. */
+  pinned?: { path: string; isTooLarge?: boolean };
+  /** Diff rows around the caret: each a marker (` `, `+` or `-`) then its line, cut to the columns from `firstColumn`. */
+  rows: string[];
+  /** How many lines of the baseline (`oldBefore`) and of the text (`newBefore`) come before `rows[0]`. */
+  oldBefore: number;
+  newBefore: number;
   /** 0-based column of each line's first character. */
   firstColumn: number;
-  /** 0-based line and column of the caret in the file. */
+  /** The index in `rows` of the caret's row, and the caret's 0-based line and column in the text. */
+  caretRow: number;
   caretLine: number;
   caretColumn: number;
   /** The shown change's caption, what the agent wrote before its call, on one line; absent when it has none. */
   caption?: string;
 };
+
+/**
+ * A press of Clear marks: `at` is the recording number of the first change
+ * that had not played then, the change being typed counting as played. From
+ * that change on, each file's text as it was is its baseline.
+ */
+export type Clear = { at: number };
+
+/** What Clear marks pressed, newest last, as a reload needs it. */
+export type Marks = { clears: Clear[] };
+
+/** A file tab: the file's path, and the number of the latest change the followed lane typed into it. */
+export type Tab = { path: string; last: number };
+
+/** The tab row: a tab per file the followed lane typed, in the order it first typed them; the file playback shows; and the pinned file. */
+export type Tabs = { tabs: Tab[]; shown?: string; pinned?: string };
 
 /**
  * One kept change as the pane lists it: its place in the session, the tool
@@ -126,6 +151,10 @@ declare module 'claude-code' {
       turns: Shaped<Turns>;
       /** How the person chose to group the changes list. */
       grouping: Shaped<Grouping>;
+      /** What Clear marks pressed, for a reload. */
+      marks: Shaped<Marks>;
+      /** The file tabs over the code view. */
+      tabs: Shaped<Tabs>;
       /**
        * Member `<change id>:before` or `<change id>:after`, the change's texts,
        * and `<change id>:caption`, its caption, absent or '' when it has none;
