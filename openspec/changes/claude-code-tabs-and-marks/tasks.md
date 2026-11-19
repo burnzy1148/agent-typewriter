@@ -7,7 +7,7 @@
 
 ## 2. Diff rows and the view
 
-- [x] 2.1 In `claude-code/hooks/replay.ts`, add `diffRows(baseline, text)`: whole-line ` `, `+` and `-` rows with old and new line numbers, a hunk's `-` rows before its `+` rows, memoized on its last inputs. Unit-test a function added, a word changed, lines removed, a created file and identical texts. Add a fuzz test that the ` ` and `+` rows give back the text and the ` ` and `-` rows give back the baseline. Verify with `npm test`.
+- [x] 2.1 In `claude-code/hooks/marks.ts`, add `diffRows(baseline, text)`: whole-line ` `, `+` and `-` rows with old and new line numbers (`old`, `cur`), a hunk's `-` rows before its `+` rows, memoized on its last inputs. Unit-test a function added, a word changed, lines removed, a created file and identical texts. Add a fuzz test that the ` ` and `+` rows give back the text and the ` ` and `-` rows give back the baseline. Verify with `npm test`.
 - [x] 2.2 In `claude-code/types/index.d.ts`, replace `View`'s `lines` and `firstLine` with diff rows. Make `viewOf(deck, baseline)` keep `VIEW_LINES` rows around the caret's row, with long lines cut and control characters shown as now. Make `frame()` cut the rows to the pane, put the caret into its row, and prefix one `@@ -a,b +c,d @@` header counted from the rows it keeps. Update the existing view and frame unit tests, and add ones for a window that starts on a `-` row and on a `+` row. Verify with `npm test`.
 
 ## 3. Baselines and clears
@@ -22,7 +22,7 @@
 
 ## 5. Tabs and the pin
 
-- [x] 5.1 Add `tabsOf(deck)`: one entry per path with a played change in the lane or the shown change, in order of its first kept change, each naming the change it shows. Add `tabLabels(paths, cwd)` and `tabRows(labels, shown, width)`. Unit-test two files, a waiting change with no tab, a seek back that removes a tab, a clash of base names, and 30 tabs that keep the shown one in two rows and count the rest. Verify with `npm test`.
+- [x] 5.1 Add `tabsOf(deck)`: one entry per path with a played change in the lane or the shown change, in order of its first kept change, each naming the change it shows. Add `tabLabels(names)`, which takes the paths as the pane names them, and `tabRows(widths, priority, columns, noteWidth)`, both in `claude-code/hooks/marks.ts`. Unit-test two files, a waiting change with no tab, a seek back that removes a tab, a clash of base names, and 30 tabs that keep the shown one in two rows and count the rest. Verify with `npm test`.
 - [x] 5.2 Make `viewOf` draw a pinned path: the tab's change's after text, around where its typing ended, with its marks and no caret, or its too-large note. Unit-test it. Verify with `npm test`.
 
 ## 6. Pane
@@ -36,6 +36,26 @@
 
 - [x] 7.1 Run `npm test`, `npm run typecheck`, `npm run typecheck:claude-code`, `npm run check:claude-code` and `npm run build:claude-code` with no diff to the committed bundle. Verify all pass.
 - [x] 7.2 Run `openspec validate claude-code-tabs-and-marks --strict` and a trial archive in a scratch copy. Verify both pass, and that `claude-code-replay` still validates strictly after it (`git-replay` and `session-persistence` already fail `--strict` before this change).
+
+## 8. Review round 1 (added in implementation)
+
+- [x] 8.1 Make a clear made while a change is typed reset every other file at once, holding back only that change's file. Unit-test two files, and add a plugin test that a pinned file shows no marks right after the press.
+- [x] 8.2 Make `viewOf` diff the shown text against itself only for a held-back file, so `diffRows`' memo holds between flushes. Unit-test that a view of an unchanged deck reuses the rows.
+- [x] 8.3 Make `tabRows` keep a row that holds only the left-out count, as an empty row, so the pane draws the count there. Unit-test it, and add a pane test.
+- [x] 8.4 Record in proposal.md, design.md and here what implementation changed, and add the MODIFIED requirements. Verify with `openspec validate claude-code-tabs-and-marks --strict`.
+
+## Corrected in implementation
+
+Tasks 1.1, 3.1, 3.2, 4.2, 6.1, 6.3 and 7.2 were reworded in place when they were ticked, to describe what was built. What they said at the proposal:
+- 1.1: `highlights.ts` re-exports `netHunks`, and the highlight tests pass unchanged. Built: `highlights.ts` and its tests import it from `src/netHunks.ts` (design.md C1).
+- 3.1: a `Clear` of `{ at: number; heldBack?: string }` and a `baselineOf(deck, path, clears)`. Built: `{ at: number }` and a private `playedBaseline` in replay.ts (design.md C3).
+- 3.2: `seek` returns the clears with every one past the picked change dropped. Built: `pruneClears`, which `move()` calls (design.md C4).
+- 4.2: update the README's "Long deletions are removed at once" if it describes timing. Built: the README documents the beat where it says long deletions go in one step.
+- 6.1: `view` moves to `view-2`, `move()` applies `seek`'s clears, and a sync clears a pin whose path is no longer listed. Built: `view-3`, `move()` prunes, and a flush also clears a pin once playback shows its file (design.md C2, C4, C6).
+- 6.3: the plugin tests go in `pane.test.tsx` and check that the pane's rows still fit the body. Built: `marks.test.tsx`, with the rows the tabs take checked by the existing pane and caption tests, and the 1 MB budget as a unit test.
+- 7.2: a trial archive checks that the living spec still validates strictly. Built: `claude-code-replay` validates strictly after a trial archive; `git-replay` and `session-persistence` already failed `--strict` before this change.
+
+Tasks 2.1 and 5.1 were corrected after review round 1: they named `diffRows`' module and the tab functions' signatures as designed, not as built.
 
 ## Workflow follow-up
 

@@ -918,7 +918,8 @@ function playedBaseline(deck: Deck, path: string, clears: readonly Clear[]): str
     if (!base.has(p)) base.set(p, e.before);
     text.set(p, e.after);
   }
-  apply(stop);
+  // A clear made while a change is typed takes effect for every other file at once; isHeldBack keeps that change's own file unmarked.
+  apply(playing && stop === playing.change.number ? stop + 1 : stop);
   return base.get(fileKey(path));
 }
 
@@ -984,8 +985,10 @@ export function viewOf(deck: Deck, o: ViewOptions = {}): View {
   }
   if (s.isTooLarge) return { ...base, ...empty, ...at };
 
-  let rows = diffRows(s.text, s.text);
-  if (!isHeldBack(deck, s.path, clears)) {
+  // Only a held-back file draws its text against itself: a second diffRows call would evict the one-entry memo every flush.
+  let rows: DiffRow[];
+  if (isHeldBack(deck, s.path, clears)) rows = diffRows(s.text, s.text);
+  else {
     const before = changeById(deck, s.id)?.before ?? s.text;
     rows = diffRows(playedBaseline(deck, s.path, clears) ?? before, s.text);
     const p = deck.playing;

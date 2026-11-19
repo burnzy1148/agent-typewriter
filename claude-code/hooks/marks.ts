@@ -152,7 +152,8 @@ export const TAB_ROWS = 2;
  * wide with a column between tabs. Tabs are taken in `priority` order (the
  * shown tab first, then the most recently typed) for as long as they fit, a
  * note of how many are left out included, and drawn in their own order.
- * Returns each row's tabs and how many were left out.
+ * Returns each row's tabs and how many were left out; the note goes at the end
+ * of the last row, which holds no tabs when the note wrapped onto it.
  */
 export function tabRows(widths: readonly number[], priority: readonly number[], columns: number, noteWidth: (left: number) => number): { rows: number[][]; left: number } {
   const layout = (chosen: ReadonlySet<number>) => {
@@ -169,7 +170,8 @@ export function tabRows(widths: readonly number[], priority: readonly number[], 
       rows[rows.length - 1]!.push(k);
       used += (used > 0 ? 1 : 0) + w;
     }
-    return { rows: rows.map((r) => r.filter((k) => k !== -1)).filter((r) => r.length > 0), count: rows.length, left };
+    // A row that holds only the note stays, empty, so the note is drawn there and not over a full row.
+    return { rows: rows.map((r) => r.filter((k) => k !== -1)), count: rows.length, left };
   };
   const chosen = new Set<number>();
   let best = layout(chosen);

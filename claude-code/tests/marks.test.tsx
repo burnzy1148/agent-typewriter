@@ -30,6 +30,28 @@ async function look($: Engine, bodyColumns = 80) {
   return { tabs, viewing, more, name, code, hasFollow, marks: code?.rows.filter((r) => !r.startsWith(' ')) ?? [] };
 }
 
+/** An element of a drawn tree. */
+type Drawn = { key?: string; props?: Record<string, unknown>; children?: unknown[] };
+
+/** The element keyed `key` in a drawn tree. */
+function byKey(x: unknown, key: string): Drawn | undefined {
+  if (typeof x !== 'object' || x === null) return undefined;
+  const d = x as Drawn;
+  if (d.key === key || d.props?.key === key) return d;
+  for (const c of d.children ?? []) {
+    const found = byKey(c, key);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** The strings beneath a drawn element, in order. */
+function textOf(x: unknown): string {
+  if (typeof x === 'string') return x;
+  const children = (x as { children?: unknown[] })?.children;
+  return Array.isArray(children) ? children.map(textOf).join('') : '';
+}
+
 async function press($: Engine, key: string) {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as never);
   await ui.press({ key });
@@ -271,4 +293,35 @@ test('tabs that do not fit two rows leave out the files typed longest ago, keep 
   expect(v.tabs.length + Number(v.more!.split(' ')[0])).toBe(30);
   expect(v.tabs.length).toBeLessThanOrEqual(6);
   expect(v.tabs).not.toContain('file1.ts');
+});
+
+test('when the count of left-out tabs wraps onto a row of its own, it is drawn there', async ($, on) => {
+  const w = world(on);
+  await start($);
+  await write($, 'longname1.ts', '1\n');
+  await write($, 'longname2.ts', '2\n');
+  await write($, 'aaaa.ts', '3\n');
+  await write($, 'bbbb.ts', '4\n');
+  await press($, 'skip');
+  await w.clock.advance(0);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: { ...PANE.props, bodyColumns: 19 } } as never);
+  const drawn = await ui.drawn();
+  await ui.unmount();
+  expect(textOf(byKey(drawn, 'tabs:0'))).toBe('aaaa.tsbbbb.ts');
+  expect(textOf(byKey(drawn, 'tabs:1'))).toBe('2 more');
+  expect(byKey(drawn, 'tabs:2')).toBeUndefined();
+});
+
+test('Clear marks pressed while a change is typed clears the other files at once', async ($, on) => {
+  const w = world(on);
+  await threeFiles($, w);
+  await press($, 'tab:/w/src/a.ts');
+  expect((await look($)).marks).toEqual(['+a']);
+  await press($, 'follow');
+  await press($, 'clear-marks');
+  expect((await look($)).marks).toEqual([]);
+  await press($, 'tab:/w/src/a.ts');
+  const v = await look($);
+  expect(v.viewing).toBe('Viewing a.ts as last typed. Playback is in src/b.ts.');
+  expect(v.marks).toEqual([]);
 });

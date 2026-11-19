@@ -38,7 +38,7 @@ Pressing the tab of a file other than the one playback shows SHALL pin it: the c
 - **THEN** the code view still shows `a.ts`
 
 ### Requirement: A pin ends when the person returns to playback
-A pin SHALL end, and the code view follow playback again, when the person presses Follow playback, presses the tab of the file playback shows, or presses anything that moves playback: a change in the list, its chip in the conversation, From start, Finish current or Skip to latest. A pin SHALL also end when its file loses its tab or playback moves into its file. Pause and Resume SHALL NOT end a pin. A pin SHALL NOT survive a reload.
+A pin SHALL end, and the code view follow playback again, when the person presses Follow playback, presses the tab of the file playback shows, or presses anything that moves playback: a change in the list, its chip in the conversation, From start, Finish current or Skip to latest. A pin SHALL also end when its file loses its tab or playback moves into its file. Pause and Resume SHALL NOT end a pin. A pin SHALL NOT survive a reload. The header and caption SHALL stay playback's.
 
 #### Scenario: Follow playback
 - **WHEN** `a.ts` is pinned while `b.ts` is typed, and the user presses Follow playback
@@ -51,6 +51,10 @@ A pin SHALL end, and the code view follow playback again, when the person presse
 #### Scenario: Playback reaches the pinned file
 - **WHEN** `a.ts` is pinned while `b.ts` is typed, and the next change to play is to `a.ts`
 - **THEN** the pin ends, and the code view shows `a.ts` being typed with the caret
+
+#### Scenario: Header and caption while pinned
+- **WHEN** `a.ts` is pinned while a change to `b.ts` with the caption "Add the helper." is typed
+- **THEN** the header names `b.ts` and its number, and “Add the helper.” shows above the tabs
 
 #### Scenario: Pause keeps the pin
 - **WHEN** `a.ts` is pinned and the user presses Pause
@@ -108,7 +112,7 @@ A file's marks SHALL reflect only the changes the lane has played and the part o
 ### Requirement: Lines are shown red before a deletion removes them
 Before a deletion that is removed in one step, the code view SHALL draw each line the deletion touches marked removed for 400 ms, then remove the deletion. Pausing during that beat SHALL hold it, and Finish current or a seek SHALL skip it. A line of the baseline SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A deletion that is backspaced SHALL get no beat.
 
-#### Scenario: Deleted function
+#### Scenario: Deleted baseline block
 - **WHEN** a change deletes a 20-line function that was in `a.ts`'s baseline
 - **THEN** the 20 lines are drawn marked removed for 400 ms, the deletion lands, and the lines stay in view marked removed
 
@@ -131,6 +135,10 @@ The pane SHALL have a Clear marks control. Pressing it SHALL make each file's te
 - **WHEN** the user presses Clear marks while a change to `a.ts` is being typed
 - **THEN** `a.ts` shows no marks for the rest of that change, and the next change to `a.ts` is marked against the text it left
 
+#### Scenario: Other files clear at once
+- **WHEN** `b.ts` has marks and the user presses Clear marks while a change to `a.ts` is being typed
+- **THEN** `b.ts` shows no marks at once, before that change finishes
+
 ### Requirement: Seeking back past a clear undoes it
 When a seek moves playback to a change before the one that was next when marks were cleared, that clear SHALL be undone, so the changes played again are marked against the baseline from before it. A change being typed at the press counts as played for this.
 
@@ -144,3 +152,50 @@ The clears in effect SHALL survive a reload of the plugin within a session, so a
 #### Scenario: Reload after a clear
 - **WHEN** the user presses Clear marks after changes to `a.ts` have played, and the plugin reloads
 - **THEN** `a.ts` shows no marks
+
+## MODIFIED Requirements
+
+### Requirement: Long deletions are removed at once
+As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be removed in one step, after the beat in which its lines are drawn removed.
+
+#### Scenario: Deleted function
+- **WHEN** a change deletes a 200-line function
+- **THEN** the function is drawn removed for a beat, then disappears in one step, and typing carries on with the next edit
+
+#### Scenario: Renamed identifier
+- **WHEN** a change replaces `total` with `sum`
+- **THEN** `total` is backspaced a few characters at a time before `sum` is typed
+
+### Requirement: Replay pane
+The plugin SHALL show an "Agent Typewriter" pane on the desktop and VS Code surfaces of Claude Code. While a change plays, the pane SHALL show its file, the part of its text around the caret with the caret marked, drawn as a diff against the file's baseline, and line numbers, with syntax highlighting chosen from the file's name, unless a tab is pinned.
+
+#### Scenario: Long file
+- **WHEN** a change edits line 400 of a 900-line file
+- **THEN** the pane shows the lines around the caret, numbered from their place in the file
+
+#### Scenario: Long line
+- **WHEN** a change edits column 5,000 of a 300,000-character minified line
+- **THEN** the pane shows the part of the line around the caret, and the caret stays in view
+
+#### Scenario: Control characters
+- **WHEN** the file shown holds a form feed, an escape or another control character other than tab and newline
+- **THEN** the pane shows each as a visible symbol and keeps drawing the file
+
+### Requirement: Pane names the file
+The pane SHALL name the playing file by its path relative to the session's working directory, or by its absolute path when it is outside that directory, and beside the name SHALL show the number of the change it shows. When nothing is playing, the pane SHALL keep naming the last change's file and, unless a tab is pinned, showing its after text, except while playback is paused with a change cued to play next, after a pick or a reload, which it shows as it was before that change.
+
+#### Scenario: File in the project
+- **WHEN** the session runs in `/w` and a change to `/w/src/app.ts` plays
+- **THEN** the pane names it `src/app.ts`
+
+#### Scenario: Waiting after a pick
+- **WHEN** a change to `a.ts` has finished playing, playback is paused, and the user presses an earlier change to `b.ts`
+- **THEN** the pane names `b.ts` and shows it as it was before that change
+
+#### Scenario: Waiting after a reload
+- **WHEN** a change to `a.ts` has finished playing, a change to `b.ts` waits, playback is paused, and the plugin reloads
+- **THEN** the pane names `b.ts` and shows it as it was before that change
+
+#### Scenario: Change number
+- **WHEN** the third change the session recorded is being typed
+- **THEN** the pane shows `#3` beside the file's name

@@ -1488,6 +1488,20 @@ test('Clear marks while a change is typed: its file shows none until it finishes
   assert.deepEqual(marksOf(d, { clears }), ['+z']);
 });
 
+test('Clear marks while a change is typed clears every other file at once', () => {
+  const d = deckOf(change('b1', 'b\n', 'b\nB\n', '/w/b.ts'), change('a1', '', 'x'.repeat(200) + '\n', '/w/a.ts'));
+  while (playingId(d) !== 'a1') tick(d, FAST);
+  for (let i = 0; i < 5; i++) tick(d, FAST);
+  assert.equal(playingId(d), 'a1');
+  assert.deepEqual(marksOf(d, { pin: '/w/b.ts', opts: FAST }), ['+B'], 'b.ts marked before the press');
+  const clears = clearMarks(d, []);
+  assert.deepEqual(marksOf(d, { clears, pin: '/w/b.ts', opts: FAST }), [], 'b.ts unmarked while a1 still types');
+  assert.deepEqual(marksOf(d, { clears }), [], 'a.ts held back');
+  playOut(d);
+  assert.deepEqual(marksOf(d, { clears }), []);
+  assert.deepEqual(marksOf(d, { clears, pin: '/w/b.ts', opts: FAST }), []);
+});
+
 test('a seek back past a clear undoes it; a seek that does not go back keeps it', () => {
   const a = ['top\n', 'top\nL1\n', 'top\nL1\nL2\n', 'top\nL1\nL2\nL3\n'];
   const d = deckOf(change('c1', a[0]!, a[1]!, '/w/a.ts'), change('c2', a[1]!, a[2]!, '/w/a.ts'), change('c3', a[2]!, a[3]!, '/w/a.ts'));
@@ -1593,6 +1607,10 @@ test('tab rows fit two rows, keep the shown tab, and count the rest', () => {
   assert.deepEqual(tabRows([10, 10], [1, 0], 80, () => 6), { rows: [[0, 1]], left: 0 });
 });
 
+test('a tab row that holds only the count is kept, empty, so the count is not drawn on a full row', () => {
+  assert.deepEqual(tabRows([9, 9, 15, 15], [0, 1, 2, 3], 19, (l) => `${l} more`.length), { rows: [[0, 1], []], left: 2 });
+});
+
 test('a pinned file shows as last typed, with its marks and no caret, while another file types', () => {
   const d = deckOf(change('a', 'one\n', 'one\ntwo\n', '/w/a.ts'), change('b', '', 'b'.repeat(300) + '\n', '/w/b.ts'));
   while (playingId(d) !== 'b') tick(d, FAST);
@@ -1603,6 +1621,18 @@ test('a pinned file shows as last typed, with its marks and no caret, while anot
   assert.equal(v.isTyping, false);
   assert.deepEqual(v.rows, [' one', '+two', ' ']);
   assert.equal(viewOf(d, { pin: '/w/b.ts', opts: FAST }).pinned, undefined, 'pinning playback is following it');
+});
+
+test('a view of an unchanged deck reuses the diff it last made', () => {
+  const before = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  const after = before.replace('line 100\n', 'line 100\nNEW\n');
+  const d = deckOf(change('c', before, after, '/w/a.ts'));
+  playOut(d);
+  viewOf(d);
+  const rows = diffRows(before, after);
+  viewOf(d);
+  viewOf(d);
+  assert.equal(diffRows(before, after), rows, 'viewOf hit the memo instead of replacing it');
 });
 
 test('a tick and its view on a 1 MB file stay well within the 50 ms tick', () => {
