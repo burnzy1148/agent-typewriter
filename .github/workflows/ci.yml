@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    # claude-code-extension is the long-lived Claude Code plugin branch; its
+    # pushes get the full post-merge run (integration-full included) but no
+    # tag or release, which only develop and v* tags get. Remove it once the
+    # branch merges into develop (at-o3z.11).
+    branches: [main, develop, claude-code-extension]
   pull_request:
   workflow_dispatch:
 
