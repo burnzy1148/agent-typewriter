@@ -38,11 +38,15 @@ In a session that draws only on the terminal surface, `/typewriter` with any wor
 - **THEN** the answer says there is nothing to save, and nothing is saved
 
 ### Requirement: Save leaves out what this session did not record
-A save SHALL NOT keep the changes of a loaded replay, nor where playback stands, whether it is paused, which lane is followed, or how the list is grouped.
+A save SHALL keep only changes recorded from this session's own `Edit` and `Write` calls. It SHALL NOT keep the changes of a loaded replay or of a git replay, nor where playback stands, whether it is paused, which lane is followed, or how the list is grouped.
 
 #### Scenario: Save with a replay loaded
 - **WHEN** the session recorded 3 changes and has the 5-change replay `demo` loaded, and the user runs `/typewriter save mine`
 - **THEN** `mine` holds the session's 3 changes only
+
+#### Scenario: Save with a git replay
+- **WHEN** the session recorded 2 changes and holds a git replay of `main..HEAD`, and the user runs `/typewriter save mine`
+- **THEN** `mine` holds the session's 2 changes only
 
 #### Scenario: Saved while paused
 - **WHEN** the user saves while playback is paused at change #2, and later loads that replay unpaused

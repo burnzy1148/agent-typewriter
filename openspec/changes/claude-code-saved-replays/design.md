@@ -58,6 +58,12 @@ This is what makes the limit livable: the session buffer allows 20,000,000 chara
 
 The replay's size is `JSON.stringify(value).length`, and what saved replays take is the sum the same way over the `replay:` keys. The save calls `set` and treats a rejection as over the limit, answering with those two numbers. The plugin does not pre-check against its own arithmetic: the engine's count includes keys and structure, so the refusal is the authority, and a failed `set` leaves the old value under the key, which is what keeps an over-size replace from losing the earlier replay. The engine's docs say `set` rejects but not that it leaves the store untouched; task 6.1 confirms that in the pinned CLI, and if it does not hold, save deletes nothing and writes the new value under a temporary key first, renaming only once it fits. Sizes show in KiB under 1 MiB, else MiB with one decimal.
 
+### Only recorded changes are saved
+
+Save keeps the changes recorded from this session's `Edit` and `Write` calls: every lane of the session's own loops. Lanes that hold no recorded change are left out whole: a loaded replay's lane (`saved:<key>`) and at-o3z.21's git replay lane. A git replay is rebuilt from git on demand, so saving it would spend the 4 MiB on what `/typewriter replay` or `/typewriter pr` can bring back. Its row fields (Add/Modify/Delete/Rename kind, `fromPath`, `commit`) have no place in `StoredChange`, and `replay-1` does not keep them. The filter is "a change with neither `replay` nor a git-lane marker", in whatever field .21 names its lane by, so the two changes can land in either order.
+
+Alternative: saving a git lane too, which needs `StoredChange` to gain kind, `fromPath` and `commit`, and a loaded git replay to come back as a git lane. Left for a later change if people ask, under a new `v` tag.
+
 ### Names
 
 `/typewriter`'s `args` is split at the first whitespace run into the word and the rest; the rest is the name, with whitespace runs folded and ends trimmed. The key folds the name to lower case (`toLocaleLowerCase('en-US')`, so it does not change with the machine's locale); the value keeps the spelling. The default name is local `YYYY-MM-DD HH:MM`; two saves in the same minute replace, as any save of a taken name does, and the answer says so. Control characters are refused rather than shown as stand-ins, because the name is also how the person types it back.
