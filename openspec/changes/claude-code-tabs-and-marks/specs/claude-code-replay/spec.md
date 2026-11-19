@@ -160,7 +160,7 @@ As in the VS Code extension, a deletion of at most 24 characters within one line
 
 #### Scenario: Deleted function
 - **WHEN** a change deletes a 200-line function
-- **THEN** the function is drawn removed for a beat, then disappears in one step, and typing carries on with the next edit
+- **THEN** the function is drawn removed for a beat, then removed from the file in one step, staying in view marked removed when it was in the baseline, and typing carries on with the next edit
 
 #### Scenario: Renamed identifier
 - **WHEN** a change replaces `total` with `sum`
