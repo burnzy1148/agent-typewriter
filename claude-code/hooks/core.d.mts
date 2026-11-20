@@ -214,6 +214,73 @@ declare function baselines(events: readonly ChangeEvent[], through: number, clea
     paths: readonly string[];
 }, read?: ReadText): Map<string, string>;
 
+// src/lanes.ts
+
+/**
+ * Lane policy, kept pure so it is tested without VS Code: how many checkouts
+ * record at once, which color a lane gets, which lane rotation stops for a new
+ * worktree's first change, and which lane auto-follow moves to.
+ */
+/** Most checkouts that record at once, across every workspace folder. */
+declare const MAX_LANES = 5;
+/** Most new worktrees auto-record watches at once while they wait for their first change, which gives them a lane. */
+declare const MAX_WAITING = 5;
+/** Number of lane colors; with more lanes in the buffer, colors repeat. */
+declare const LANE_COLORS = 5;
+/** A lane must have recorded nothing for this long before rotation may stop it. */
+declare const ROTATE_IDLE_MS = 120000;
+/** How long the followed lane must be caught up and quiet before auto-follow moves on. */
+declare const AUTO_FOLLOW_IDLE_MS = 3000;
+/** What the policy needs to know about one lane. */
+interface LaneActivity {
+    id: string;
+    /** Still recording, as opposed to stopped with its changes kept. */
+    recording: boolean;
+    /** Epoch millis of its newest change, or when it started recording if it has none. */
+    lastActivity: number;
+    /** Seq of its oldest pending change, if any is pending. */
+    firstPendingSeq?: number;
+    /** Its checkout matches `autoIgnoreWorktrees`: auto-follow never moves to it. */
+    ignored?: boolean;
+}
+/**
+ * The color slot (1..LANE_COLORS) for a new lane: its remembered slot while no
+ * other lane holds it, else the least used slot, lowest first.
+ */
+declare function colorSlot(remembered: number | undefined, taken: readonly number[]): number;
+/**
+ * The lane rotation stops to make room: the recording, unfollowed lane whose
+ * newest change is oldest, among those idle at least ROTATE_IDLE_MS.
+ */
+declare function rotationVictim(lanes: readonly LaneActivity[], followed: string | undefined, now: number): string | undefined;
+/** The lane auto-follow moves to: the one, other than `followed` and ignored lanes, whose oldest pending change was recorded first. */
+declare function autoFollowTarget(lanes: readonly LaneActivity[], followed: string | undefined): string | undefined;
+/**
+ * What auto-follow does now: follow another lane once the followed one has
+ * nothing queued, nothing is being typed, and it has been quiet since
+ * `quietSince` for AUTO_FOLLOW_IDLE_MS; or check again in `checkIn` ms.
+ */
+declare function autoFollowDecision(s: {
+    enabled: boolean;
+    playing: boolean;
+    followed: string;
+    lanes: readonly LaneActivity[];
+    quietSince: number;
+    now: number;
+}): {
+    follow?: string;
+    checkIn?: number;
+};
+/** A lane's label: its branch or short commit, or the folder name outside git, with the folder name added in a multi-root workspace. */
+declare function laneLabel(checkoutName: string, folderName: string, multiRoot: boolean): string;
+/** A two-character badge for a lane's mirror tabs: initials of its label's words, or its first two letters. */
+declare function laneBadge(label: string): string;
+/** Which workspace folders record their own checkout by default: the first MAX_LANES, and the names of the rest. */
+declare function defaultLanes<T>(folders: readonly T[]): {
+    recorded: T[];
+    left: T[];
+};
+
 // src/netHunks.ts
 
 /**
@@ -735,8 +802,9 @@ declare function backspaceStep(deleted: string, remaining: number, step: number)
 
 export { planHunks, authoringOrder, normalizeEol, countChanges, type Hunk };
 export { typingChunkEnd, backspaceStep };
-export { Timeline, type ChangeEvent, type NewChangeEvent };
+export { Timeline, laneOf, type ChangeEvent, type NewChangeEvent, type LaneInfo, type SavedLane, type LaneRestore };
 export { resolvePlaybackSettings, resolveNumber, recordGetter, PLAYBACK_NUMBERS, PLAYBACK_SWITCHES, type PlaybackSettings, type SettingGetter, type NumberSpec };
 export { resolveCharsPerMinute, DEFAULT_CHARS_PER_MINUTE };
 export { resolveReadPauseSeconds, DEFAULT_READ_PAUSE_SECONDS, MAX_READ_PAUSE_SECONDS };
 export { netHunks };
+export { colorSlot, autoFollowDecision, autoFollowTarget, LANE_COLORS, AUTO_FOLLOW_IDLE_MS, type LaneActivity };

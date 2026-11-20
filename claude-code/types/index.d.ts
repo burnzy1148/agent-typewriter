@@ -29,11 +29,27 @@ export type SavedChange = { id: string; number: number; tool?: Tool; path: strin
 export type CallLinks = { turnId?: string; agentId?: string; mainTurnId?: string; agentCallId?: string };
 
 /**
- * Every change the deck keeps, oldest first (the played ones, the one being
- * typed, then the waiting ones), how many of them lead as played, and
+ * A lane as a reload needs it: its id (the agent's id, '' for the main
+ * conversation), its label, its color slot from 1 to 5, and for a subagent's
+ * lane its agent type when the plugin saw it.
+ */
+export type SavedLane = { id: string; label: string; color: number; kind?: string };
+
+/**
+ * Every change the deck keeps, in recorded order (the change being typed
+ * first when the timeline has dropped it), the lanes that hold them, how many
+ * of each lane's changes lead as played (by lane id), the followed lane, and
  * playback's switches.
  */
-export type Saved = { changes: SavedChange[]; played: number; recorded: number; isPaused: boolean };
+export type Saved = {
+  changes: SavedChange[];
+  recorded: number;
+  isPaused: boolean;
+  lanes: SavedLane[];
+  positions: Record<string, number>;
+  followed: string;
+  autoFollow: boolean;
+};
 
 /**
  * What the pane draws: a window of the code view's rows around the caret, made
@@ -62,14 +78,20 @@ export type View = {
   caretColumn: number;
   /** The shown change's caption, what the agent wrote before its call, on one line; absent when it has none. */
   caption?: string;
+  /** The followed lane, while more than one lane holds changes: its label, its agent type, and its color slot from 1 to 5. */
+  lane?: { label: string; kind?: string; color: number };
+  /** Changes waiting in the lanes other than the followed one. */
+  otherQueued: number;
 };
 
 /**
  * A press of Clear marks: `at` is the recording number of the first change
- * that had not played then, the change being typed counting as played. From
- * that change on, each file's text as it was is its baseline.
+ * of `lane` that had not played then, the change being typed counting as
+ * played. From that change on, each file's text as the lane left it is its
+ * baseline. `lane` is the lane followed at the press, absent for the main
+ * conversation's.
  */
-export type Clear = { at: number };
+export type Clear = { at: number; lane?: string };
 
 /** What Clear marks pressed, newest last, as a reload needs it. */
 export type Marks = { clears: Clear[] };
@@ -101,24 +123,45 @@ export type Row = {
   mainTurnId?: string;
   agentCallId?: string;
   caption?: string;
+  /** The change's lane, the agent's id; absent for the main conversation's. */
+  lane?: string;
 };
 
 /**
- * The pane's list of kept changes, oldest first; how many changes recorded
- * before the oldest of them were dropped; the id of the change the pane
+ * A lane as the pane's chips show it: its id, label and color slot, what it is
+ * doing (typing or paused while its change is typed, else queued while
+ * changes wait, else caught up), and how many changes wait in it.
+ */
+export type LaneChip = { id: string; label: string; color: number; state: 'typing' | 'paused' | 'queued' | 'caught up'; queued: number };
+
+/**
+ * The pane's list of kept changes, oldest first, with the lanes that hold
+ * them; how many changes recorded before the oldest of them were dropped; the id of the change the pane
  * shows, which is being typed, cued to play next, or done; and whether
  * playback is paused, which the chips on the conversation's call rows read
  * here rather than from `view`, which changes on every tick while typing.
  */
-export type Listing = { rows: Row[]; dropped: number; current?: string; isPaused: boolean };
+export type Listing = {
+  rows: Row[];
+  dropped: number;
+  current?: string;
+  isPaused: boolean;
+  /** The lanes holding kept changes, Main first and the rest by their first kept change. */
+  lanes: LaneChip[];
+  /** The followed lane's id, '' for the main conversation's. */
+  followed: string;
+  /** Whether auto-follow is on. */
+  autoFollow: boolean;
+};
 
 /**
  * Where an agent hangs off the main conversation, as `agent.spawn` showed it:
  * the main conversation's turn and the `Agent` (or `Workflow`) call that
- * started the agent at the top of its chain. Kept so a change an agent makes
- * after a reload still gets them.
+ * started the agent at the top of its chain; and the description and agent
+ * type its own call gave, which label its lane. Kept so a change an agent
+ * makes after a reload still gets them.
  */
-export type AgentLink = { agentId: string; mainTurnId?: string; agentCallId?: string };
+export type AgentLink = { agentId: string; mainTurnId?: string; agentCallId?: string; description?: string; subagentType?: string };
 
 /**
  * A main conversation turn the plugin saw start: its id, its number in the

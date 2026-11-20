@@ -8,7 +8,8 @@
 // only what must outlive a reload (`saved`, and each kept change's texts in
 // the `text` family with their captions, the agents' links in `agents`, the
 // main conversation's turns in `turns`, how the person groups the changes list
-// in `grouping`, what Clear marks pressed in `marks`) and what the pane draws
+// in `grouping`, what Clear marks pressed in `marks`; the lanes, their
+// positions and the auto-follow switch are in `saved`) and what the pane draws
 // (`view`, the changes list in `listing`, which changes far less often, and
 // the file tabs in `tabs`).
 
@@ -35,17 +36,23 @@ import {
   fileHeaderLabel,
   fileKey,
   finish,
+  follow,
   forgetLoop,
   frame,
   headerLabel,
+  autoFollowText,
   isUnchanged,
   keptTurns,
+  laneChipRows,
+  laneChipText,
+  laneTagText,
   linksOf,
   listLines,
   listWindow,
   listingOf,
   narrate,
   newDeck,
+  playFrom,
   playOptions,
   promptOf,
   pruneClears,
@@ -59,9 +66,11 @@ import {
   scrolledTop,
   seek,
   setCaption,
+  setRunning,
   skipToLatest,
   tabsOf,
   tick,
+  toggleAutoFollow,
   togglePause,
   turnChipLabel,
   turnChips,
@@ -70,6 +79,7 @@ import {
   type Change,
   type Deck,
   type HeardRow,
+  type LaneAbout,
   type ListGeometry,
   type Narration,
   type NewChange,
@@ -106,16 +116,26 @@ const CARD_LINES = 6;
 const CARD_COLUMNS = 60;
 /** Columns a tab takes beyond its label, for a desktop's button padding. */
 const TAB_PADDING = 2;
+/** Columns a lane chip takes beyond its words, for a desktop's button padding. */
+const CHIP_PADDING = 4;
+/** The five lane colors, by color slot from 1, in the extension's order. */
+const LANE_COLORS = ['blue', 'green', 'orange', 'purple', 'red'] as const;
+
+/** The CSS color of lane color slot `slot`. */
+function laneColor(slot: number): string {
+  return LANE_COLORS[(((slot - 1) % LANE_COLORS.length) + LANE_COLORS.length) % LANE_COLORS.length]!;
+}
 
 // Change a tag when its value's fields change: a reload then starts fresh
 // instead of reading what an earlier version stored. `saved` reads its earlier
 // tag through savedFrom.
 const savedRef = { plugin: 'agent-typewriter', key: 'saved' } as const;
 const saved = atom(savedRef, savedOf(newDeck()), { shape: SAVED_SHAPE });
-const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-3' });
-const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-4' });
+const view = atom({ plugin: 'agent-typewriter', key: 'view' } as const, viewOf(newDeck()), { shape: 'view-4' });
+const listing = atom({ plugin: 'agent-typewriter', key: 'listing' } as const, listingOf(newDeck()), { shape: 'listing-5' });
 const agentsRef = { plugin: 'agent-typewriter', key: 'agents' } as const;
-const AGENTS_SHAPE = 'agents-1';
+/** `agents-1` kept no description or agent type; load() reads it too. */
+const AGENTS_SHAPE = 'agents-2';
 const agents = atom(agentsRef, [] as AgentLink[], { shape: AGENTS_SHAPE });
 const turnsRef = { plugin: 'agent-typewriter', key: 'turns' } as const;
 const TURNS_SHAPE = 'turns-1';
@@ -123,7 +143,8 @@ const NO_TURNS: Turns = { next: 1, turns: [] };
 const turns = atom(turnsRef, NO_TURNS, { shape: TURNS_SHAPE });
 const grouping = atom({ plugin: 'agent-typewriter', key: 'grouping' } as const, 'turn' as Grouping, { shape: 'grouping-1' });
 const marksRef = { plugin: 'agent-typewriter', key: 'marks' } as const;
-const MARKS_SHAPE = 'marks-1';
+/** `marks-1` kept clears with no lane, which were the main conversation's; load() reads it too. */
+const MARKS_SHAPE = 'marks-2';
 const NO_MARKS: Marks = { clears: [] };
 const marks = atom(marksRef, NO_MARKS, { shape: MARKS_SHAPE });
 const tabsRef = { plugin: 'agent-typewriter', key: 'tabs' } as const;
@@ -164,10 +185,13 @@ type Live = {
   turns: Map<string, string>;
   /**
    * Where each agent hangs off the main conversation: the turn and the `Agent`
-   * call that started the top of its chain. Oldest first, at most MAX_AGENTS,
-   * and kept in $.state (`agents`) so a reload keeps it.
+   * call that started the top of its chain, and its own call's description and
+   * agent type, which label its lane. Oldest first, at most MAX_AGENTS, and
+   * kept in $.state (`agents`) so a reload keeps it.
    */
-  agents: Map<string, { mainTurnId?: string; agentCallId?: string }>;
+  agents: Map<string, AgentAt>;
+  /** The time as the plugin last knew it, in epoch milliseconds, moved on a tick at a time between readings. */
+  now: number;
   /**
    * The main conversation's turns the plugin saw start, numbered from 1, kept
    * in $.state (`turns`) for the changes list's chapters and for a reload.
@@ -185,6 +209,9 @@ type Live = {
 };
 
 const text = { plugin: 'agent-typewriter', key: 'text' } as const;
+
+/** What the plugin keeps of an agent: its AgentLink but its id. */
+type AgentAt = Omit<AgentLink, 'agentId'>;
 
 /** Queues a write of what changed since the last one: cleared texts, `saved`, `view`, `listing`, `tabs`, `marks`. */
 function sync($: EngineInterface, live: Live): void {
@@ -275,24 +302,25 @@ async function load($: EngineInterface, live: Live): Promise<void> {
     if (before === undefined || after === undefined || before === after) continue;
     changes.push({ ...c, before, after, ...caption });
   }
-  live.deck = restore(was, changes, live.opts, live.cwd);
-  const storedMarks = (await $.state.get(marksRef)).value;
-  if (storedMarks?.shape === MARKS_SHAPE) {
-    live.clears = storedMarks.value.clears;
-    live.marksJson = JSON.stringify(storedMarks.value);
-  }
-  // The tabs as an earlier load left them, so the first flush writes them only when they change.
-  const storedTabs = (await $.state.get(tabsRef)).value;
-  if (storedTabs?.shape === TABS_SHAPE) live.tabsJson = JSON.stringify(storedTabs.value);
+  // The agents' links first: they label the lanes the save does not describe.
   const stored = (await $.state.get(agentsRef)).value;
-  if (stored?.shape === AGENTS_SHAPE) {
+  if (stored?.shape === AGENTS_SHAPE || stored?.shape === 'agents-1') {
     // Spawns seen since the module loaded are newer than what was stored.
     const seen = [...live.agents];
     live.agents = new Map(stored.value.map(({ agentId, ...at }) => [agentId, at]));
     for (const [id, at] of seen) keepAgent(live, id, at);
-    // A spawn during the load queued a write that waits for this one's list.
-    if (seen.length > 0) saveAgents($, live);
+    // A spawn during the load queued a write that waits for this one's list; an earlier tag is written again under this one.
+    if (seen.length > 0 || stored.shape !== AGENTS_SHAPE) saveAgents($, live);
   }
+  live.deck = restore(was, changes, live.opts, live.cwd, (id) => aboutAgent(live, id));
+  const storedMarks = (await $.state.get(marksRef)).value;
+  if (storedMarks?.shape === MARKS_SHAPE) {
+    live.clears = storedMarks.value.clears;
+    live.marksJson = JSON.stringify(storedMarks.value);
+  } else if (storedMarks?.shape === 'marks-1') live.clears = storedMarks.value.clears.map(({ at }) => ({ at }));
+  // The tabs as an earlier load left them, so the first flush writes them only when they change.
+  const storedTabs = (await $.state.get(tabsRef)).value;
+  if (storedTabs?.shape === TABS_SHAPE) live.tabsJson = JSON.stringify(storedTabs.value);
   const storedTurns = (await $.state.get(turnsRef)).value;
   if (storedTurns?.shape === TURNS_SHAPE) {
     // Turns that started during the load come after the stored ones, numbered
@@ -320,11 +348,22 @@ async function snapshot($: EngineInterface, path: string, shouldRead: boolean): 
 function linksFor(live: Live, agentId: string | undefined): CallLinks {
   const turnId = live.turns.get(agentId ?? '');
   if (agentId === undefined) return linksOf({ turnId, mainTurnId: turnId });
-  return linksOf({ turnId, agentId, ...live.agents.get(agentId) });
+  const at = live.agents.get(agentId);
+  return linksOf({ turnId, agentId, mainTurnId: at?.mainTurnId, agentCallId: at?.agentCallId });
+}
+
+/** What the plugin knows of the loop of `agentId` ('' for the main conversation) for its lane: its call's description and agent type, and whether it is in a turn. */
+function aboutAgent(live: Live, agentId: string): LaneAbout {
+  const at = live.agents.get(agentId);
+  return {
+    ...(at?.description && { description: at.description }),
+    ...(at?.subagentType && { subagentType: at.subagentType }),
+    isRunning: live.turns.has(agentId),
+  };
 }
 
 /** Notes where agent `id` hangs off the main conversation, as its newest entry, dropping the oldest past MAX_AGENTS. */
-function keepAgent(live: Live, id: string, at: { mainTurnId?: string; agentCallId?: string }): void {
+function keepAgent(live: Live, id: string, at: AgentAt): void {
   live.agents.delete(id);
   live.agents.set(id, at);
   for (const oldest of live.agents.keys()) {
@@ -379,10 +418,10 @@ function endTurn(live: Live, turnId: string): void {
   live.turnInfo = { ...was, turns: was.turns.map((t) => (t.turnId === turnId && !t.isEnded ? { ...t, isEnded: true } : t)) };
 }
 
-/** Plays from the first kept change of the chapter `key` names, as pressing its row does. */
+/** Plays the chapter `key` names again: every lane in it from its first kept change there, its first change next. */
 function playTurn(live: Live, key: string): void {
   const chapter = chaptersOf(listingOf(live.deck), live.turnInfo.turns).find((ch) => ch.key === key);
-  if (chapter) seek(live.deck, chapter.rows[0]!.id, live.opts);
+  if (chapter) playFrom(live.deck, chapter.rows.map((r) => r.id), live.opts);
 }
 
 /** Plays from the first kept change to the file at `path`, as pressing its row does. */
@@ -433,7 +472,8 @@ async function record<R extends { deny?: string; isError?: boolean }>(
     change = { ...change, caption };
   }
   const isFirst = live.deck.recorded === 0;
-  enqueue(live.deck, change, live.cwd);
+  live.now = Math.max(live.now, change.time);
+  enqueue(live.deck, change, live.cwd, aboutAgent(live, agentId ?? ''), live.now);
   // Tracked only once queued: a flush during the writes would take it for a
   // change that is gone and blank its texts.
   if (!change.isTooLarge) live.texts.add(id);
@@ -576,9 +616,21 @@ function regroup($: EngineInterface, live: Live, from: Grouping, to: Grouping): 
   $.ui.invalidate('ui.render');
 }
 
-/** One timer tick: moves playback and writes what it changed. */
+/**
+ * One timer tick: moves playback and writes what it changed. The time moves on
+ * a tick; while auto-follow may move to another lane, it is read again for the
+ * next tick, so a slowed timer does not stretch the wait.
+ */
 function step($: EngineInterface, live: Live): void {
-  if (tick(live.deck, live.opts)) sync($, live);
+  live.now += TICK_MS;
+  if (tick(live.deck, live.opts, live.now)) sync($, live);
+  const d = live.deck;
+  if (d.autoFollow && !d.playing && d.timeline.lanesInBuffer().length > 1) {
+    void $.clock.now().then(
+      (now) => (live.now = Math.max(live.now, now)),
+      () => undefined,
+    );
+  }
 }
 
 export const register: Register = (on, options) => {
@@ -599,6 +651,7 @@ export const register: Register = (on, options) => {
     writes: Promise.resolve(),
     turns: new Map(),
     agents: new Map(),
+    now: 0,
     turnInfo: NO_TURNS,
     loaded: Promise.resolve(),
     settleLoaded: () => undefined,
@@ -609,6 +662,7 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     live.cwd = e.cwd;
+    live.now = await $.clock.now().catch(() => 0);
     try {
       await $.command.register({ name: 'typewriter', description: 'Open the Agent Typewriter pane' });
       await load($, live).catch(() => undefined);
@@ -629,7 +683,10 @@ export const register: Register = (on, options) => {
   // turns, numbered with their prompts, for the list's chapters. Observed only.
   on('turn.start', ($, e, next) => {
     live.turns.set(e.agentId ?? '', e.turnId);
-    if (e.agentId === undefined) {
+    if (e.agentId !== undefined) {
+      setRunning(live.deck, e.agentId, true);
+      sync($, live);
+    } else {
       startTurn(live, e.turnId, e.text);
       saveTurns($, live);
     }
@@ -639,7 +696,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', ($, e, next) => {
     live.turns.delete(e.agentId ?? '');
     forgetLoop(live.narration, e.agentId);
-    if (e.agentId === undefined) {
+    if (e.agentId !== undefined) {
+      setRunning(live.deck, e.agentId, false);
+      sync($, live);
+    } else {
       endTurn(live, e.turnId);
       saveTurns($, live);
     }
@@ -647,10 +707,17 @@ export const register: Register = (on, options) => {
   });
   on('agent.spawn', async ($, e, next) => {
     // Read before the agent runs: a nested agent takes the entry of the agent it was started in.
-    const at =
+    const parent = e.parentAgentId === undefined ? undefined : live.agents.get(e.parentAgentId);
+    const links =
       e.parentAgentId === undefined
         ? { mainTurnId: live.turns.get(''), agentCallId: e.tool_use_id || undefined }
-        : { ...live.agents.get(e.parentAgentId) };
+        : { mainTurnId: parent?.mainTurnId, agentCallId: parent?.agentCallId };
+    const at: AgentAt = {
+      ...(links.mainTurnId && { mainTurnId: links.mainTurnId }),
+      ...(links.agentCallId && { agentCallId: links.agentCallId }),
+      ...(e.description && { description: e.description }),
+      ...(e.subagentType && { subagentType: e.subagentType }),
+    };
     const started = await next(e);
     if (started.agentId !== undefined) {
       keepAgent(live, started.agentId, at);
@@ -754,7 +821,7 @@ export const register: Register = (on, options) => {
     const t = await read($, turns);
     const g = await read($, grouping);
     const tb = await read($, tabs);
-    const queued = v.queued > 0 ? ` · ${v.queued} queued` : '';
+    const queued = (v.queued > 0 ? ` · ${v.queued} queued` : '') + (v.otherQueued > 0 ? ` · ${v.otherQueued} in other lanes` : '');
     const name = v.path === undefined ? undefined : relativePath(v.path, live.cwd);
     const current = l.rows.findIndex((r) => r.id === l.current);
     const bodyRows = e.props.scroll?.bodyRows ?? 24;
@@ -768,6 +835,11 @@ export const register: Register = (on, options) => {
     const top = listWindow(count, currentLine === -1 ? undefined : currentLine, height, live.listTop);
     const linesShown = lines.slice(top, top + height);
 
+    // The lane chips and the auto-follow switch, in at most two rows under the header, while more than one lane holds changes.
+    const hasLanes = l.lanes.length > 1;
+    const lanesById = new Map(l.lanes.map((x) => [x.id, x]));
+    const switchText = autoFollowText(l.autoFollow);
+    const chipLayout = hasLanes ? laneChipRows(l.lanes, l.followed, bodyColumns, CHIP_PADDING, switchText.length + CHIP_PADDING) : { rows: [], left: 0 };
     // The shown change's caption, in quotes, between the header and the code.
     const band = v.caption ? captionLines(`“${v.caption}”`, bodyColumns - 2, BAND_LINES) : [];
     // The file tabs, in at most two rows, under the caption: the code view's file marked, the files typed longest ago left out first.
@@ -783,7 +855,7 @@ export const register: Register = (on, options) => {
     );
     const pinnedName = v.pinned && relativePath(v.pinned.path, live.cwd);
     const pinnedLabel = v.pinned && (labels[tb.tabs.findIndex((x) => fileKey(x.path) === fileKey(v.pinned!.path))] ?? pinnedName);
-    const above = band.length + tabLayout.rows.length + (v.pinned ? 1 : 0);
+    const above = chipLayout.rows.length + band.length + tabLayout.rows.length + (v.pinned ? 1 : 0);
     // The code takes what the header, the caption, the tabs, the pinned line, the controls and the list leave.
     const rows = Math.max(3, bodyRows - 3 - above - (height > 0 ? height + 1 : 0));
     const columns = Math.max(10, bodyColumns - GUTTER);
@@ -797,6 +869,12 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1}>
+          {v.lane && (
+            <Text>
+              <Text color={laneColor(v.lane.color)}>●</Text>
+              {` ${v.lane.label}${v.lane.kind ? ` (${v.lane.kind})` : ''}`}
+            </Text>
+          )}
           <Text bold>{name ?? 'No changes yet'}</Text>
           {current !== -1 && <Text dimColor>{`#${l.rows[current]!.number}`}</Text>}
           <Text dimColor>
@@ -809,6 +887,30 @@ export const register: Register = (on, options) => {
             </Button>
           )}
         </Box>
+        {chipLayout.rows.map((row, r) => (
+          <Box key={`lanes:${r}`} flexDirection="row" gap={1}>
+            {row.map((chip) => {
+              const isFollowed = chip.id === l.followed;
+              return (
+                <Button
+                  key={`lane:${chip.id === '' ? 'main' : chip.id}`}
+                  variant={isFollowed ? 'primary' : 'secondary'}
+                  label={isFollowed ? `${chip.label}, followed` : `Follow ${chip.label}`}
+                  onPress={() => move($, live, (d) => follow(d, chip.id, live.opts, live.now))}
+                >
+                  <Text color={laneColor(chip.color)}>●</Text>
+                  {` ${laneChipText(chip)}`}
+                </Button>
+              );
+            })}
+            {r === chipLayout.rows.length - 1 && chipLayout.left > 0 && <Text dimColor>{`+${chipLayout.left} more`}</Text>}
+            {r === chipLayout.rows.length - 1 && (
+              <Button key="auto-follow" onPress={() => act($, live, toggleAutoFollow)}>
+                {switchText}
+              </Button>
+            )}
+          </Box>
+        ))}
         {band.length > 0 && (
           // A line apiece, each cut at the edge, so the band never takes more rows than it counted.
           <Box backgroundColor="subtle" paddingX={1} flexDirection="column">
@@ -923,7 +1025,8 @@ export const register: Register = (on, options) => {
               const { row } = line;
               const isCurrent = row.id === l.current;
               const width = bodyColumns - ROW_MARGIN - REVEAL_COLUMNS;
-              const label = rowLabel(row, relativePath(row.path, live.cwd), { isCurrent, isPaused }, width);
+              const rowLane = hasLanes && row.lane !== undefined ? lanesById.get(row.lane) : undefined;
+              const label = rowLabel(row, relativePath(row.path, live.cwd), { isCurrent, isPaused }, width, rowLane ? laneTagText(rowLane.label) : '');
               // The card opens above the row, over the rows and code drawn before it,
               // since the list sits at the pane's foot; its lines fit the rows above.
               const cardColumns = Math.max(10, Math.min(CARD_COLUMNS, bodyColumns - ROW_MARGIN));
@@ -940,6 +1043,13 @@ export const register: Register = (on, options) => {
                     {label.lead}
                     {label.dir !== '' && <Text dimColor>{label.dir}</Text>}
                     <Text bold>{label.file}</Text>
+                    {rowLane && (
+                      <Text>
+                        {'  '}
+                        <Text color={laneColor(rowLane.color)}>●</Text>
+                        {` ${label.tag}`}
+                      </Text>
+                    )}
                     {label.tail}
                   </Button>
                   <Button key={`reveal:${row.id}`} plain dimColor label={`Show #${row.number} in the conversation`} onPress={() => reveal($, live, row.id)}>

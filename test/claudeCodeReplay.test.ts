@@ -366,7 +366,15 @@ test('waiting text is capped; the oldest waiting changes are dropped', () => {
   assert.equal(d.recorded, 25);
 });
 
-test('saved state lists the played changes, the one being typed, then the waiting ones, and restores them', () => {
+/** How many of `saved`'s changes have played, in every lane. */
+function playedOf(saved: Saved): number {
+  return Object.values(saved.positions).reduce((n, x) => n + x, 0);
+}
+
+/** What `saved` keeps of a deck whose changes are all the main conversation's. */
+const MAIN_LANE = { lanes: [{ id: '', label: 'Main', color: 1 }], followed: '', autoFollow: true };
+
+test('saved state lists the changes in recorded order, how many of each lane played, and restores them', () => {
   const changes = [change('a', '', 'alpha\n'), { ...change('b', '', 'beta\n'), tool: 'Edit' } as const, { ...change('c', '', 'gamma\n'), tool: 'Write', kind: 'create', time: 7 } as const];
   const d = deckOf(...changes);
   tick(d, FAST);
@@ -381,9 +389,10 @@ test('saved state lists the played changes, the one being typed, then the waitin
       { id: 'b', number: 2, tool: 'Edit', path: '/w/b.ts', kind: 'modify', time: 0 },
       { id: 'c', number: 3, tool: 'Write', path: '/w/c.ts', kind: 'create', time: 7 },
     ],
-    played: 1,
     recorded: 3,
     isPaused: true,
+    ...MAIN_LANE,
+    positions: { '': 1 },
   });
 
   // The one being typed starts over and, paused, is shown cued; the played one stays played.
@@ -410,7 +419,7 @@ test('a reload with every change played plays none again and shows the last one 
   const d = deckOf(...changes);
   playOut(d);
   const saved = savedOf(d);
-  assert.equal(saved.played, 2);
+  assert.equal(playedOf(saved), 2);
   const back = restore(saved, withTexts(saved, changes), FAST);
   assert.deepEqual(back.shown, d.shown);
   assert.equal(tick(back, FAST), false);
@@ -426,13 +435,13 @@ test('a reload skips a saved change whose texts are gone, and the rest keep thei
     finish(d, FAST);
   }
   const saved = savedOf(d);
-  assert.equal(saved.played, 2);
+  assert.equal(playedOf(saved), 2);
 
   const noB = restore(saved, withTexts(saved, [a, c]), FAST);
-  assert.deepEqual(savedOf(noB), { ...saved, changes: saved.changes.filter((s) => s.id !== 'b'), played: 1 });
+  assert.deepEqual(savedOf(noB), { ...saved, changes: saved.changes.filter((s) => s.id !== 'b'), positions: { '': 1 } });
   assert.equal(noB.shown?.text, 'a\n');
   const onlyC = restore(saved, withTexts(saved, [c]), FAST);
-  assert.deepEqual(savedOf(onlyC), { ...saved, changes: saved.changes.filter((s) => s.id === 'c'), played: 0 });
+  assert.deepEqual(savedOf(onlyC), { ...saved, changes: saved.changes.filter((s) => s.id === 'c'), positions: { '': 0 } });
   assert.equal(onlyC.shown, undefined);
 });
 
@@ -440,7 +449,7 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
   const d = deckOf({ ...change('a', '', 'a\n'), tool: 'Write', kind: 'create', time: 5 });
   playOut(d);
   const saved = savedOf(d);
-  assert.equal(SAVED_SHAPE, 'saved-4');
+  assert.equal(SAVED_SHAPE, 'saved-5');
   assert.deepEqual(savedFrom({ shape: SAVED_SHAPE, value: saved }), saved);
   const v2 = {
     changes: [
@@ -452,11 +461,16 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
     isPaused: false,
   };
   assert.deepEqual(savedFrom({ shape: 'saved-2', value: v2 }), {
-    ...v2,
     changes: [
       { id: 'p', number: 4, path: '/w/p.ts', kind: 'create', time: 4 },
       { id: 'q', number: 5, path: '/w/q.ts', kind: 'modify', time: 6 },
     ],
+    recorded: 5,
+    isPaused: false,
+    lanes: [],
+    positions: { '': 1 },
+    followed: '',
+    autoFollow: true,
   });
   const v1 = { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 'big', path: '/w/big.json', isTooLarge: true }], recorded: 3, isPaused: true };
   assert.deepEqual(savedFrom({ shape: 'saved-1', value: v1 }), {
@@ -464,11 +478,14 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
       { id: 'r', number: 2, path: '/w/r.ts', kind: 'modify', time: 0 },
       { id: 'big', number: 3, path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
     ],
-    played: 0,
     recorded: 3,
     isPaused: true,
+    lanes: [],
+    positions: { '': 0 },
+    followed: '',
+    autoFollow: true,
   });
-  const empty = { changes: [], played: 0, recorded: 0, isPaused: false };
+  const empty = { changes: [], recorded: 0, isPaused: false, lanes: [], positions: {}, followed: '', autoFollow: true };
   assert.deepEqual(savedFrom({ shape: 'saved-0', value: saved }), empty);
   assert.deepEqual(savedFrom(undefined), empty);
 });
@@ -542,7 +559,7 @@ test('skip to latest works once the timeline has dropped the change being typed'
   assert.equal(d.playing, undefined);
   assert.equal(queued(d).length, 0);
   assert.equal(d.shown?.text, `${MAX_WAITING - 1}\n`);
-  assert.deepEqual([savedOf(d).changes.length, savedOf(d).played], [MAX_WAITING, MAX_WAITING]);
+  assert.deepEqual([savedOf(d).changes.length, playedOf(savedOf(d))], [MAX_WAITING, MAX_WAITING]);
   enqueue(d, change('next', '', 'n\n'));
   assert.equal(playOut(d).deck.shown?.text, 'n\n');
 });
@@ -773,7 +790,7 @@ test('a seek while paused survives a reload: still paused, the picked change cue
   togglePause(d);
   seek(d, 'b', FAST);
   const saved = savedOf(d);
-  assert.equal(saved.played, 1);
+  assert.equal(playedOf(saved), 1);
   const back = restore(saved, withTexts(saved, changes), FAST);
   assert.equal(back.isPaused, true);
   assert.equal(back.shown?.text, 'b\n');
@@ -783,6 +800,9 @@ test('a seek while paused survives a reload: still paused, the picked change cue
     dropped: 0,
     current: 'b',
     isPaused: true,
+    lanes: [{ id: '', label: 'Main', color: 1, state: 'queued', queued: 3 }],
+    followed: '',
+    autoFollow: true,
   });
   togglePause(back);
   assert.deepEqual(startOrder(back), ['b', 'c', 'd']);
@@ -812,8 +832,11 @@ test('the listing has a row per kept change with its state, counts and the chang
     dropped: 0,
     current: 'c',
     isPaused: false,
+    lanes: [{ id: '', label: 'Main', color: 1, state: 'typing', queued: 2 }],
+    followed: '',
+    autoFollow: true,
   });
-  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0, isPaused: false });
+  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0, isPaused: false, lanes: [], followed: '', autoFollow: true });
   togglePause(d);
   assert.equal(listingOf(d).isPaused, true);
 });
@@ -846,7 +869,7 @@ test('a row label shows a glyph, number, tool, path and counts, and the state wo
     const l = rowLabel({ ...ROW, ...row }, 'src/routes/signup.ts', { ...AT, ...at }, 80);
     return `${l.lead}${l.dir}${l.file}${l.tail}`;
   };
-  assert.deepEqual(rowLabel(ROW, 'src/routes/signup.ts', AT, 80), { lead: '✓ #7 Edit ', dir: 'src/routes/', file: 'signup.ts', tail: ' +4' });
+  assert.deepEqual(rowLabel(ROW, 'src/routes/signup.ts', AT, 80), { lead: '✓ #7 Edit ', dir: 'src/routes/', file: 'signup.ts', tag: '', tail: ' +4' });
   assert.equal(label({ state: 'playing' }, { isCurrent: true }), '▸ #7 Edit src/routes/signup.ts Typing +4');
   assert.equal(label({ state: 'playing' }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Paused +4');
   assert.equal(label({ state: 'pending' }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Next +4');
@@ -861,13 +884,13 @@ test('a row label shows a glyph, number, tool, path and counts, and the state wo
 
 test('a row label cuts the folder, then the file name, to fit', () => {
   const fit = (width: number) => rowLabel(ROW, 'src/routes/signup.ts', AT, width);
-  assert.deepEqual(fit(28), { lead: '✓ #7 Edit ', dir: 'src/r…', file: 'signup.ts', tail: ' +4' });
+  assert.deepEqual(fit(28), { lead: '✓ #7 Edit ', dir: 'src/r…', file: 'signup.ts', tag: '', tail: ' +4' });
   for (const width of [40, 28, 22, 18, 15]) {
     const l = fit(width);
     assert.equal(`${l.lead}${l.dir}${l.file}${l.tail}`.length <= width, true, `width ${width}: ${JSON.stringify(l)}`);
   }
-  assert.deepEqual(fit(22), { lead: '✓ #7 Edit ', dir: '', file: 'signup.ts', tail: ' +4' });
-  assert.deepEqual(fit(18), { lead: '✓ #7 Edit ', dir: '', file: 'sign…', tail: ' +4' });
+  assert.deepEqual(fit(22), { lead: '✓ #7 Edit ', dir: '', file: 'signup.ts', tag: '', tail: ' +4' });
+  assert.deepEqual(fit(18), { lead: '✓ #7 Edit ', dir: '', file: 'sign…', tag: '', tail: ' +4' });
   assert.equal(rowLabel(ROW, 'signup.ts', AT, 80).dir, '');
   assert.equal(rowLabel(ROW, 'C:\\w\\src\\a.ts', AT, 80).file, 'a.ts');
 });
@@ -914,7 +937,7 @@ test('a change keeps its turn and agent through the timeline, saved state and a 
   assert.equal(changeById(d, 'nope'), undefined);
 });
 
-test('state saved under saved-3, which kept no links, loads as stored', () => {
+test('state saved under saved-3, which kept no links, loads with every change in the main conversation\'s lane', () => {
   const v3 = {
     changes: [
       { id: 'p', number: 1, tool: 'Write', path: '/w/p.ts', kind: 'create', time: 4 },
@@ -924,7 +947,15 @@ test('state saved under saved-3, which kept no links, loads as stored', () => {
     recorded: 2,
     isPaused: false,
   };
-  assert.deepEqual(savedFrom({ shape: 'saved-3', value: v3 }), v3);
+  assert.deepEqual(savedFrom({ shape: 'saved-3', value: v3 }), {
+    changes: v3.changes,
+    recorded: 2,
+    isPaused: false,
+    lanes: [],
+    positions: { '': 1 },
+    followed: '',
+    autoFollow: true,
+  });
 });
 
 test('changeById finds the change being typed once the timeline has dropped it', () => {

@@ -4,7 +4,7 @@
 import type { On } from 'claude-code';
 import { expect, test, type Engine } from 'claude-code/testing';
 
-import { PANE_ID, kept, seed, start, world } from './world';
+import { PANE_ID, inMainLane, kept, seed, start, world } from './world';
 
 const PANE = {
   plugin: 'agent-typewriter',
@@ -247,7 +247,7 @@ test('changes saved before captions load with no caption', async ($, on) => {
   await start($);
   await w.clock.advance(100);
 
-  expect(w.saved).toEqual({ changes, played: 1, recorded: 2, isPaused: true });
+  expect(w.saved).toEqual(inMainLane({ changes, played: 1, recorded: 2, isPaused: true }));
   expect((await look($)).band).toBeUndefined();
   expect(await card($, 'r')).toBeUndefined();
   expect(await card($, 's')).toBeUndefined();

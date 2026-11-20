@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing';
 
 import { TICK_MS } from '../hooks/replay';
-import { PANE_ID, kept, start, viewText, world } from './world';
+import { PANE_ID, kept, playedOf, start, viewText, world } from './world';
 
 test('an Edit is recorded with the text before and after it, as a modify by Edit at the time it ran, numbered 1', async ($, on) => {
   const w = world(on, { '/w/app.ts': 'const a = 1;\n' });
@@ -185,19 +185,19 @@ test('a played change keeps its texts until 200 later changes push it out, and i
   await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
   const [id] = w.saved.changes.map((c) => c.id);
   await w.clock.advance(5_000);
-  expect(w.saved.played).toBe(1);
+  expect(playedOf(w.saved)).toBe(1);
   expect(kept(w)).toMatchObject([{ id, path: '/w/a.ts', before: '', after: 'a\n' }]);
 
   for (let i = 0; i < 199; i++) await $.tool.call({ tool: 'Write', file_path: `/w/c${i}.ts`, content: `${i}\n` });
   await w.clock.settle();
   expect(w.saved.changes.length).toBe(200);
-  expect(w.saved.played).toBe(1);
+  expect(playedOf(w.saved)).toBe(1);
   expect(w.texts.get(`${id}:after`)).toBe('a\n');
 
   await $.tool.call({ tool: 'Write', file_path: '/w/last.ts', content: 'last\n' });
   await w.clock.settle();
   expect(w.saved.changes.length).toBe(200);
-  expect(w.saved.played).toBe(0);
+  expect(playedOf(w.saved)).toBe(0);
   expect(w.saved.changes.map((c) => c.path)).not.toContain('/w/a.ts');
   expect(w.texts.get(`${id}:before`)).toBe('');
   expect(w.texts.get(`${id}:after`)).toBe('');
