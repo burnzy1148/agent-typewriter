@@ -1018,7 +1018,7 @@ function turnRow(n: number, turn?: string, call?: string): Row {
 }
 
 function listingFrom(rows: Row[], dropped = 0): Listing {
-  return { rows, dropped, isPaused: false };
+  return { rows, dropped, isPaused: false, lanes: [], followed: '', autoFollow: true };
 }
 
 const TURNS: TurnInfo[] = [
