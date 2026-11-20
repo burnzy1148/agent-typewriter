@@ -81,19 +81,29 @@ It shows the file being typed (by its path in your project) and the change's num
 
 The code is drawn as a unified diff, marked as Claude Code draws diffs. Lines typed since the file's baseline are marked added, and lines of the baseline that are gone stay in view, marked removed. A file's baseline is the file as it was before the oldest change to it that the pane keeps. Marks are whole lines: a line with one word changed shows its old version removed and its new version added. Text added and later removed leaves no mark.
 
-Over the code there is a tab for each file Claude has typed, in the order it typed them, with the file on show in bold. Press a tab to look at that file as it was last typed while playback carries on elsewhere. A line above the code then says which file playback is in, with **Follow playback** to go back to it. Pressing the playback file's tab, or anything that moves playback, goes back too. If the tabs don't fit in two rows, the files typed longest ago are left out, and the row says how many.
+Over the code there is a tab for each file the followed lane has typed (see Lanes below), in the order it typed them, with the file on show in bold. Press a tab to look at that file as it was last typed while playback carries on elsewhere. A line above the code then says which file playback is in, with **Follow playback** to go back to it. Pressing the playback file's tab, or anything that moves playback, goes back too. If the tabs don't fit in two rows, the files typed longest ago are left out, and the row says how many.
+
+### Lanes
+
+When Claude starts subagents, the main conversation and each subagent that edits get a lane of their own, so their edits don't interleave. An agent a subagent starts gets its own lane too. Only one lane types at a time, the followed one; the others keep recording and queue. Each lane remembers where it is, so you can leave one and come back to it.
+
+While more than one lane holds changes, a row of chips sits under the header, one per lane: **Main** for the main conversation, and each subagent by the description its `Agent` call gave (or its agent type, or **Subagent** when the plugin didn't see it start). Each chip has its lane's color, one of five that repeat past five lanes, and says what the lane is doing: typing or paused, how many changes are queued, or caught up. The followed lane's chip is selected; press another to follow that lane. The tabs, the marks and Clear marks are the followed lane's: following another lane shows its files, with its own marks. The header then begins with the followed lane, with a subagent's agent type in parentheses, the status counts the changes queued in the other lanes, and each subagent's row in the list names its lane. If the chips don't fit in two rows, the caught-up lanes are left out first, and the row says how many.
+
+**Auto-follow**, at the end of the chip row, is on until you turn it off. Once the followed lane is caught up and nothing has been typed for 3 seconds, the pane follows the lane whose oldest queued change came first, so it tours the subagents' work after the main conversation's. It never leaves a change halfway. With it off, the pane stays where you put it, except that a subagent's lane that has finished and played out hands over to a lane still working. A reload keeps the lanes, where each one is, the followed lane and the switch.
+
+Lanes are the agents of this one session. Other Claude Code sessions, and their worktrees, are not lanes: each session's plugin sees only its own calls.
 
 Its buttons, with the key that presses each while the pane has the keyboard:
 
-- **From start** (`r`): play every change again from the first one the pane keeps.
+- **From start** (`r`): play every change again from the first one the pane keeps, every lane from its first.
 - **Pause** / **Resume** (`p`): stop typing where it is, and carry on from there.
 - **Finish current** (`f`): show the current change done and start the next one.
-- **Skip to latest** (`l`): finish every queued change and show the last one.
-- **Clear marks**: make every file's text as it is now its baseline, so only later changes are marked. A file being typed when you press it shows no marks until that change is done. Going back to a change from before you cleared, by pressing it or From start, brings the marks back. A reload keeps what you cleared.
+- **Skip to latest** (`l`): finish every queued change in every lane and show the followed lane's last one.
+- **Clear marks**: make every file's text, as the followed lane has typed it, its baseline, so only later changes are marked. Other lanes keep their marks until you follow one and clear it too. A file being typed when you press it shows no marks until that change is done. Going back to a change from before you cleared, by pressing it or From start, brings the marks back. A reload keeps what you cleared.
 
 Over the code, the pane quotes what Claude wrote just before the call that made the change, such as “Now I'll guard the login route.”, cut to three lines. It takes the words from the same response and the same agent, so a subagent's change shows the subagent's words, never the main conversation's. A call made right after another with no words between them shares that call's words, and a change Claude made without writing anything first shows none. Thinking is never shown, and the words are plain text, as the conversation keeps them.
 
-Below them, the pane lists the session's changes: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. Rest the pointer on a row to see the words before that change in a card above it. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press a change, Play turn, Play from first, By turn or By file, From start, Finish current or Skip to latest.
+Below them, the pane lists the session's changes: ✓ played, ▸ the current one, ○ queued, each with its number, the tool that made it, its path, and the lines it adds and removes. The current row says whether it is typing, paused or next, and a file too large to type reads Too large, then Not typed. Rest the pointer on a row to see the words before that change in a card above it. The list keeps the current change in view; scroll it to look back, and it stays where you put it until you press a change, a lane's chip, Play turn, Play from first, By turn or By file, From start, Finish current or Skip to latest.
 
 **By turn** and **By file**, beside the list's title, choose how it is grouped. Your choice holds for the session, through a reload; it starts on By turn.
 
@@ -101,7 +111,7 @@ By turn, each turn of the main conversation that makes changes gets a chapter he
 
 By file, each file Claude changed gets a group headed by its name, its folder, how many of its changes the pane keeps, and **Play from first**. A group holds the file's changes in the order they were made, from every turn and subagent, and the groups come in the order of each file's first change the pane keeps, so the newest file is last. On Windows, paths that differ only in `\` or `/`, or in letter case, are one file.
 
-Press a change to play from it: it is typed next and the later ones follow, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done. Play turn does the same from the turn's first change the pane keeps, and Play from first from the file's: the changes after it follow whatever file they changed.
+Press a change to play from it: the pane follows its lane, it is typed next and the lane's later changes follow, other lanes stay where they are, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done. Play from first does the same from the file's first change the pane keeps: the changes after it in its lane follow whatever file they changed. Play turn replays the whole turn: every lane with a change in it goes back to its first change there, and the pane follows the lane of the turn's first change.
 
 ### Back and forth with the conversation
 

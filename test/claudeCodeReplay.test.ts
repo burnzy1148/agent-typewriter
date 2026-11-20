@@ -45,6 +45,18 @@ import {
   clearMarks,
   pruneClears,
   tabsOf,
+  follow,
+  setRunning,
+  laneLabel,
+  laneChipRows,
+  laneChipText,
+  laneTagText,
+  laneHeaderText,
+  autoFollowText,
+  playFrom,
+  toggleAutoFollow,
+  type LaneAbout,
+  type LaneChip,
   MAX_CAPTION,
   MAX_ROW_CAPTION,
   captionLines,
@@ -366,7 +378,15 @@ test('waiting text is capped; the oldest waiting changes are dropped', () => {
   assert.equal(d.recorded, 25);
 });
 
-test('saved state lists the played changes, the one being typed, then the waiting ones, and restores them', () => {
+/** How many of `saved`'s changes have played, in every lane. */
+function playedOf(saved: Saved): number {
+  return Object.values(saved.positions).reduce((n, x) => n + x, 0);
+}
+
+/** What `saved` keeps of a deck whose changes are all the main conversation's. */
+const MAIN_LANE = { lanes: [{ id: '', label: 'Main', color: 1 }], followed: '', autoFollow: true };
+
+test('saved state lists the changes in recorded order, how many of each lane played, and restores them', () => {
   const changes = [change('a', '', 'alpha\n'), { ...change('b', '', 'beta\n'), tool: 'Edit' } as const, { ...change('c', '', 'gamma\n'), tool: 'Write', kind: 'create', time: 7 } as const];
   const d = deckOf(...changes);
   tick(d, FAST);
@@ -381,9 +401,10 @@ test('saved state lists the played changes, the one being typed, then the waitin
       { id: 'b', number: 2, tool: 'Edit', path: '/w/b.ts', kind: 'modify', time: 0 },
       { id: 'c', number: 3, tool: 'Write', path: '/w/c.ts', kind: 'create', time: 7 },
     ],
-    played: 1,
     recorded: 3,
     isPaused: true,
+    ...MAIN_LANE,
+    positions: { '': 1 },
   });
 
   // The one being typed starts over and, paused, is shown cued; the played one stays played.
@@ -410,7 +431,7 @@ test('a reload with every change played plays none again and shows the last one 
   const d = deckOf(...changes);
   playOut(d);
   const saved = savedOf(d);
-  assert.equal(saved.played, 2);
+  assert.equal(playedOf(saved), 2);
   const back = restore(saved, withTexts(saved, changes), FAST);
   assert.deepEqual(back.shown, d.shown);
   assert.equal(tick(back, FAST), false);
@@ -426,13 +447,13 @@ test('a reload skips a saved change whose texts are gone, and the rest keep thei
     finish(d, FAST);
   }
   const saved = savedOf(d);
-  assert.equal(saved.played, 2);
+  assert.equal(playedOf(saved), 2);
 
   const noB = restore(saved, withTexts(saved, [a, c]), FAST);
-  assert.deepEqual(savedOf(noB), { ...saved, changes: saved.changes.filter((s) => s.id !== 'b'), played: 1 });
+  assert.deepEqual(savedOf(noB), { ...saved, changes: saved.changes.filter((s) => s.id !== 'b'), positions: { '': 1 } });
   assert.equal(noB.shown?.text, 'a\n');
   const onlyC = restore(saved, withTexts(saved, [c]), FAST);
-  assert.deepEqual(savedOf(onlyC), { ...saved, changes: saved.changes.filter((s) => s.id === 'c'), played: 0 });
+  assert.deepEqual(savedOf(onlyC), { ...saved, changes: saved.changes.filter((s) => s.id === 'c'), positions: { '': 0 } });
   assert.equal(onlyC.shown, undefined);
 });
 
@@ -440,7 +461,7 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
   const d = deckOf({ ...change('a', '', 'a\n'), tool: 'Write', kind: 'create', time: 5 });
   playOut(d);
   const saved = savedOf(d);
-  assert.equal(SAVED_SHAPE, 'saved-4');
+  assert.equal(SAVED_SHAPE, 'saved-5');
   assert.deepEqual(savedFrom({ shape: SAVED_SHAPE, value: saved }), saved);
   const v2 = {
     changes: [
@@ -452,11 +473,16 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
     isPaused: false,
   };
   assert.deepEqual(savedFrom({ shape: 'saved-2', value: v2 }), {
-    ...v2,
     changes: [
       { id: 'p', number: 4, path: '/w/p.ts', kind: 'create', time: 4 },
       { id: 'q', number: 5, path: '/w/q.ts', kind: 'modify', time: 6 },
     ],
+    recorded: 5,
+    isPaused: false,
+    lanes: [],
+    positions: { '': 1 },
+    followed: '',
+    autoFollow: true,
   });
   const v1 = { changes: [{ id: 'r', path: '/w/r.ts' }, { id: 'big', path: '/w/big.json', isTooLarge: true }], recorded: 3, isPaused: true };
   assert.deepEqual(savedFrom({ shape: 'saved-1', value: v1 }), {
@@ -464,11 +490,14 @@ test('saved state is read under its own tag, under saved-2 and saved-1 numbered 
       { id: 'r', number: 2, path: '/w/r.ts', kind: 'modify', time: 0 },
       { id: 'big', number: 3, path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
     ],
-    played: 0,
     recorded: 3,
     isPaused: true,
+    lanes: [],
+    positions: { '': 0 },
+    followed: '',
+    autoFollow: true,
   });
-  const empty = { changes: [], played: 0, recorded: 0, isPaused: false };
+  const empty = { changes: [], recorded: 0, isPaused: false, lanes: [], positions: {}, followed: '', autoFollow: true };
   assert.deepEqual(savedFrom({ shape: 'saved-0', value: saved }), empty);
   assert.deepEqual(savedFrom(undefined), empty);
 });
@@ -542,7 +571,7 @@ test('skip to latest works once the timeline has dropped the change being typed'
   assert.equal(d.playing, undefined);
   assert.equal(queued(d).length, 0);
   assert.equal(d.shown?.text, `${MAX_WAITING - 1}\n`);
-  assert.deepEqual([savedOf(d).changes.length, savedOf(d).played], [MAX_WAITING, MAX_WAITING]);
+  assert.deepEqual([savedOf(d).changes.length, playedOf(savedOf(d))], [MAX_WAITING, MAX_WAITING]);
   enqueue(d, change('next', '', 'n\n'));
   assert.equal(playOut(d).deck.shown?.text, 'n\n');
 });
@@ -773,7 +802,7 @@ test('a seek while paused survives a reload: still paused, the picked change cue
   togglePause(d);
   seek(d, 'b', FAST);
   const saved = savedOf(d);
-  assert.equal(saved.played, 1);
+  assert.equal(playedOf(saved), 1);
   const back = restore(saved, withTexts(saved, changes), FAST);
   assert.equal(back.isPaused, true);
   assert.equal(back.shown?.text, 'b\n');
@@ -783,6 +812,9 @@ test('a seek while paused survives a reload: still paused, the picked change cue
     dropped: 0,
     current: 'b',
     isPaused: true,
+    lanes: [{ id: '', label: 'Main', color: 1, state: 'queued', queued: 3 }],
+    followed: '',
+    autoFollow: true,
   });
   togglePause(back);
   assert.deepEqual(startOrder(back), ['b', 'c', 'd']);
@@ -812,8 +844,11 @@ test('the listing has a row per kept change with its state, counts and the chang
     dropped: 0,
     current: 'c',
     isPaused: false,
+    lanes: [{ id: '', label: 'Main', color: 1, state: 'typing', queued: 2 }],
+    followed: '',
+    autoFollow: true,
   });
-  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0, isPaused: false });
+  assert.deepEqual(listingOf(newDeck()), { rows: [], dropped: 0, isPaused: false, lanes: [], followed: '', autoFollow: true });
   togglePause(d);
   assert.equal(listingOf(d).isPaused, true);
 });
@@ -846,7 +881,7 @@ test('a row label shows a glyph, number, tool, path and counts, and the state wo
     const l = rowLabel({ ...ROW, ...row }, 'src/routes/signup.ts', { ...AT, ...at }, 80);
     return `${l.lead}${l.dir}${l.file}${l.tail}`;
   };
-  assert.deepEqual(rowLabel(ROW, 'src/routes/signup.ts', AT, 80), { lead: '✓ #7 Edit ', dir: 'src/routes/', file: 'signup.ts', tail: ' +4' });
+  assert.deepEqual(rowLabel(ROW, 'src/routes/signup.ts', AT, 80), { lead: '✓ #7 Edit ', dir: 'src/routes/', file: 'signup.ts', tag: '', tail: ' +4' });
   assert.equal(label({ state: 'playing' }, { isCurrent: true }), '▸ #7 Edit src/routes/signup.ts Typing +4');
   assert.equal(label({ state: 'playing' }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Paused +4');
   assert.equal(label({ state: 'pending' }, { isCurrent: true, isPaused: true }), '▸ #7 Edit src/routes/signup.ts Next +4');
@@ -861,13 +896,13 @@ test('a row label shows a glyph, number, tool, path and counts, and the state wo
 
 test('a row label cuts the folder, then the file name, to fit', () => {
   const fit = (width: number) => rowLabel(ROW, 'src/routes/signup.ts', AT, width);
-  assert.deepEqual(fit(28), { lead: '✓ #7 Edit ', dir: 'src/r…', file: 'signup.ts', tail: ' +4' });
+  assert.deepEqual(fit(28), { lead: '✓ #7 Edit ', dir: 'src/r…', file: 'signup.ts', tag: '', tail: ' +4' });
   for (const width of [40, 28, 22, 18, 15]) {
     const l = fit(width);
     assert.equal(`${l.lead}${l.dir}${l.file}${l.tail}`.length <= width, true, `width ${width}: ${JSON.stringify(l)}`);
   }
-  assert.deepEqual(fit(22), { lead: '✓ #7 Edit ', dir: '', file: 'signup.ts', tail: ' +4' });
-  assert.deepEqual(fit(18), { lead: '✓ #7 Edit ', dir: '', file: 'sign…', tail: ' +4' });
+  assert.deepEqual(fit(22), { lead: '✓ #7 Edit ', dir: '', file: 'signup.ts', tag: '', tail: ' +4' });
+  assert.deepEqual(fit(18), { lead: '✓ #7 Edit ', dir: '', file: 'sign…', tag: '', tail: ' +4' });
   assert.equal(rowLabel(ROW, 'signup.ts', AT, 80).dir, '');
   assert.equal(rowLabel(ROW, 'C:\\w\\src\\a.ts', AT, 80).file, 'a.ts');
 });
@@ -914,7 +949,7 @@ test('a change keeps its turn and agent through the timeline, saved state and a 
   assert.equal(changeById(d, 'nope'), undefined);
 });
 
-test('state saved under saved-3, which kept no links, loads as stored', () => {
+test('state saved under saved-3, which kept no links, loads with every change in the main conversation\'s lane', () => {
   const v3 = {
     changes: [
       { id: 'p', number: 1, tool: 'Write', path: '/w/p.ts', kind: 'create', time: 4 },
@@ -924,7 +959,15 @@ test('state saved under saved-3, which kept no links, loads as stored', () => {
     recorded: 2,
     isPaused: false,
   };
-  assert.deepEqual(savedFrom({ shape: 'saved-3', value: v3 }), v3);
+  assert.deepEqual(savedFrom({ shape: 'saved-3', value: v3 }), {
+    changes: v3.changes,
+    recorded: 2,
+    isPaused: false,
+    lanes: [],
+    positions: { '': 1 },
+    followed: '',
+    autoFollow: true,
+  });
 });
 
 test('changeById finds the change being typed once the timeline has dropped it', () => {
@@ -976,7 +1019,7 @@ function turnRow(n: number, turn?: string, call?: string): Row {
 }
 
 function listingFrom(rows: Row[], dropped = 0): Listing {
-  return { rows, dropped, isPaused: false };
+  return { rows, dropped, isPaused: false, lanes: [], followed: '', autoFollow: true };
 }
 
 const TURNS: TurnInfo[] = [
@@ -1652,4 +1695,444 @@ test('a tick and its view on a 1 MB file stay well within the 50 ms tick', () =>
   }
   const median = times.sort((x, y) => x - y)[7]!;
   assert.ok(median < 40, `median ${median.toFixed(1)} ms`);
+});
+
+// Lanes: one per loop, the main conversation's '' and each agent's by its id.
+
+/** A change made in the loop of agent `agentId`. */
+function by(agentId: string, c: NewChange): NewChange {
+  return { ...c, agentId };
+}
+
+const WRITE_TESTS: LaneAbout = { description: 'write tests', subagentType: 'general-purpose', isRunning: true };
+const UPDATE_CALLERS: LaneAbout = { description: 'update  callers', subagentType: 'general-purpose', isRunning: true };
+
+/** Each lane's label and color slot, in the order the timeline lists them. */
+function lanesOf(d: Deck) {
+  return d.timeline.laneList().map((l) => [l.id, l.label, l.color]);
+}
+
+/** Ticks until nothing moves, at times from `start` on, a tick apart, auto-follow included; returns the changes started, in order, and the time reached. */
+function playTimed(d: Deck, start: number, max = 10_000) {
+  const order: string[] = [];
+  let now = start;
+  for (let i = 0; i < max; i++) {
+    now += TICK_MS;
+    const moved = tick(d, FAST, now);
+    const id = playingId(d);
+    if (id && order.at(-1) !== id) order.push(id);
+    if (!moved && d.timeline.pendingTotal() === 0) break;
+  }
+  return { order, now };
+}
+
+test('lanes: a lane per loop, a nested agent its own, each labeled and colored in order', () => {
+  const d = newDeck();
+  enqueue(d, change('login', '', 'l\n', '/w/src/routes/login.ts'));
+  enqueue(d, by('ag1', change('limiter', '', 't\n', '/w/test/limiter.test.ts')), undefined, WRITE_TESTS);
+  enqueue(d, by('ag2', change('callers', '', 'c\n')), undefined, UPDATE_CALLERS);
+  enqueue(d, by('ag3', change('inner', '', 'i\n', '/w/c.ts')), undefined, { subagentType: 'Explore' });
+  assert.deepEqual(lanesOf(d), [
+    ['', 'Main', 1],
+    ['ag1', 'write tests', 2],
+    ['ag2', 'update callers', 3],
+    ['ag3', 'Explore', 4],
+  ]);
+  assert.deepEqual(
+    d.timeline.all().map((e) => [(e as unknown as Change).id, e.lane ?? '']),
+    [
+      ['login', ''],
+      ['limiter', 'ag1'],
+      ['callers', 'ag2'],
+      ['inner', 'ag3'],
+    ],
+  );
+  assert.equal(laneLabel('x'), 'Subagent', 'an agent the plugin never saw start');
+  assert.equal(laneLabel('x', { description: '  \n ' , subagentType: 'Plan' }), 'Plan');
+  assert.equal(laneLabel(''), 'Main');
+});
+
+test('lanes: past five lanes the colors repeat, each lane keeping its own', () => {
+  const d = newDeck();
+  enqueue(d, change('m', '', 'm\n'));
+  for (let i = 1; i <= 5; i++) enqueue(d, by(`ag${i}`, change(`c${i}`, '', `${i}\n`)), undefined, { description: `agent ${i}` });
+  const colors = d.timeline.laneList().map((l) => l.color);
+  assert.deepEqual(colors, [1, 2, 3, 4, 5, 1]);
+  enqueue(d, change('m2', 'm\n', 'mm\n'));
+  assert.deepEqual(d.timeline.laneList().map((l) => l.color), colors);
+});
+
+test('lanes: a finished lane whose changes are all dropped is gone', () => {
+  const d = newDeck();
+  enqueue(d, by('ag1', change('t', '', 't\n')), undefined, WRITE_TESTS);
+  setRunning(d, 'ag1', false);
+  for (let i = 0; i < MAX_WAITING; i++) enqueue(d, change(`m${i}`, '', `${i}\n`));
+  assert.deepEqual(d.timeline.lanesInBuffer(), ['']);
+  assert.equal(d.timeline.laneInfo('ag1'), undefined);
+});
+
+test('lanes: a session whose first change is a subagent\'s follows that lane and types it', () => {
+  const d = newDeck();
+  enqueue(d, by('ag1', change('t', '', 'tests\n')), undefined, WRITE_TESTS);
+  assert.equal(d.timeline.followed, 'ag1');
+  assert.deepEqual(startOrder(d), ['t']);
+  assert.equal(d.shown?.text, 'tests\n');
+  // The main conversation's first change, later, waits: the subagent's lane is still followed.
+  enqueue(d, change('m', '', 'm\n'));
+  assert.equal(d.timeline.followed, 'ag1');
+});
+
+test('lanes: only the followed lane types; a subagent\'s changes queue in its lane meanwhile', () => {
+  const d = deckOf(change('a', '', 'a'.repeat(200) + '\n'));
+  tick(d, FAST);
+  assert.equal(playingId(d), 'a');
+  for (const id of ['x', 'y', 'z']) enqueue(d, by('ag1', change(id, '', `${id}\n`)), undefined, WRITE_TESTS);
+  enqueue(d, change('b', '', 'b\n'));
+  assert.deepEqual(startOrder(d), ['a', 'b'], 'the change to b.ts follows a.ts; x.ts waits');
+  assert.equal(d.timeline.pendingCount('ag1'), 3);
+});
+
+test('lanes: following a lane by hand plays it from its own position, and coming back resumes the first', () => {
+  const d = deckOf(change('m1', '', 'one\n'));
+  playOut(d);
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  enqueue(d, change('m2', '', 'two\n'));
+  enqueue(d, change('m3', '', 'three\n'));
+  // Main is typing m2 when the person follows write tests.
+  tick(d, FAST);
+  assert.equal(playingId(d), 'm2');
+  assert.equal(follow(d, 'ag1', FAST), true);
+  assert.equal(d.playing, undefined);
+  assert.equal(d.timeline.pendingCount(''), 2, 'm2 stays queued in Main');
+  assert.equal(d.shown?.id, 't1', 'the lane\'s next change is cued');
+  assert.deepEqual(startOrder(d), ['t1']);
+  assert.equal(follow(d, '', FAST), true);
+  assert.deepEqual(startOrder(d), ['m2', 'm3']);
+  assert.equal(follow(d, '', FAST), false, 'following the followed lane changes nothing');
+  assert.equal(follow(d, 'nobody', FAST), false);
+});
+
+test('lanes: following a caught-up lane while paused stays paused and shows its last change done', () => {
+  const d = newDeck();
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  playOut(d);
+  enqueue(d, change('m1', '', 'm1\n'));
+  follow(d, '', FAST);
+  togglePause(d);
+  follow(d, 'ag1', FAST);
+  assert.equal(d.isPaused, true);
+  assert.deepEqual(d.shown, { id: 't1', path: '/w/t1.ts', text: 't1\n', caret: 3 });
+  assert.equal(tick(d, FAST, 1e9), false);
+});
+
+test('lanes: auto-follow tours the lanes, oldest queued first, after 3 s of quiet each', () => {
+  const d = deckOf(change('m1', '', 'm\n'));
+  const { now } = playTimed(d, 0);
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  enqueue(d, by('ag2', change('c1', '', 'c1\n')), undefined, UPDATE_CALLERS);
+  enqueue(d, by('ag1', change('t2', '', 't2\n')), undefined, WRITE_TESTS);
+  // Main went quiet when m1 finished; 3 s later write tests is followed.
+  const quiet = d.quietSince;
+  assert.equal(tick(d, FAST, quiet + 2_999), false);
+  assert.equal(d.timeline.followed, '');
+  assert.equal(tick(d, FAST, quiet + 3_000), true);
+  assert.equal(d.timeline.followed, 'ag1');
+  const tour = playTimed(d, quiet + 3_000);
+  assert.deepEqual(tour.order, ['t1', 't2', 'c1']);
+  assert.equal(d.timeline.followed, 'ag2');
+  assert.ok(now < quiet + 3_000);
+});
+
+test('lanes: auto-follow stays with a busy followed lane, never switches mid-change, and does nothing while off', () => {
+  const d = deckOf(change('m1', '', 'm\n'));
+  playTimed(d, 0);
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  // Main gets a change every 2 s: it stays followed.
+  let now = d.quietSince;
+  for (let i = 2; i <= 6; i++) {
+    now += 2_000;
+    enqueue(d, change(`m${i}`, '', `${i}\n`), undefined, undefined, now);
+    playTimed(d, now, 20);
+    assert.equal(d.timeline.followed, '');
+  }
+  // A long change typed past 3 s is not left mid-way.
+  enqueue(d, change('long', '', 'x'.repeat(2_000) + '\n'), undefined, undefined, now);
+  tick(d, FAST, now + 50);
+  assert.equal(tick(d, FAST, now + 10_000), true);
+  assert.equal(playingId(d), 'long');
+  assert.equal(d.timeline.followed, '');
+  finish(d, FAST);
+  toggleAutoFollow(d);
+  assert.equal(d.autoFollow, false);
+  assert.equal(tick(d, FAST, now + 120_000), false);
+  assert.equal(d.timeline.followed, '');
+  assert.equal(d.timeline.pendingCount('ag1'), 1);
+});
+
+test('lanes: with auto-follow off, a finished lane played out gives way to a running lane, and Main never does', () => {
+  const d = newDeck();
+  toggleAutoFollow(d);
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  enqueue(d, change('m1', '', 'm1\n'));
+  enqueue(d, change('m2', '', 'm2\n'));
+  setRunning(d, 'ag1', false);
+  assert.equal(d.timeline.followed, 'ag1');
+  // Main takes over as soon as the finished lane has played out.
+  assert.deepEqual(startOrder(d), ['t1', 'm1', 'm2']);
+  assert.equal(d.timeline.followed, '');
+  // Main played out with a running subagent recording: Main stays followed.
+  enqueue(d, by('ag2', change('c1', '', 'c1\n')), undefined, UPDATE_CALLERS);
+  enqueue(d, by('ag2', change('c2', '', 'c2\n')), undefined, UPDATE_CALLERS);
+  assert.equal(tick(d, FAST, 1e9), false);
+  assert.equal(d.timeline.followed, '');
+  assert.equal(d.timeline.pendingCount('ag2'), 2);
+});
+
+test('lanes: picking a change in another lane follows that lane and leaves the followed one queued', () => {
+  const d = newDeck();
+  for (let i = 1; i <= 5; i++) enqueue(d, change(`m${i}`, '', `${i}\n`));
+  enqueue(d, by('ag1', change('t6', '', 't6\n')), undefined, WRITE_TESTS);
+  enqueue(d, by('ag1', change('t7', '', 't7\n')), undefined, WRITE_TESTS);
+  follow(d, 'ag1', FAST);
+  playOut(d);
+  follow(d, '', FAST);
+  playOut(d);
+  enqueue(d, change('m9', '', '9\n'));
+  tick(d, FAST);
+  assert.equal(playingId(d), 'm9');
+  assert.equal(seek(d, 't6', FAST), true);
+  assert.equal(d.timeline.followed, 'ag1');
+  assert.deepEqual(startOrder(d), ['t6', 't7']);
+  assert.equal(d.timeline.pendingCount(''), 1, 'm9 waits in Main');
+});
+
+test('lanes: From start rewinds every lane and follows the first kept change\'s lane', () => {
+  const d = newDeck();
+  for (let i = 1; i <= 5; i++) enqueue(d, change(`m${i}`, '', `${i}\n`));
+  enqueue(d, by('ag1', change('t6', '', 't6\n')), undefined, WRITE_TESTS);
+  enqueue(d, change('m9', '', '9\n'));
+  playOut(d);
+  follow(d, 'ag1', FAST);
+  playOut(d);
+  assert.equal(replayFromStart(d, FAST), true);
+  assert.equal(d.timeline.followed, '');
+  assert.deepEqual(startOrder(d), ['m1', 'm2', 'm3', 'm4', 'm5', 'm9']);
+  assert.equal(d.timeline.pendingCount('ag1'), 1, 'change 6 waits in write tests');
+});
+
+test('lanes: Play turn rewinds every lane in the turn and follows the lane of its first change', () => {
+  const d = newDeck();
+  enqueue(d, change('m5', '', '5\n'));
+  enqueue(d, by('ag1', change('t6', '', 't6\n')), undefined, WRITE_TESTS);
+  enqueue(d, by('ag2', change('c7', '', 'c7\n')), undefined, UPDATE_CALLERS);
+  enqueue(d, by('ag2', change('c8', '', 'c8\n')), undefined, UPDATE_CALLERS);
+  enqueue(d, change('m9', '', '9\n'));
+  for (const lane of ['', 'ag1', 'ag2']) {
+    follow(d, lane, FAST);
+    playOut(d);
+  }
+  assert.equal(d.timeline.pendingTotal(), 0);
+  assert.equal(playFrom(d, ['t6', 'c7', 'c8', 'm9'], FAST), true);
+  assert.equal(d.timeline.followed, 'ag1');
+  assert.deepEqual([d.timeline.pendingCount('ag1'), d.timeline.pendingCount('ag2'), d.timeline.pendingCount('')], [1, 2, 1]);
+  assert.equal(listingOf(d).rows.find((r) => r.id === 'm5')?.state, 'played', 'Main before the turn stays played');
+  assert.deepEqual(startOrder(d), ['t6']);
+  assert.equal(playFrom(d, [], FAST), false);
+});
+
+test('lanes: Skip to latest catches up every lane and keeps the followed one', () => {
+  const d = newDeck();
+  enqueue(d, change('m1', '', '1\n'));
+  enqueue(d, change('m2', '', '2\n'));
+  for (const id of ['x', 'y', 'z']) enqueue(d, by('ag1', change(id, '', `${id}\n`)), undefined, WRITE_TESTS);
+  skipToLatest(d, FAST);
+  assert.equal(d.timeline.pendingTotal(), 0);
+  assert.equal(d.timeline.followed, '');
+  assert.equal(d.shown?.id, 'm2');
+});
+
+test('lanes: finishing a change picked while paused plays the next in its lane on resume', () => {
+  const d = newDeck();
+  enqueue(d, change('m1', '', '1\n'));
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  enqueue(d, change('m2', '', '2\n'));
+  enqueue(d, by('ag1', change('t2', '', 't2\n')), undefined, WRITE_TESTS);
+  togglePause(d);
+  seek(d, 't1', FAST);
+  finish(d, FAST);
+  assert.equal(d.shown?.text, 't1\n');
+  togglePause(d);
+  assert.deepEqual(startOrder(d), ['t2']);
+});
+
+test('lanes: the view names the followed lane and counts the other lanes\' queue, only while several lanes hold changes', () => {
+  const d = deckOf(change('m1', '', 'm'.repeat(100) + '\n'), change('m2', '', '2\n'));
+  tick(d, FAST);
+  assert.equal(viewOf(d).lane, undefined);
+  assert.equal(viewOf(d).otherQueued, 0);
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  enqueue(d, by('ag2', change('c1', '', 'c1\n')), undefined, UPDATE_CALLERS);
+  enqueue(d, by('ag2', change('c2', '', 'c2\n')), undefined, UPDATE_CALLERS);
+  const v = viewOf(d);
+  assert.deepEqual([v.status, v.queued, v.otherQueued, v.lane], ['typing', 1, 3, { label: 'Main', color: 1 }]);
+  follow(d, 'ag1', FAST);
+  assert.deepEqual(viewOf(d).lane, { label: 'write tests', kind: 'general-purpose', color: 2 });
+  // A lane labeled by its agent type does not name it twice.
+  enqueue(d, by('ag3', change('e1', '', 'e1\n')), undefined, { subagentType: 'Explore', isRunning: true });
+  follow(d, 'ag3', FAST);
+  assert.deepEqual(viewOf(d).lane, { label: 'Explore', color: 4 });
+});
+
+test('lanes: the header cuts the lane\'s label and agent type to 24 characters each', () => {
+  assert.equal(laneHeaderText({ label: 'write tests', kind: 'general-purpose' }), 'write tests (general-purpose)');
+  assert.equal(laneHeaderText({ label: 'Main' }), 'Main');
+  assert.equal(laneHeaderText({ label: 'a'.repeat(200), kind: 'k'.repeat(50) }), `${'a'.repeat(23)}… (${'k'.repeat(23)}…)`);
+});
+
+test('lanes: the listing has a chip per lane, Main first, with its state, and each row its lane', () => {
+  const d = newDeck();
+  enqueue(d, by('ag2', change('c1', '', 'c1\n')), undefined, UPDATE_CALLERS);
+  playOut(d);
+  enqueue(d, change('m1', '', 'm'.repeat(100) + '\n'));
+  enqueue(d, change('m2', '', '2\n'));
+  enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
+  enqueue(d, by('ag1', change('t2', '', 't2\n')), undefined, WRITE_TESTS);
+  follow(d, '', FAST);
+  tick(d, FAST);
+  const l = listingOf(d);
+  assert.deepEqual(l.lanes, [
+    { id: '', label: 'Main', color: 2, state: 'typing', queued: 1 },
+    { id: 'ag2', label: 'update callers', color: 1, state: 'caught up', queued: 0 },
+    { id: 'ag1', label: 'write tests', color: 3, state: 'queued', queued: 2 },
+  ]);
+  assert.deepEqual([l.followed, l.autoFollow], ['', true]);
+  assert.deepEqual(
+    l.rows.map((r) => r.lane),
+    ['ag2', undefined, undefined, 'ag1', 'ag1'],
+  );
+  togglePause(d);
+  assert.equal(listingOf(d).lanes[0]?.state, 'paused');
+});
+
+test('lanes: chip words cut the label to 24 characters and say the state', () => {
+  const chip = (state: LaneChip['state'], queued: number, label = 'write tests'): LaneChip => ({ id: 'a', label, color: 2, state, queued });
+  assert.equal(laneChipText(chip('typing', 1, 'Main')), 'Main · typing · 1 queued');
+  assert.equal(laneChipText(chip('typing', 0, 'Main')), 'Main · typing');
+  assert.equal(laneChipText(chip('paused', 2)), 'write tests · paused · 2 queued');
+  assert.equal(laneChipText(chip('queued', 2)), 'write tests · 2 queued');
+  assert.equal(laneChipText(chip('caught up', 0)), 'write tests · caught up');
+  assert.equal(laneChipText(chip('caught up', 0, 'a'.repeat(30))), `${'a'.repeat(23)}… · caught up`);
+  assert.equal(laneTagText('a'.repeat(30)), `${'a'.repeat(15)}…`);
+  assert.equal(autoFollowText(true), 'Auto-follow: on');
+  assert.equal(autoFollowText(false), 'Auto-follow: off');
+});
+
+test('lanes: chips that need more than two rows leave out the caught-up lanes earliest first, then the latest, never the followed one', () => {
+  const chips: LaneChip[] = Array.from({ length: 12 }, (_, i) => ({
+    id: `l${i}`,
+    label: `lane ${String(i).padStart(2, '0')}`,
+    color: (i % 5) + 1,
+    state: i % 3 === 0 ? 'caught up' : 'queued',
+    queued: i % 3 === 0 ? 0 : 1,
+  }));
+  // Each chip is 2 + 'lane 00 · 1 queued'.length (18) + 4 = 24 columns; 'lane 00 · caught up' makes 25.
+  const { rows, left } = laneChipRows(chips, 'l9', 80, 4, 19);
+  assert.ok(rows.length <= 2);
+  const shown = rows.flat().map((c) => c.id);
+  assert.ok(shown.includes('l9'), 'the followed chip stays');
+  assert.equal(shown.length + left, 12);
+  assert.ok(left > 0);
+  // Caught-up lanes other than the followed one go first, earliest first.
+  for (const id of ['l0', 'l3', 'l6']) assert.equal(shown.includes(id), false, id);
+  assert.deepEqual(shown, [...shown].sort((x, y) => Number(x.slice(1)) - Number(y.slice(1))), 'drawn in the listing\'s order');
+  // Room for every chip leaves none out.
+  assert.deepEqual(laneChipRows(chips.slice(0, 2), 'l0', 80, 4, 19), { rows: [chips.slice(0, 2)], left: 0 });
+});
+
+test('lanes: a row\'s lane tag takes its columns from the path', () => {
+  const l = rowLabel(ROW, 'src/routes/signup.ts', AT, 40, 'write tests');
+  assert.equal(l.tag, 'write tests');
+  assert.ok(`${l.lead}${l.dir}${l.file}  ● ${l.tag}${l.tail}`.length <= 40, JSON.stringify(l));
+  assert.equal(l.file, 'signup.ts');
+});
+
+test('lanes: three lanes survive a reload with labels, colors, positions, the followed lane and auto-follow', () => {
+  const changes = [
+    change('m1', '', 'm1\n'),
+    by('ag1', change('t1', '', 'aaaaaaaaaaaaaaaaaaaa\n')),
+    by('ag2', change('c1', '', 'c1\n')),
+    by('ag1', change('t2', '', 't2\n')),
+    by('ag2', change('c2', '', 'c2\n')),
+  ];
+  const d = newDeck();
+  for (const c of changes) enqueue(d, c, undefined, c.agentId === 'ag1' ? WRITE_TESTS : c.agentId === 'ag2' ? UPDATE_CALLERS : undefined);
+  playOut(d);
+  follow(d, 'ag1', FAST);
+  tick(d, FAST);
+  assert.equal(playingId(d), 't1');
+  toggleAutoFollow(d);
+  const saved = savedOf(d);
+  assert.deepEqual(saved.lanes, [
+    { id: '', label: 'Main', color: 1 },
+    { id: 'ag1', label: 'write tests', color: 2, kind: 'general-purpose' },
+    { id: 'ag2', label: 'update callers', color: 3, kind: 'general-purpose' },
+  ]);
+  assert.deepEqual([saved.positions, saved.followed, saved.autoFollow], [{ '': 1, ag1: 0, ag2: 0 }, 'ag1', false]);
+  const back = restore(saved, withTexts(saved, changes), FAST);
+  assert.deepEqual(lanesOf(back), lanesOf(d));
+  assert.equal(back.timeline.followed, 'ag1');
+  assert.equal(back.autoFollow, false);
+  assert.equal(back.timeline.laneInfo('')?.recording, true, 'Main runs');
+  assert.equal(back.timeline.laneInfo('ag1')?.recording, false, 'an agent lane is finished until its loop starts a turn');
+  assert.deepEqual(savedOf(back), saved);
+  assert.deepEqual(startOrder(back), ['t1', 't2']);
+  assert.equal(back.timeline.pendingCount('ag2'), 2);
+});
+
+test('lanes: changes saved before lanes load into lanes by their agent, played ones still played, Main followed', () => {
+  const v4 = {
+    changes: [
+      { id: 'a', number: 1, path: '/w/a.ts', kind: 'modify', time: 0 },
+      { id: 'b', number: 2, path: '/w/b.ts', kind: 'modify', time: 0, agentId: 'ag1' },
+      { id: 'c', number: 3, path: '/w/c.ts', kind: 'modify', time: 0 },
+      { id: 'd', number: 4, path: '/w/d.ts', kind: 'modify', time: 0, agentId: 'ag1' },
+    ],
+    played: 2,
+    recorded: 4,
+    isPaused: false,
+  };
+  const saved = savedFrom({ shape: 'saved-4', value: v4 });
+  assert.deepEqual([saved.positions, saved.followed, saved.autoFollow], [{ '': 1, ag1: 1 }, '', true]);
+  const texts = v4.changes.map((c) => ({ ...c, before: '', after: `${c.id}\n` }) as Change);
+  const back = restore(saved, texts, FAST, undefined, (id) => (id === 'ag1' ? { description: 'write tests' } : undefined));
+  assert.deepEqual(lanesOf(back), [
+    ['', 'Main', 1],
+    ['ag1', 'write tests', 2],
+  ]);
+  assert.deepEqual(listingOf(back).rows.map((r) => [r.id, r.state]), [
+    ['a', 'played'],
+    ['b', 'played'],
+    ['c', 'pending'],
+    ['d', 'pending'],
+  ]);
+  assert.equal(back.timeline.followed, '');
+  assert.deepEqual(startOrder(back), ['c']);
+});
+
+test('lanes: Clear marks clears the followed lane\'s marks only, and a seek in another lane leaves its clears', () => {
+  const d = newDeck();
+  enqueue(d, change('m1', 'a\n', 'A\n', '/w/a.ts'));
+  enqueue(d, by('ag1', change('t1', 'b\n', 'B\n', '/w/b.ts')), undefined, WRITE_TESTS);
+  playOut(d);
+  const clears = clearMarks(d, []);
+  assert.deepEqual(clears, [{ at: 3 }]);
+  follow(d, 'ag1', FAST);
+  playOut(d);
+  assert.deepEqual(viewOf(d, { clears }).rows, ['-b', '+B', ' '], 'write tests\' file keeps its marks');
+  const both = clearMarks(d, clears);
+  assert.deepEqual(both, [{ at: 3 }, { at: 3, lane: 'ag1' }]);
+  assert.deepEqual(viewOf(d, { clears: both }).rows, [' B', ' ']);
+  seek(d, 't1', FAST);
+  assert.deepEqual(pruneClears(d, both), [{ at: 3 }], 'only the lane played again loses its clear');
+  assert.deepEqual(tabsOf(d).map((t) => t.path), ['/w/b.ts'], 'tabs are the followed lane\'s');
 });

@@ -1,15 +1,29 @@
 // Playback for the Claude Code plugin, as functions over a Deck the hooks keep
-// in module memory: the session's changes in the shared Timeline, on its
-// default lane, and the change being typed. A timer calls tick() every TICK_MS;
+// in module memory: the session's changes in the shared Timeline, a lane per
+// loop (the main conversation's '' and each agent's by its id), and the change
+// being typed. A timer calls tick() every TICK_MS;
 // nothing here touches the engine, so the unit tests in
 // test/claudeCodeReplay.test.ts run it directly. viewOf() and savedOf() are
 // what the hooks write to $.state.
 
-import { Timeline, authoringOrder, backspaceStep, countChanges, planHunks, typingChunkEnd, type ChangeEvent, type Hunk } from './core.mjs';
-import type { CallLinks, Clear, Listing, Row, Saved, SavedChange, Tab, Tool, TurnInfo, Turns, View } from '../types';
+import {
+  LANE_COLORS,
+  Timeline,
+  authoringOrder,
+  autoFollowDecision,
+  backspaceStep,
+  colorSlot,
+  countChanges,
+  laneOf,
+  planHunks,
+  typingChunkEnd,
+  type ChangeEvent,
+  type Hunk,
+} from './core.mjs';
+import type { CallLinks, Clear, LaneChip, Listing, Row, Saved, SavedChange, SavedLane, Tab, Tool, TurnInfo, Turns, View } from '../types';
 import { diffRows, lineAt, lineStarts, type DiffRow } from './marks';
 
-export type { CallLinks, Clear, Listing, Row, Saved, SavedChange, Tab, Tool, TurnInfo, Turns, View };
+export type { CallLinks, Clear, LaneChip, Listing, Row, Saved, SavedChange, SavedLane, Tab, Tool, TurnInfo, Turns, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
@@ -81,7 +95,12 @@ function eventOf(change: Change, cwd: string | undefined): Omit<Event, 'seq'> {
   const { added, removed } = countChanges(change.before, change.after);
   const relative = relativePath(change.path, cwd);
   const relPath = WINDOWS_PATH.test(change.path) ? relative.replace(/\\/g, '/') : relative;
-  return { ...change, uri: change.path, relPath, eol: '\n', linesAdded: added, linesRemoved: removed };
+  return { ...change, uri: change.path, relPath, eol: '\n', linesAdded: added, linesRemoved: removed, ...(change.agentId && { lane: change.agentId }) };
+}
+
+/** The lane of `change`: the agent's id that made it, '' for the main conversation. */
+function laneOfChange(change: { agentId?: string }): string {
+  return change.agentId ?? '';
 }
 
 function changeOf(e: ChangeEvent): Change {
@@ -143,12 +162,21 @@ export type Deck = {
   hold: number;
   /** Changes recorded this session, dropped ones included. */
   recorded: number;
+  /** Whether auto-follow is on. */
+  autoFollow: boolean;
+  /** When the followed lane last typed a keystroke, finished or got a change, or was followed, in epoch milliseconds. */
+  quietSince: number;
+  /** The agent type of each agent lane the plugin saw it for, by lane id. */
+  kinds: Map<string, string>;
 };
+
+/** What the plugin knows of the loop a change came from when it starts a lane: its `Agent` call's description and agent type, and whether it is in a turn. */
+export type LaneAbout = { description?: string; subagentType?: string; isRunning?: boolean };
 
 export type PlayOptions = { charsPerMinute: number; naturalOrder: boolean };
 
 export function newDeck(): Deck {
-  return { timeline: new Timeline(MAX_WAITING, MAX_WAITING_CHARS), isPaused: false, hold: 0, recorded: 0 };
+  return { timeline: new Timeline(MAX_WAITING, MAX_WAITING_CHARS), isPaused: false, hold: 0, recorded: 0, autoFollow: true, quietSince: 0, kinds: new Map() };
 }
 
 /** The plugin's options as playback reads them; a speed that is not a positive number is the default. */
@@ -165,19 +193,60 @@ export function isUnchanged(change: NewChange): boolean {
   return !change.isTooLarge && change.before === change.after;
 }
 
+/** Longest lane label, in characters, a whitespace run counting as one. */
+const MAX_LANE_LABEL = 200;
+
+/**
+ * The label of lane `id`: `Main` for the main conversation's; for an agent's,
+ * its `Agent` call's description on one line, else its agent type, else
+ * `Subagent`.
+ */
+export function laneLabel(id: string, about?: LaneAbout): string {
+  if (id === '') return 'Main';
+  const description = oneLine(about?.description ?? '');
+  if (description !== '') return cutAt(description, MAX_LANE_LABEL);
+  const kind = oneLine(about?.subagentType ?? '');
+  return kind !== '' ? cutAt(kind, MAX_LANE_LABEL) : 'Subagent';
+}
+
+/** Gives lane `id` its label and color: Main the first color while it is free, any other the color fewest lanes hold, earliest first. */
+function defineLane(deck: Deck, id: string, about: LaneAbout | undefined, color?: number): void {
+  const taken = deck.timeline.laneList().flatMap((l) => (l.id === id || l.color < 1 ? [] : [l.color]));
+  const slot = color ?? colorSlot(id === '' ? 1 : undefined, taken);
+  deck.timeline.defineLane({ id, label: laneLabel(id, about), root: '', color: slot, recording: id === '' || about?.isRunning === true });
+  const kind = about?.subagentType && oneLine(about.subagentType);
+  if (id !== '' && kind) deck.kinds.set(id, kind);
+}
+
 /**
  * Adds a recorded change, numbered next in the session and its path named
- * relative to `cwd`, dropping the oldest ones past either limit. Returns false,
- * adding nothing, for an unchanged file.
+ * relative to `cwd`, in the lane of the loop that made it, dropping the
+ * oldest ones past either limit. A lane with no kept change is started from
+ * `about`. Returns false, adding nothing, for an unchanged file. `now`, the
+ * time in epoch milliseconds, keeps auto-follow waiting while the followed
+ * lane gets changes.
  */
-export function enqueue(deck: Deck, change: NewChange, cwd?: string): boolean {
+export function enqueue(deck: Deck, change: NewChange, cwd?: string, about?: LaneAbout, now?: number): boolean {
   if (isUnchanged(change)) return false;
+  const { timeline } = deck;
   // A restored deck may hold more than the limits allow (see restore); a new change brings it back within them.
-  deck.timeline.setLimit(MAX_WAITING);
-  deck.timeline.setSizeLimit(MAX_WAITING_CHARS);
+  timeline.setLimit(MAX_WAITING);
+  timeline.setSizeLimit(MAX_WAITING_CHARS);
+  const lane = laneOfChange(change);
+  if (!timeline.laneInfo(lane)) defineLane(deck, lane, about);
+  // While the followed lane keeps no change, the lane of the next one is followed at once.
+  const isEmpty = !deck.playing && timeline.laneEvents().length === 0;
   deck.recorded++;
-  deck.timeline.push(eventOf({ ...change, number: deck.recorded }, cwd));
+  timeline.push(eventOf({ ...change, number: deck.recorded }, cwd));
+  if (isEmpty && timeline.followed !== lane) timeline.follow(lane);
+  if (now !== undefined && timeline.followed === lane) deck.quietSince = now;
   return true;
+}
+
+/** Marks lane `agentId` running (its loop is in a turn) or finished. A lane not started yet is left for its first change. */
+export function setRunning(deck: Deck, agentId: string, isRunning: boolean): void {
+  if (agentId === '' || !deck.timeline.laneInfo(agentId)) return;
+  deck.timeline.setLaneRecording(agentId, isRunning);
 }
 
 /** The changes waiting to play, oldest first; the one being typed is not among them. */
@@ -186,15 +255,26 @@ export function queued(deck: Deck): Change[] {
   return timeline.all().filter((e) => timeline.stateOf(e.seq) === 'pending').map(changeOf);
 }
 
-/** The changes played, oldest first. */
-function played(deck: Deck): Change[] {
-  const { timeline } = deck;
-  return timeline.all().filter((e) => timeline.stateOf(e.seq) === 'played').map(changeOf);
+/**
+ * Every change the deck keeps, in recorded order, the change being typed
+ * first when the timeline has dropped it, since it is then older than every
+ * change the timeline keeps.
+ */
+function keptChanges(deck: Deck): Change[] {
+  const { timeline, playing } = deck;
+  const outside = playing && !timeline.get(playing.seq) ? [playing.change] : [];
+  return [...outside, ...timeline.all().map(changeOf)];
 }
 
-/** Every change the deck keeps, oldest first: the played ones, the one being typed, then the waiting ones. */
-function keptChanges(deck: Deck): Change[] {
-  return [...played(deck), ...(deck.playing ? [deck.playing.change] : []), ...queued(deck)];
+/** Whether the kept change `c` has played: the timeline holds it, and its lane has moved past it. */
+function isPlayed(deck: Deck, c: Change): boolean {
+  const e = eventById(deck, c.id);
+  return e !== undefined && deck.timeline.stateOf(e.seq) === 'played';
+}
+
+/** The event the timeline keeps for change `id`. */
+function eventById(deck: Deck, id: string): Event | undefined {
+  return deck.timeline.all().find((x) => (x as Event).id === id) as Event | undefined;
 }
 
 /** The captions of the changes the deck keeps, by change id. */
@@ -218,13 +298,26 @@ export function setCaption(deck: Deck, id: string, caption: string): boolean {
 }
 
 /**
- * What a reload needs to rebuild the deck, texts aside. The change being typed
- * is kept even once the timeline has dropped it; by then it has dropped every
- * played change too, so the order holds.
+ * What a reload needs to rebuild the deck, texts aside: every kept change in
+ * recorded order, the lanes holding them, how many of each lane's changes have
+ * played, the followed lane and the switches. The change being typed is kept
+ * even once the timeline has dropped it, as not played.
  */
 export function savedOf(deck: Deck): Saved {
-  const done = played(deck);
+  const { timeline } = deck;
   const changes = keptChanges(deck);
+  const positions: Record<string, number> = {};
+  const lanes: SavedLane[] = [];
+  for (const c of changes) {
+    const lane = laneOfChange(c);
+    if (!(lane in positions)) {
+      positions[lane] = 0;
+      const info = timeline.laneInfo(lane);
+      const kind = deck.kinds.get(lane);
+      if (info) lanes.push({ id: lane, label: info.label, color: info.color, ...(kind && { kind }) });
+    }
+    if (isPlayed(deck, c)) positions[lane]!++;
+  }
   return {
     changes: changes.map(
       (c): SavedChange => ({
@@ -238,37 +331,81 @@ export function savedOf(deck: Deck): Saved {
         ...linksOf(c),
       }),
     ),
-    played: done.length,
     recorded: deck.recorded,
     isPaused: deck.isPaused,
+    lanes,
+    positions,
+    followed: timeline.followed,
+    autoFollow: deck.autoFollow,
   };
 }
 
 /**
  * The deck a reload starts from. `changes` are the saved changes whose texts
- * were found, in saved order. Those `saved.played` counts as played stay
- * played; the rest wait, the one that was being typed starting over. Paused,
- * the pane shows the next change cued, as a pick while paused leaves it;
- * otherwise the last played change done.
+ * were found, in saved order. Each lane's first `saved.positions` changes stay
+ * played; the rest wait, the one that was being typed starting over. Lanes
+ * keep their labels and colors; a lane the save does not describe is labeled
+ * from `about`, what the plugin knows of its agent, and colored in the order
+ * of its first change. Every lane but the main conversation's counts as
+ * finished until its loop starts a turn. Paused, the pane shows the followed
+ * lane's next change cued, as a pick while paused leaves it; otherwise its
+ * last played change done.
  */
-export function restore(saved: Saved, changes: Change[], opts: PlayOptions, cwd?: string): Deck {
+export function restore(saved: Saved, changes: Change[], opts: PlayOptions, cwd?: string, about?: (agentId: string) => LaneAbout | undefined): Deck {
   // The change being typed sat outside the limits, so with it the saved changes
   // can be one over them. The timeline holds them all until the next is recorded.
   const chars = changes.reduce((n, c) => n + c.before.length + c.after.length, 0);
   const timeline = new Timeline(Math.max(MAX_WAITING, changes.length), Math.max(MAX_WAITING_CHARS, chars));
-  for (const change of changes) timeline.push(eventOf(change, cwd));
-  const wasPlayed = new Set(saved.changes.slice(0, saved.played).map((c) => c.id));
-  const done = changes.filter((c) => wasPlayed.has(c.id));
-  const next = timeline.all()[done.length];
-  if (next) timeline.seek(next.seq);
-  else timeline.seekToEnd();
-  const last = done.at(-1);
-  const shown = saved.isPaused && next ? shownBefore(changeOf(next), opts) : last && shownFinished(last, opts);
-  return { ...newDeck(), timeline, ...(shown && { shown }), recorded: saved.recorded, isPaused: saved.isPaused };
+  const deck: Deck = { ...newDeck(), timeline, recorded: saved.recorded, isPaused: saved.isPaused, autoFollow: saved.autoFollow };
+  const savedLanes = new Map(saved.lanes.map((l) => [l.id, l]));
+  // Which changes played: the first `positions[lane]` of each lane's saved changes.
+  const wasPlayed = new Set<string>();
+  const counted: Record<string, number> = {};
+  for (const c of saved.changes) {
+    const lane = laneOfChange(c);
+    counted[lane] = (counted[lane] ?? 0) + 1;
+    if (counted[lane]! <= (saved.positions[lane] ?? 0)) wasPlayed.add(c.id);
+  }
+  const events = changes.map((c, i) => ({ ...eventOf(c, cwd), seq: i + 1 }));
+  // Each lane resumes at its first change not played, or past the end.
+  const end = events.length + 1;
+  const cursors: Record<string, number> = {};
+  for (const e of events) {
+    const lane = laneOf(e);
+    if (!(lane in cursors)) cursors[lane] = end;
+    if (cursors[lane] === end && !wasPlayed.has((e as Event).id)) cursors[lane] = e.seq;
+  }
+  // Lanes in the order of their first change: those the save describes keep their colors, the rest take the least used.
+  const order = [...new Set(events.map(laneOf))];
+  const lanes: { id: string; label: string; root: string; color: number }[] = [];
+  for (const id of order) {
+    const was = savedLanes.get(id);
+    const taken = lanes.map((l) => l.color).concat(order.flatMap((o) => (o !== id && savedLanes.has(o) ? [savedLanes.get(o)!.color] : [])));
+    const color = was && was.color >= 1 && was.color <= LANE_COLORS ? was.color : colorSlot(id === '' ? 1 : undefined, taken);
+    const known = about?.(id);
+    lanes.push({ id, label: was?.label ?? laneLabel(id, known), root: '', color });
+    const kind = was?.kind ?? (known?.subagentType && oneLine(known.subagentType));
+    if (id !== '' && kind) deck.kinds.set(id, kind);
+  }
+  // The main conversation's lane runs for the whole session.
+  const main = lanes.find((l) => l.id === '');
+  if (main) timeline.defineLane({ ...main, recording: true });
+  timeline.restore(events, end, undefined, { lanes, cursors, followed: saved.followed });
+  const next = timeline.peek();
+  const last = timeline
+    .laneEvents()
+    .filter((e) => timeline.stateOf(e.seq) === 'played')
+    .at(-1);
+  const shown = saved.isPaused && next ? shownBefore(changeOf(next), opts) : last && shownFinished(changeOf(last), opts);
+  if (shown) deck.shown = shown;
+  return deck;
 }
 
 /** The tag `saved` is kept under. savedFrom also reads the tags before it. */
-export const SAVED_SHAPE = 'saved-4';
+export const SAVED_SHAPE = 'saved-5';
+
+/** `saved` as the `saved-4` and `saved-3` tags kept it: every change in recorded order, and how many of them lead as played, of every lane. */
+type SavedV4 = { changes: SavedChange[]; played: number; recorded: number; isPaused: boolean };
 
 /** `saved` as the `saved-2` tag kept it: no change's number or tool. */
 type SavedV2 = { changes: Omit<SavedChange, 'number' | 'tool'>[]; played: number; recorded: number; isPaused: boolean };
@@ -277,19 +414,39 @@ type SavedV2 = { changes: Omit<SavedChange, 'number' | 'tool'>[]; played: number
 type SavedV1 = { changes: { id: string; path: string; isTooLarge?: boolean }[]; recorded: number; isPaused: boolean };
 
 /**
- * The Saved a stored `saved` value holds: as stored under SAVED_SHAPE and
- * under `saved-3`, which kept no links, so its changes have none; under
- * `saved-2`, which kept no numbers or tools, as stored and numbered by place;
- * under `saved-1`, which kept neither kind nor time either, every change
- * waiting, each a modify at time 0, numbered by place; under any other tag,
- * or none, nothing.
+ * The Saved a stored `saved` value holds: as stored under SAVED_SHAPE; under
+ * `saved-4` and `saved-3`, which kept no lanes, in lanes by each change's
+ * agent (`saved-3` kept no links, so all its changes are the main
+ * conversation's); under `saved-2`, which kept no numbers or tools, numbered by
+ * place; under `saved-1`, which kept neither kind nor time either, every
+ * change waiting, each a modify at time 0, numbered by place; under any other
+ * tag, or none, nothing. Lanes an earlier tag did not keep are left for
+ * restore to label and color, the main conversation's followed when it holds
+ * a change, and auto-follow on.
  */
 export function savedFrom(stored: { shape: string; value: unknown } | undefined): Saved {
-  if (stored?.shape === SAVED_SHAPE || stored?.shape === 'saved-3') return stored.value as Saved;
-  if (stored?.shape === 'saved-2') return numbered(stored.value as SavedV2);
+  if (stored?.shape === SAVED_SHAPE) return stored.value as Saved;
+  if (stored?.shape === 'saved-4' || stored?.shape === 'saved-3') return laned(stored.value as SavedV4);
+  if (stored?.shape === 'saved-2') return laned(numbered(stored.value as SavedV2));
   if (stored?.shape !== 'saved-1') return savedOf(newDeck());
   const was = stored.value as SavedV1;
-  return numbered({ ...was, changes: was.changes.map((c) => ({ ...c, kind: 'modify', time: 0 })), played: 0 });
+  return laned(numbered({ ...was, changes: was.changes.map((c) => ({ ...c, kind: 'modify', time: 0 })), played: 0 }));
+}
+
+/**
+ * `saved` in lanes by each change's agent. Its played changes lead in
+ * recorded order, so they lead every lane too: each lane's position counts its
+ * changes among them.
+ */
+function laned(saved: SavedV4): Saved {
+  const positions: Record<string, number> = {};
+  saved.changes.forEach((c, i) => {
+    const lane = laneOfChange(c);
+    positions[lane] = (positions[lane] ?? 0) + (i < saved.played ? 1 : 0);
+  });
+  const lanes = Object.keys(positions);
+  const followed = lanes.includes('') ? '' : (lanes[0] ?? '');
+  return { changes: saved.changes, recorded: saved.recorded, isPaused: saved.isPaused, lanes: [], positions, followed, autoFollow: true };
 }
 
 /**
@@ -297,7 +454,7 @@ export function savedFrom(stored: { shape: string; value: unknown } | undefined)
  * changes recorded and each earlier one the number before. Exact unless a
  * change between two kept ones was dropped or lost its texts.
  */
-function numbered(saved: SavedV2): Saved {
+function numbered(saved: SavedV2): SavedV4 {
   const last = Math.max(saved.recorded, saved.changes.length);
   return { ...saved, changes: saved.changes.map((c, i) => ({ ...c, number: last - (saved.changes.length - 1 - i) })) };
 }
@@ -396,14 +553,25 @@ function settle(p: Playback): Playback {
   }
 }
 
-/** Moves playback one tick on. Returns false when nothing moved. */
-export function tick(deck: Deck, opts: PlayOptions): boolean {
+/**
+ * Moves playback one tick on. Returns false when nothing moved. `now`, the
+ * time in epoch milliseconds, is what auto-follow measures the followed
+ * lane's quiet by; without it, auto-follow waits.
+ */
+export function tick(deck: Deck, opts: PlayOptions, now?: number): boolean {
   if (deck.isPaused) return false;
   if (deck.hold > 0) {
     deck.hold--;
     return true;
   }
-  if (!deck.playing) return startNext(deck, opts);
+  if (!deck.playing) {
+    if (startNext(deck, opts)) {
+      if (now !== undefined) deck.quietSince = now;
+      return true;
+    }
+    return now !== undefined && autoFollow(deck, opts, now);
+  }
+  if (now !== undefined) deck.quietSince = now;
 
   const rate = (opts.charsPerMinute / 60) * (TICK_MS / 1000);
   let budget = deck.playing.credit + rate;
@@ -434,6 +602,52 @@ export function togglePause(deck: Deck): void {
 }
 
 /**
+ * Follows another lane when auto-follow is on, the followed lane has nothing
+ * queued, nothing is typed, and the lane has been quiet AUTO_FOLLOW_IDLE_MS:
+ * the lane whose oldest queued change was recorded first. Returns whether it
+ * followed one.
+ */
+function autoFollow(deck: Deck, opts: PlayOptions, now: number): boolean {
+  const { timeline } = deck;
+  const lanes = timeline.lanesInBuffer().map((id) => {
+    const first = timeline.firstPending(id);
+    return { id, recording: timeline.laneInfo(id)?.recording ?? false, lastActivity: 0, ...(first !== undefined && { firstPendingSeq: first }) };
+  });
+  const decision = autoFollowDecision({ enabled: deck.autoFollow, playing: deck.playing !== undefined, followed: timeline.followed, lanes, quietSince: deck.quietSince, now });
+  return decision.follow !== undefined && follow(deck, decision.follow, opts, now);
+}
+
+/**
+ * Follows lane `lane` (an agent's id, '' for the main conversation's): the
+ * change being typed stops and stays queued in its lane, and the lane resumes
+ * at its own position. The pane shows the lane's next change cued, or, with
+ * nothing queued, its last change done. The pause state stays. Returns false,
+ * changing nothing, when the lane is already followed or holds no change.
+ */
+export function follow(deck: Deck, lane: string, opts: PlayOptions, now?: number): boolean {
+  const { timeline } = deck;
+  if (lane === timeline.followed || !timeline.lanesInBuffer().includes(lane)) return false;
+  timeline.follow(lane);
+  deck.playing = undefined;
+  deck.hold = 0;
+  if (now !== undefined) deck.quietSince = now;
+  const next = timeline.peek();
+  const last = timeline
+    .laneEvents()
+    .filter((e) => timeline.stateOf(e.seq) === 'played')
+    .at(-1);
+  const shown = next ? shownBefore(changeOf(next), opts) : last && shownFinished(changeOf(last), opts);
+  if (shown) deck.shown = shown;
+  else delete deck.shown;
+  return true;
+}
+
+/** Turns auto-follow on or off. */
+export function toggleAutoFollow(deck: Deck): void {
+  deck.autoFollow = !deck.autoFollow;
+}
+
+/**
  * Finishes the current change at once: the one being typed, or one cued by a
  * pick while paused. The next one starts on the next tick that is not paused.
  */
@@ -454,22 +668,25 @@ export function finish(deck: Deck, opts: PlayOptions): void {
 
 /**
  * Makes the kept change `id` the next one played, as the extension's seek
- * does: the change being typed stops, the ones recorded after `id` follow, the
- * ones before it count as played, and the pause state stays. The pane shows
- * it cued, as it is before it plays. Picking the change being typed starts it
- * over. Returns false, changing nothing, when the change is no longer kept.
+ * does: its lane is followed, the change being typed stops, the ones recorded
+ * after `id` in its lane follow, the ones before it count as played, and the
+ * pause state stays. Other lanes keep their positions. The pane shows it cued,
+ * as it is before it plays. Picking the change being typed starts it over.
+ * Returns false, changing nothing, when the change is no longer kept.
  */
 export function seek(deck: Deck, id: string, opts: PlayOptions): boolean {
-  const e = deck.timeline.all().find((x) => (x as Event).id === id);
+  const e = eventById(deck, id);
   const p = deck.playing;
   if (!e) {
     // Only the change being typed outlives its place in the timeline; it starts over where it is.
     if (p?.change.id !== id) return false;
+    deck.timeline.follow(laneOfChange(p.change));
     deck.playing = { ...p, hunk: 0, deleted: 0, typed: 0, text: p.change.before, caret: caretBefore(p.hunks[0], 0), credit: 0 };
     deck.hold = 0;
     deck.shown = shownBefore(p.change, opts);
     return true;
   }
+  deck.timeline.follow(laneOf(e));
   deck.timeline.seek(e.seq);
   deck.playing = undefined;
   deck.hold = 0;
@@ -477,23 +694,57 @@ export function seek(deck: Deck, id: string, opts: PlayOptions): boolean {
   return true;
 }
 
-/** Plays from the first change kept, as a pick of it does. Returns false when none is kept. */
-export function replayFromStart(deck: Deck, opts: PlayOptions): boolean {
-  const first = listingOf(deck).rows[0];
-  return first !== undefined && seek(deck, first.id, opts);
+/**
+ * Plays the kept changes `ids` again, in recorded order: every lane holding
+ * one of them moves back to its first one there, which waits, and the lane
+ * of the first one is followed, as a pick of it does. Lanes holding none of
+ * them keep their positions. Returns false when the first is no longer kept.
+ */
+export function playFrom(deck: Deck, ids: readonly string[], opts: PlayOptions): boolean {
+  const first = ids[0];
+  if (first === undefined || !changeById(deck, first)) return false;
+  const { timeline } = deck;
+  const firsts = new Map<string, number>();
+  for (const id of ids) {
+    const e = eventById(deck, id);
+    if (e && !firsts.has(laneOf(e))) firsts.set(laneOf(e), e.seq);
+  }
+  for (const [lane, seq] of firsts) {
+    timeline.follow(lane);
+    timeline.seek(seq);
+  }
+  return seek(deck, first, opts);
 }
 
-/** Finishes every recorded change at once and shows the last one. */
+/** Plays every lane from its first kept change again, following the lane of the first change kept. Returns false when none is kept. */
+export function replayFromStart(deck: Deck, opts: PlayOptions): boolean {
+  return playFrom(
+    deck,
+    listingOf(deck).rows.map((r) => r.id),
+    opts,
+  );
+}
+
+/** Finishes every recorded change in every lane at once, keeps the followed lane, and shows its last change. */
 export function skipToLatest(deck: Deck, opts: PlayOptions): void {
-  const last = queued(deck).at(-1);
-  if (!last) return finish(deck, opts);
-  deck.timeline.seekToEnd();
+  const { timeline } = deck;
+  if (timeline.pendingTotal() === 0) return finish(deck, opts);
+  const followed = timeline.followed;
+  for (const lane of timeline.lanesInBuffer()) {
+    timeline.follow(lane);
+    timeline.seekToEnd();
+  }
+  timeline.follow(followed);
+  // Seeking the followed lane last overtakes the change being typed.
+  timeline.seekToEnd();
   deck.playing = undefined;
   deck.hold = 0;
-  deck.shown = shownFinished(last, opts);
+  const last = timeline.laneEvents().at(-1);
+  if (last) deck.shown = shownFinished(changeOf(last), opts);
 }
 
 function rowOf(e: Event, state: Row['state']): Row {
+  const lane = laneOf(e);
   return {
     id: e.id,
     number: e.number,
@@ -506,21 +757,44 @@ function rowOf(e: Event, state: Row['state']): Row {
     ...(e.mainTurnId && { mainTurnId: e.mainTurnId }),
     ...(e.agentCallId && { agentCallId: e.agentCallId }),
     ...(e.caption && { caption: cutCaption(e.caption, MAX_ROW_CAPTION) }),
+    ...(lane !== '' && { lane }),
   };
+}
+
+/** The lanes holding kept changes as the chips show them: Main first, the others by their first kept change. */
+function laneChipsOf(deck: Deck, rows: readonly Row[]): LaneChip[] {
+  const { timeline } = deck;
+  const ids = [...new Set(rows.map((r) => r.lane ?? ''))].sort((x, y) => (x === '' ? -1 : y === '' ? 1 : 0));
+  return ids.map((id) => {
+    const info = timeline.laneInfo(id);
+    const queued = timeline.pendingCount(id);
+    const isTyping = id === timeline.followed && deck.playing !== undefined;
+    const state = isTyping ? (deck.isPaused ? 'paused' : 'typing') : queued > 0 ? 'queued' : 'caught up';
+    return { id, label: info?.label ?? laneLabel(id), color: info?.color ?? 1, state, queued };
+  });
 }
 
 /**
  * The pane's list: a row per kept change, oldest first, the change being typed
  * included once the timeline has dropped it; how many changes recorded before
- * the oldest kept one are gone; the id of the change the pane shows; and
- * whether playback is paused.
+ * the oldest kept one are gone; the id of the change the pane shows; whether
+ * playback is paused; the lanes holding the changes, the followed one, and
+ * whether auto-follow is on.
  */
 export function listingOf(deck: Deck): Listing {
   const { timeline, playing } = deck;
   // A change being typed that the timeline dropped is older than every change it keeps.
   const outside = playing && !timeline.get(playing.seq) ? [rowOf({ ...eventOf(playing.change, undefined), seq: playing.seq }, 'playing')] : [];
   const rows = [...outside, ...timeline.all().map((e) => rowOf(e as Event, timeline.stateOf(e.seq)))];
-  return { rows, dropped: Math.max(0, (rows[0]?.number ?? 1) - 1), ...(deck.shown && { current: deck.shown.id }), isPaused: deck.isPaused };
+  return {
+    rows,
+    dropped: Math.max(0, (rows[0]?.number ?? 1) - 1),
+    ...(deck.shown && { current: deck.shown.id }),
+    isPaused: deck.isPaused,
+    lanes: laneChipsOf(deck, rows),
+    followed: timeline.followed,
+    autoFollow: deck.autoFollow,
+  };
 }
 
 /** Longest prompt a turn keeps, in characters, its ellipsis included; the pane cuts it again to fit. */
@@ -757,8 +1031,92 @@ export function scrolledTop(s: PaneScroll, list: ListGeometry): number | undefin
   return Math.max(0, Math.min(top, last));
 }
 
-/** A row as the pane draws it: the lead, the path's folder and file name, and the tail, together at most the width asked for. */
-export type RowLabel = { lead: string; dir: string; file: string; tail: string };
+/** A row as the pane draws it: the lead, the path's folder and file name, the lane tag, and the tail, together at most the width asked for. */
+export type RowLabel = { lead: string; dir: string; file: string; tag: string; tail: string };
+
+/** Most characters of a lane's label a chip shows, its ellipsis included. */
+export const MAX_CHIP_LABEL = 24;
+/** Most characters of a lane's label a row's tag shows, its ellipsis included. */
+export const MAX_TAG_LABEL = 16;
+/** Most rows the lane chips and the auto-follow switch take. */
+export const CHIP_ROWS = 2;
+
+/** `label` cut with `…` to `max` characters, as it is when it fits. */
+function cutLabel(label: string, max: number): string {
+  return label.length > max ? cutAt(label, max - 1) + '…' : label;
+}
+
+/** The words a lane chip shows after its color: its label cut to MAX_CHIP_LABEL, then its state. */
+export function laneChipText(chip: LaneChip): string {
+  const queued = chip.queued > 0 ? `${chip.queued} queued` : '';
+  const state = chip.state === 'typing' || chip.state === 'paused' ? [chip.state, queued].filter(Boolean).join(' · ') : chip.state === 'queued' ? queued : 'caught up';
+  return `${cutLabel(chip.label, MAX_CHIP_LABEL)} · ${state}`;
+}
+
+/** The words the header shows after the followed lane's color: its label, and its agent type in parentheses, each cut to MAX_CHIP_LABEL. */
+export function laneHeaderText(lane: { label: string; kind?: string }): string {
+  return cutLabel(lane.label, MAX_CHIP_LABEL) + (lane.kind ? ` (${cutLabel(lane.kind, MAX_CHIP_LABEL)})` : '');
+}
+
+/** The words of a row's lane tag after its color: the lane's label cut to MAX_TAG_LABEL. */
+export function laneTagText(label: string): string {
+  return cutLabel(label, MAX_TAG_LABEL);
+}
+
+/** The words of the auto-follow switch. */
+export function autoFollowText(isOn: boolean): string {
+  return `Auto-follow: ${isOn ? 'on' : 'off'}`;
+}
+
+/**
+ * The lane chips laid into at most CHIP_ROWS rows `columns` wide, a column
+ * between items, each chip as wide as its color, a space and its words plus
+ * `padding`, the auto-follow switch `switchWidth` wide at the end. When they
+ * do not fit, the chips of unfollowed lanes with nothing queued go first,
+ * earliest first, then other chips but the followed lane's, latest first, and
+ * a note of how many went (`+N more`) goes before the switch. Returns each
+ * row's chips in the listing's order, and how many were left out.
+ */
+export function laneChipRows(chips: readonly LaneChip[], followed: string, columns: number, padding: number, switchWidth: number): { rows: LaneChip[][]; left: number } {
+  const width = (c: LaneChip) => 2 + cellWidth(laneChipText(c)) + padding;
+  const order = chips.map((_, k) => k);
+  const isIdle = (k: number) => chips[k]!.id !== followed && chips[k]!.state === 'caught up';
+  // Kept first: the followed lane, then the busy ones earliest first, then the idle ones latest first.
+  const priority = [
+    ...order.filter((k) => chips[k]!.id === followed),
+    ...order.filter((k) => chips[k]!.id !== followed && !isIdle(k)),
+    ...order.filter(isIdle).reverse(),
+  ];
+  const layout = (chosen: ReadonlySet<number>) => {
+    const left = chips.length - chosen.size;
+    const items: { k: number; w: number }[] = order.filter((k) => chosen.has(k)).map((k) => ({ k, w: width(chips[k]!) }));
+    if (left > 0) items.push({ k: -1, w: `+${left} more`.length });
+    items.push({ k: -2, w: switchWidth });
+    const rows: number[][] = [];
+    let used = 0;
+    for (const { k, w } of items) {
+      if (rows.length === 0 || (used > 0 && used + 1 + w > columns)) {
+        rows.push([]);
+        used = 0;
+      }
+      rows.at(-1)!.push(k);
+      used += (used > 0 ? 1 : 0) + w;
+    }
+    return { rows: rows.map((r) => r.filter((k) => k >= 0).map((k) => chips[k]!)), count: rows.length, left };
+  };
+  const chosen = new Set<number>();
+  let best = layout(chosen);
+  for (const k of priority) {
+    chosen.add(k);
+    const next = layout(chosen);
+    if (next.count > CHIP_ROWS && chosen.size > 1) {
+      chosen.delete(k);
+      break;
+    }
+    best = next;
+  }
+  return { rows: best.rows, left: best.left };
+}
 
 /**
  * How the pane draws `row`, its path named `name`, in `width` columns. The
@@ -766,10 +1124,11 @@ export type RowLabel = { lead: string; dir: string; file: string; tail: string }
  * too-large change played), the number and the tool. The tail is the state
  * word, on the current row and on a too-large change passed, and the lines
  * added and removed. A too-large current row reads Too large whether it is
- * shown or cued, since the pane shows its note either way. The folder is cut
- * before the file name, each at its end.
+ * shown or cued, since the pane shows its note either way. `tag`, a lane
+ * tag's words, takes its columns too. The folder is cut before the file name,
+ * each at its end.
  */
-export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPaused: boolean }, width: number): RowLabel {
+export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPaused: boolean }, width: number, tag = ''): RowLabel {
   const tooLargePlayed = row.isTooLarge && row.state === 'played';
   const glyph = row.state === 'played' ? (tooLargePlayed ? '⊘' : '✓') : row.state === 'playing' || at.isCurrent ? '▸' : '○';
   let word = '';
@@ -783,12 +1142,14 @@ export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPau
   const cut = name.search(/[^\\/]*$/);
   let dir = name.slice(0, cut);
   let file = name.slice(cut);
-  const room = Math.max(1, width - lead.length - (tail ? tail.length + 1 : 0));
+  // A tag is two spaces, its color, a space and its words.
+  const tagWidth = tag ? cellWidth(tag) + 4 : 0;
+  const room = Math.max(1, width - lead.length - tagWidth - (tail ? tail.length + 1 : 0));
   if (dir.length + file.length > room) {
     dir = file.length + 2 <= room ? dir.slice(0, room - file.length - 1) + '…' : '';
     if (file.length > room) file = file.slice(0, Math.max(0, room - 1)) + '…';
   }
-  return { lead, dir, file, tail: tail ? ' ' + tail : '' };
+  return { lead, dir, file, tag, tail: tail ? ' ' + tail : '' };
 }
 
 /**
@@ -853,46 +1214,65 @@ function cutColumns(line: string, from: number, width: number): string {
   return s;
 }
 
-/**
- * The recording number of the first change not played yet, the change being
- * typed counting as played: where a press of Clear marks now takes effect.
- */
-export function clearPoint(deck: Deck): number {
-  if (deck.playing) return deck.playing.change.number + 1;
-  const next = deck.timeline.peek() as Event | undefined;
+/** The lane a clear belongs to: the lane followed when it was made. */
+function laneOfClear(c: Clear): string {
+  return c.lane ?? '';
+}
+
+/** The recording number of lane `lane`'s first change not played yet, or the next number to record when none waits. */
+function nextNumber(deck: Deck, lane: string): number {
+  const seq = deck.timeline.firstPending(lane);
+  const next = seq === undefined ? undefined : (deck.timeline.get(seq) as Event | undefined);
   return next ? next.number : deck.recorded + 1;
 }
 
-/** `clears` with a press of Clear marks now added, the oldest dropped past MAX_CLEARS. */
+/**
+ * The recording number of the followed lane's first change not played yet,
+ * the change being typed counting as played: where a press of Clear marks now
+ * takes effect.
+ */
+export function clearPoint(deck: Deck): number {
+  if (deck.playing) return deck.playing.change.number + 1;
+  return nextNumber(deck, deck.timeline.followed);
+}
+
+/** `clears` with a press of Clear marks now added for the followed lane, the oldest dropped past MAX_CLEARS. */
 export function clearMarks(deck: Deck, clears: readonly Clear[]): Clear[] {
-  return [...clears, { at: clearPoint(deck) }].slice(-MAX_CLEARS);
+  const lane = deck.timeline.followed;
+  return [...clears, { at: clearPoint(deck), ...(lane !== '' && { lane }) }].slice(-MAX_CLEARS);
 }
 
 /**
  * `clears` without those a move of playback undid: every clear made after the
- * change playback now starts from (the change being typed, or the next one to
- * play) was next.
+ * change its lane now starts from (the change being typed, or the lane's next
+ * one to play) was next.
  */
 export function pruneClears(deck: Deck, clears: readonly Clear[]): Clear[] {
-  const next = deck.playing ? deck.playing.change.number : clearPoint(deck);
-  return clears.filter((c) => c.at <= next);
+  const p = deck.playing;
+  return clears.filter((c) => {
+    const lane = laneOfClear(c);
+    const next = p && laneOfChange(p.change) === lane ? p.change.number : nextNumber(deck, lane);
+    return c.at <= next;
+  });
 }
 
 /** Whether `path` is the file of the change being typed while a clear made during it holds that file's marks back. */
 function isHeldBack(deck: Deck, path: string, clears: readonly Clear[]): boolean {
   const p = deck.playing;
-  return p !== undefined && fileKey(p.change.path) === fileKey(path) && clears.some((c) => c.at === p.change.number + 1);
+  return p !== undefined && fileKey(p.change.path) === fileKey(path) && clears.some((c) => c.at === p.change.number + 1 && laneOfClear(c) === laneOfChange(p.change));
 }
 
 /**
  * The baseline of the file at `path`, as the extension's baselines() finds it:
- * the before text of the lane's first kept change to it, made over by each
- * clear that has taken effect into the file's text then. Only played changes
- * count; a too-large one leaves no text, so the next change starts the file
- * afresh. Undefined when no played change names the file.
+ * the before text of the followed lane's first kept change to it, made over by
+ * each of the lane's clears that has taken effect into the file's text then.
+ * Only played changes count; a too-large one leaves no text, so the next
+ * change starts the file afresh. Undefined when no played change names the
+ * file.
  */
 function playedBaseline(deck: Deck, path: string, clears: readonly Clear[]): string | undefined {
-  const sorted = [...clears].sort((x, y) => x.at - y.at);
+  const lane = deck.timeline.followed;
+  const sorted = clears.filter((c) => laneOfClear(c) === lane).sort((x, y) => x.at - y.at);
   const base = new Map<string, string>();
   const text = new Map<string, string>();
   let k = 0;
@@ -902,7 +1282,7 @@ function playedBaseline(deck: Deck, path: string, clears: readonly Clear[]): str
   const { timeline, playing } = deck;
   // A change being typed that the timeline dropped is older than every change it keeps.
   let stop = playing && !timeline.get(playing.seq) ? playing.change.number : Infinity;
-  for (const e of timeline.all() as Event[]) {
+  for (const e of timeline.laneEvents(lane) as Event[]) {
     if (e.number >= stop) break;
     if (timeline.stateOf(e.seq) !== 'played') {
       stop = e.number;
@@ -924,19 +1304,16 @@ function playedBaseline(deck: Deck, path: string, clears: readonly Clear[]): str
 }
 
 /**
- * The file tabs: one per file the lane has played a change to or the pane
- * shows, in the order of its first such change, each with the number and id
- * of the latest. Playback's lane is the only one so far.
+ * The file tabs: one per file the followed lane has played a change to or the
+ * pane shows, in the order of its first such change, each with the number and
+ * id of the latest.
  */
 export function tabsOf(deck: Deck): (Tab & { id: string })[] {
   const tabs = new Map<string, Tab & { id: string }>();
   const shown = deck.shown?.id;
-  const { timeline } = deck;
-  const kept = keptChanges(deck);
-  for (const c of kept) {
-    const e = timeline.all().find((x) => (x as Event).id === c.id);
-    const isPlayed = e !== undefined && timeline.stateOf(e.seq) === 'played';
-    if (!isPlayed && c.id !== shown) continue;
+  const lane = deck.timeline.followed;
+  for (const c of keptChanges(deck)) {
+    if (c.id !== shown && (laneOfChange(c) !== lane || !isPlayed(deck, c))) continue;
     const key = fileKey(c.path);
     const was = tabs.get(key);
     tabs.set(key, { path: was?.path ?? c.path, last: c.number, id: c.id });
@@ -970,7 +1347,13 @@ export function viewOf(deck: Deck, o: ViewOptions = {}): View {
   const clears = o.clears ?? [];
   const status = deck.isPaused ? 'paused' : deck.playing ? 'typing' : 'idle';
   const s = deck.shown;
-  const base = { status, queued: deck.timeline.pendingCount(), isTyping: deck.playing !== undefined, ...(s && captionOf(s)) } as const;
+  const { timeline } = deck;
+  const queued = timeline.pendingCount();
+  const info = timeline.lanesInBuffer().length > 1 ? timeline.laneInfo(timeline.followed) : undefined;
+  const kind = deck.kinds.get(timeline.followed);
+  // A lane labeled by its agent type does not name the type twice.
+  const lane = info && { lane: { label: info.label, ...(kind && kind !== info.label && { kind }), color: info.color } };
+  const base = { status, queued, otherQueued: timeline.pendingTotal() - queued, isTyping: deck.playing !== undefined, ...(s && captionOf(s)), ...lane } as const;
   const empty = { rows: [], oldBefore: 0, newBefore: 0, firstColumn: 0, caretRow: 0, caretLine: 0, caretColumn: 0 };
   if (!s) return { ...base, ...empty };
   const at = s.isTooLarge ? { path: s.path, isTooLarge: true as const } : { path: s.path };

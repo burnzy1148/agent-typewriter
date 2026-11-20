@@ -1,6 +1,6 @@
 import { expect, test, type Engine } from 'claude-code/testing';
 
-import { PANE_ID, readDiff, seed, start, viewText, world } from './world';
+import { PANE_ID, inMainLane, playedOf, readDiff, seed, start, viewText, world } from './world';
 
 // The plugin draws nothing on the terminal; that is the VS Code extension's.
 const SURFACES = ['desktop', 'vscode', 'mobile'] as const;
@@ -386,7 +386,7 @@ test('after a reload, played changes stay played with their texts, kind and time
   seed(on, { shape: 'saved-4', value: saved }, RS_TEXTS);
   await start($);
   await w.clock.settle();
-  expect(w.saved).toEqual(saved);
+  expect(w.saved).toEqual(inMainLane(saved));
   // The pane picks up on the played change until the waiting one starts.
   const shown = await look($, 'desktop');
   expect([shown.name, shown.status, shown.code?.source]).toEqual(['r.ts', 'idle · 1 queued', 'kept\n']);
@@ -394,7 +394,7 @@ test('after a reload, played changes stay played with their texts, kind and time
   await w.clock.advance(10_000);
   expect((await look($, 'desktop')).code?.source).toBe('new\n');
   expect(w.views.some((v) => v.path === '/w/r.ts' && v.isTyping)).toBe(false);
-  expect(w.saved).toEqual({ ...saved, played: 2 });
+  expect(w.saved).toEqual(inMainLane({ ...saved, played: 2 }));
   expect(w.texts.size).toBe(0);
 });
 
@@ -426,7 +426,7 @@ test('after a reload, changes saved by the earlier saved-1 shape play', async ($
     { id: 'r', number: 1, path: '/w/r.ts', kind: 'modify', time: 0 },
     { id: 's', number: 2, path: '/w/s.ts', kind: 'modify', time: 0 },
   ]);
-  expect(w.saved.played).toBe(2);
+  expect(playedOf(w.saved)).toBe(2);
 });
 
 test('after a reload, a pause is kept and the next change is shown before it plays, marked Next', async ($, on) => {

@@ -41,7 +41,7 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
   const w: World = {
     files: new Map(Object.entries(files)),
     clock: mock.clock(on),
-    saved: { changes: [], played: 0, recorded: 0, isPaused: false },
+    saved: { changes: [], recorded: 0, isPaused: false, lanes: [], positions: {}, followed: '', autoFollow: true },
     texts: new Map(),
     views: [],
     opens: [],
@@ -127,6 +127,23 @@ export function kept(w: World) {
 
 export async function start($: Engine, surface: 'terminal' | 'desktop' | 'vscode' = 'desktop') {
   await $.session.start({ cwd: '/w', surface, isInteractive: true });
+}
+
+/** How many of `saved`'s changes have played, in every lane. */
+export function playedOf(saved: Saved): number {
+  return Object.values(saved.positions).reduce((n, x) => n + x, 0);
+}
+
+/** The main conversation's lane as `saved` keeps it. */
+export const MAIN_LANE = { id: '', label: 'Main', color: 1 } as const;
+
+/**
+ * What the plugin saves once it has loaded `old`, saved by a version that kept
+ * no lanes, whose changes are all the main conversation's: the same changes,
+ * the first `old.played` played, in the main conversation's lane.
+ */
+export function inMainLane(old: { changes: readonly object[]; played: number; recorded: number; isPaused: boolean }): Saved {
+  return { changes: old.changes as Saved['changes'], recorded: old.recorded, isPaused: old.isPaused, lanes: [MAIN_LANE], positions: { '': old.played }, followed: '', autoFollow: true };
 }
 
 /**

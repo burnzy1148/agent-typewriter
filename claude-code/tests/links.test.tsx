@@ -4,7 +4,7 @@
 import type { On, RenderSurface } from 'claude-code';
 import { expect, test, type Engine } from 'claude-code/testing';
 
-import { PANE_ID, seed, start, world } from './world';
+import { MAIN_LANE, PANE_ID, inMainLane, seed, start, world } from './world';
 
 /** Stands in for the engine's loops: a turn starts under the id the test gives it, and a spawn starts the agent its description names. */
 function loops(on: On) {
@@ -150,7 +150,7 @@ test('an agent started while a reload is still loading keeps the stored agents, 
 
   expect(writes.at(-1)).toEqual([
     { agentId: 'old', mainTurnId: 't0', agentCallId: 'toolu_old' },
-    { agentId: 'new', agentCallId: 'toolu_new' },
+    { agentId: 'new', agentCallId: 'toolu_new', description: 'new', subagentType: 'general-purpose' },
   ]);
   await turn($, 'tx', 'old');
   await write($, 'old.ts', 'toolu_oldwrite', 'old');
@@ -168,8 +168,8 @@ test('the agents started are saved for a reload, the newest 200', async ($, on) 
 
   const last = writes.at(-1) as { agentId: string; mainTurnId?: string; agentCallId?: string }[];
   expect(last.length).toBe(200);
-  expect(last[0]).toEqual({ agentId: 'ag1', mainTurnId: 't1', agentCallId: 'toolu_agent1' });
-  expect(last.at(-1)).toEqual({ agentId: 'ag200', mainTurnId: 't1', agentCallId: 'toolu_agent200' });
+  expect(last[0]).toEqual({ agentId: 'ag1', mainTurnId: 't1', agentCallId: 'toolu_agent1', description: 'ag1', subagentType: 'general-purpose' });
+  expect(last.at(-1)).toEqual({ agentId: 'ag200', mainTurnId: 't1', agentCallId: 'toolu_agent200', description: 'ag200', subagentType: 'general-purpose' });
 });
 
 test('a change made before the plugin saw a turn start keeps no turn', async ($, on) => {
@@ -191,9 +191,20 @@ test('turns and agents survive a reload', async ($, on) => {
   seed(on, { shape: 'saved-4', value: saved }, TEXTS);
   await start($);
   await w.clock.settle();
-  expect(w.saved).toEqual(saved);
+  expect(w.saved).toEqual({
+    changes: saved.changes,
+    recorded: 2,
+    isPaused: false,
+    lanes: [MAIN_LANE, { id: 'ag1', label: 'Subagent', color: 2 }],
+    positions: { '': 1, ag1: 0 },
+    followed: '',
+    autoFollow: true,
+  });
 
-  await w.clock.advance(60);
+  // Main has played out but keeps running, so the agent's change waits in its lane until auto-follow moves there after 3 s.
+  await w.clock.advance(2_900);
+  expect((await row($, 'toolu_s')).chip).toBe('Queued #2');
+  await w.clock.advance(160);
   expect((await row($, 'toolu_s')).chip).toBe('Typing #2');
 });
 
@@ -206,7 +217,7 @@ test('changes saved by the earlier saved-3 shape load without turns', async ($, 
   await start($);
   await w.clock.settle();
 
-  expect(w.saved).toEqual(saved);
+  expect(w.saved).toEqual(inMainLane(saved));
   expect((await row($, 'toolu_r')).chip).toBe('Replay #1');
   expect((await row($, 'toolu_s')).chip).toBe('Replay #2');
 });
