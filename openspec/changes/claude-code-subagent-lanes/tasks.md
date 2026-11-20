@@ -29,6 +29,10 @@
 - [x] 6.1 After at-o3z.14, .27 and .16 have archived, rebase this branch onto `claude-code-extension`, re-read `openspec/specs/claude-code-replay/spec.md`, and adjust the delta: add a MODIFIED block making a file group's *Play from first* play the rest of its change's lane, and confirm no MODIFIED block here overwrites a requirement those changes modified. Apply the lane rules to their controls in code (Play from first follows the lane; tabs and marks read the followed lane; a chip press ends a pin). Verify with `openspec validate claude-code-subagent-lanes --strict` and plugin tests for Play from first in another lane and a pin ended by a chip.
 - [x] 6.2 Run `npm run typecheck`, `npm test`, `npm run build:claude-code` (no diff), `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-subagent-lanes --strict`. All pass.
 
+## Added in implementation
+
+- [x] 6.3 Write per-lane clears into the delta (MODIFIED *Clear marks*, *Seeking back past a clear undoes it*, *Clears survive a reload*) and a lane's chip into *The list keeps up with playback*. Re-read the auto-follow clock on every tick while several lanes hold changes. Cut the header's lane label and agent type to 24 characters each, and drop an agent type equal to the label. Verify with `openspec validate claude-code-subagent-lanes --strict`, `npm test` and `npm run check:claude-code`.
+
 ## Workflow follow-up
 
 - Add the lane chips, the auto-follow switch and lane tags to at-o3z.28's desktop check.

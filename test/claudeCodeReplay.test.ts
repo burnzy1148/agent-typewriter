@@ -51,6 +51,7 @@ import {
   laneChipRows,
   laneChipText,
   laneTagText,
+  laneHeaderText,
   autoFollowText,
   playFrom,
   toggleAutoFollow,
@@ -1976,6 +1977,16 @@ test('lanes: the view names the followed lane and counts the other lanes\' queue
   assert.deepEqual([v.status, v.queued, v.otherQueued, v.lane], ['typing', 1, 3, { label: 'Main', color: 1 }]);
   follow(d, 'ag1', FAST);
   assert.deepEqual(viewOf(d).lane, { label: 'write tests', kind: 'general-purpose', color: 2 });
+  // A lane labeled by its agent type does not name it twice.
+  enqueue(d, by('ag3', change('e1', '', 'e1\n')), undefined, { subagentType: 'Explore', isRunning: true });
+  follow(d, 'ag3', FAST);
+  assert.deepEqual(viewOf(d).lane, { label: 'Explore', color: 4 });
+});
+
+test('lanes: the header cuts the lane\'s label and agent type to 24 characters each', () => {
+  assert.equal(laneHeaderText({ label: 'write tests', kind: 'general-purpose' }), 'write tests (general-purpose)');
+  assert.equal(laneHeaderText({ label: 'Main' }), 'Main');
+  assert.equal(laneHeaderText({ label: 'a'.repeat(200), kind: 'k'.repeat(50) }), `${'a'.repeat(23)}… (${'k'.repeat(23)}…)`);
 });
 
 test('lanes: the listing has a chip per lane, Main first, with its state, and each row its lane', () => {

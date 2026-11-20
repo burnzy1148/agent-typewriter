@@ -324,3 +324,83 @@ Over the code view the pane SHALL show a tab for each file the followed lane has
 #### Scenario: Another lane's tabs
 - **WHEN** Main has played changes to `a.ts`, `write tests` has played a change to `limiter.test.ts`, and the person follows `write tests`
 - **THEN** the pane shows a tab for `limiter.test.ts` and none for `a.ts`
+
+### Requirement: The list keeps up with playback
+When more changes are kept than the pane can list, the list SHALL show the rows that fit and keep the shown change's row among them as playback moves on. A list the person scrolled SHALL stay where they put it until they press a change in the list or its chip in the conversation, Play turn or its chip, Play from first, By turn or By file, a lane's chip, or From start, Finish current or Skip to latest; then it keeps up again. Scrolling with the pointer over the code SHALL NOT move the list.
+
+#### Scenario: Long session
+- **WHEN** 80 changes are kept, the pane lists 10 rows, and change 40 starts
+- **THEN** change 40's row is among the rows shown
+
+#### Scenario: The person scrolls back
+- **WHEN** the person scrolls the list up to change 3 while change 40 is typed, and change 41 then starts
+- **THEN** the list still shows change 3, and change 41's row is not brought into view
+
+#### Scenario: Picking brings it back
+- **WHEN** the person has scrolled the list and presses change 5
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: A chip brings it back
+- **WHEN** the person has scrolled the list and presses the chip on change 5's call in the conversation
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Play turn brings it back
+- **WHEN** the person has scrolled the list and presses Play turn on a chapter whose first change is change 5
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Play from first brings it back
+- **WHEN** the person has scrolled the list grouped by file and presses Play from first on a group whose first change is change 5
+- **THEN** change 5's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Switching brings it back
+- **WHEN** the person has scrolled the list while change 40 is typed, and switches grouping
+- **THEN** change 40's row is shown in the new grouping, and as later changes start, their rows are shown
+
+#### Scenario: A lane's chip brings it back
+- **WHEN** the person has scrolled the list and presses the chip of the `write tests` lane, whose next change is change 7
+- **THEN** change 7's row is shown, and as later changes start, their rows are shown
+
+#### Scenario: Scrolling over the code
+- **WHEN** the person scrolls with the pointer over the code while change 40 is typed, and change 41 then starts
+- **THEN** the list does not move for the scroll, and change 41's row is shown
+
+### Requirement: Clear marks
+The pane SHALL have a Clear marks control. Pressing it SHALL make each file's text as the followed lane last typed it the file's baseline, so the code view shows no marks until more changes play. A clear SHALL belong to the lane followed at the press: other lanes keep their marks, and the clear applies whenever its lane is followed. A file that a change is being typed into at the press SHALL show no marks until that change finishes, and its after text SHALL then be the file's baseline. Clear marks SHALL NOT change playback.
+
+#### Scenario: Clear, then play more
+- **WHEN** `a.ts` and `b.ts` have marks, the user presses Clear marks, and a change to `a.ts` then plays
+- **THEN** `b.ts` shows no marks, and `a.ts` marks only what that change did
+
+#### Scenario: Clear while typing
+- **WHEN** the user presses Clear marks while a change to `a.ts` is being typed
+- **THEN** `a.ts` shows no marks for the rest of that change, and the next change to `a.ts` is marked against the text it left
+
+#### Scenario: Other files clear at once
+- **WHEN** `b.ts` has marks and the user presses Clear marks while a change to `a.ts` is being typed
+- **THEN** `b.ts` shows no marks at once, before that change finishes
+
+#### Scenario: Another lane keeps its marks
+- **WHEN** Main has played a change to `a.ts` and `write tests` a change to `b.ts`, the user presses Clear marks while Main is followed, and then follows `write tests`
+- **THEN** `b.ts` still shows its marks, and following Main again shows `a.ts` with none
+
+### Requirement: Seeking back past a clear undoes it
+When a seek moves a lane's playback to a change before the one that was next in that lane when marks were cleared, that lane's clear SHALL be undone, so the changes played again are marked against the baseline from before it. A change being typed at the press counts as played for this. Moving playback in one lane SHALL NOT undo another lane's clears.
+
+#### Scenario: Pick before the clear
+- **WHEN** three changes to `a.ts` have played, the user presses Clear marks, and then picks the second change
+- **THEN** once the second change plays, the code view marks what the first and second changes did
+
+#### Scenario: A pick in another lane keeps the clear
+- **WHEN** Main has played change 1, `write tests` has played change 2, the user presses Clear marks while Main is followed, and then picks change 2
+- **THEN** Main's clear stays, and following Main again shows its files with no marks
+
+### Requirement: Clears survive a reload
+The clears in effect SHALL survive a reload of the plugin within a session, each with its lane, so a reload SHALL NOT bring back marks the person cleared. Clears saved by an earlier version, which kept no lanes, SHALL load as the main conversation's.
+
+#### Scenario: Reload after a clear
+- **WHEN** the user presses Clear marks after changes to `a.ts` have played, and the plugin reloads
+- **THEN** `a.ts` shows no marks
+
+#### Scenario: Clears saved before lanes
+- **WHEN** an earlier version saved a clear after changes to `a.ts` played in the main conversation, and the plugin reloads into this version
+- **THEN** `a.ts` shows no marks while Main is followed

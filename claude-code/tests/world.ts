@@ -129,10 +129,6 @@ export async function start($: Engine, surface: 'terminal' | 'desktop' | 'vscode
   await $.session.start({ cwd: '/w', surface, isInteractive: true });
 }
 
-/**
- * Answers the plugin's reads of `saved` and of its `text` members with what an
- * earlier load stored, until it writes them itself, as a reload finds them.
- */
 /** How many of `saved`'s changes have played, in every lane. */
 export function playedOf(saved: Saved): number {
   return Object.values(saved.positions).reduce((n, x) => n + x, 0);
@@ -150,6 +146,10 @@ export function inMainLane(old: { changes: readonly object[]; played: number; re
   return { changes: old.changes as Saved['changes'], recorded: old.recorded, isPaused: old.isPaused, lanes: [MAIN_LANE], positions: { '': old.played }, followed: '', autoFollow: true };
 }
 
+/**
+ * Answers the plugin's reads of `saved` and of its `text` members with what an
+ * earlier load stored, until it writes them itself, as a reload finds them.
+ */
 export function seed(on: On, saved: unknown, texts: Record<string, string> = {}) {
   let isSavedWritten = false;
   const written = new Set<string>();

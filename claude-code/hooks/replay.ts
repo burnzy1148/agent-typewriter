@@ -1053,6 +1053,11 @@ export function laneChipText(chip: LaneChip): string {
   return `${cutLabel(chip.label, MAX_CHIP_LABEL)} · ${state}`;
 }
 
+/** The words the header shows after the followed lane's color: its label, and its agent type in parentheses, each cut to MAX_CHIP_LABEL. */
+export function laneHeaderText(lane: { label: string; kind?: string }): string {
+  return cutLabel(lane.label, MAX_CHIP_LABEL) + (lane.kind ? ` (${cutLabel(lane.kind, MAX_CHIP_LABEL)})` : '');
+}
+
 /** The words of a row's lane tag after its color: the lane's label cut to MAX_TAG_LABEL. */
 export function laneTagText(label: string): string {
   return cutLabel(label, MAX_TAG_LABEL);
@@ -1346,7 +1351,8 @@ export function viewOf(deck: Deck, o: ViewOptions = {}): View {
   const queued = timeline.pendingCount();
   const info = timeline.lanesInBuffer().length > 1 ? timeline.laneInfo(timeline.followed) : undefined;
   const kind = deck.kinds.get(timeline.followed);
-  const lane = info && { lane: { label: info.label, ...(kind && { kind }), color: info.color } };
+  // A lane labeled by its agent type does not name the type twice.
+  const lane = info && { lane: { label: info.label, ...(kind && kind !== info.label && { kind }), color: info.color } };
   const base = { status, queued, otherQueued: timeline.pendingTotal() - queued, isTyping: deck.playing !== undefined, ...(s && captionOf(s)), ...lane } as const;
   const empty = { rows: [], oldBefore: 0, newBefore: 0, firstColumn: 0, caretRow: 0, caretLine: 0, caretColumn: 0 };
   if (!s) return { ...base, ...empty };

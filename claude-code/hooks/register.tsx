@@ -45,6 +45,7 @@ import {
   keptTurns,
   laneChipRows,
   laneChipText,
+  laneHeaderText,
   laneTagText,
   linksOf,
   listLines,
@@ -618,14 +619,16 @@ function regroup($: EngineInterface, live: Live, from: Grouping, to: Grouping): 
 
 /**
  * One timer tick: moves playback and writes what it changed. The time moves on
- * a tick; while auto-follow may move to another lane, it is read again for the
- * next tick, so a slowed timer does not stretch the wait.
+ * a tick; while auto-follow can matter (it is on and several lanes hold
+ * changes), the clock is read again for the next tick, typing or not, so the
+ * time auto-follow measures quiet by, and a chip press stamps, is at most a
+ * tick old however the timer runs.
  */
 function step($: EngineInterface, live: Live): void {
   live.now += TICK_MS;
   if (tick(live.deck, live.opts, live.now)) sync($, live);
   const d = live.deck;
-  if (d.autoFollow && !d.playing && d.timeline.lanesInBuffer().length > 1) {
+  if (d.autoFollow && d.timeline.lanesInBuffer().length > 1) {
     void $.clock.now().then(
       (now) => (live.now = Math.max(live.now, now)),
       () => undefined,
@@ -870,9 +873,9 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1}>
           {v.lane && (
-            <Text>
+            <Text wrap="truncate-end">
               <Text color={laneColor(v.lane.color)}>●</Text>
-              {` ${v.lane.label}${v.lane.kind ? ` (${v.lane.kind})` : ''}`}
+              {` ${laneHeaderText(v.lane)}`}
             </Text>
           )}
           <Text bold>{name ?? 'No changes yet'}</Text>
