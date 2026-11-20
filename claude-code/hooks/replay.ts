@@ -1137,8 +1137,8 @@ export function rowLabel(row: Row, name: string, at: { isCurrent: boolean; isPau
   const cut = name.search(/[^\\/]*$/);
   let dir = name.slice(0, cut);
   let file = name.slice(cut);
-  // A tag is its color, a space and its words, a gap before it.
-  const tagWidth = tag ? cellWidth(tag) + 3 : 0;
+  // A tag is two spaces, its color, a space and its words.
+  const tagWidth = tag ? cellWidth(tag) + 4 : 0;
   const room = Math.max(1, width - lead.length - tagWidth - (tail ? tail.length + 1 : 0));
   if (dir.length + file.length > room) {
     dir = file.length + 2 <= room ? dir.slice(0, room - file.length - 1) + '…' : '';

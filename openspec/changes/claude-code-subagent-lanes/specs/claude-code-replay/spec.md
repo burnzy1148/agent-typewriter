@@ -282,3 +282,45 @@ Finish current SHALL also finish a change picked while playback is paused: the p
 #### Scenario: Finish a picked change
 - **WHEN** playback is paused, the user presses the second of four changes, and then presses Finish current
 - **THEN** the pane shows the second change's after text, playback stays paused, and on resume the third change is typed
+
+### Requirement: Play from first
+Pressing a file group's Play from first SHALL act as pressing the group's first change in the list: that change's lane is followed, that change is typed next from its before text, every change recorded after it in its lane follows in recorded order whatever file it changed, the changes recorded before it in its lane count as played, other lanes keep their positions, and whether playback is paused does not change.
+
+#### Scenario: Replay a file's first change
+- **WHEN** every change has played, the `src/a.ts` group holds changes 1 and 3, and the user presses its Play from first
+- **THEN** change 1 is typed from its before text, followed by changes 2, 3 and every later change in recorded order
+
+#### Scenario: Play from first while paused
+- **WHEN** playback is paused and the user presses Play from first on the `src/b.ts` group, whose first change is change 2
+- **THEN** playback stays paused, the pane shows `src/b.ts` as it was before change 2, and that change's row reads Next
+
+#### Scenario: A file whose first changes were dropped
+- **WHEN** changes 1 to 3 edited `src/a.ts`, changes 1 and 2 were dropped to stay within the limits, and the user presses Play from first on the `src/a.ts` group
+- **THEN** change 3 is typed next
+
+#### Scenario: A file first changed in another lane
+- **WHEN** Main is followed, and the user presses Play from first on the `test/limiter.test.ts` group, whose first change `write tests` made
+- **THEN** `write tests` is followed and that change is typed next, and Main's changes wait where they were
+
+### Requirement: File tabs over the code view
+Over the code view the pane SHALL show a tab for each file the followed lane has typed, in the order the lane first typed them. A file has a tab while the lane keeps a change to it that has played or that the pane shows. Each tab SHALL name its file, with enough of its folder to tell apart files of the same name. The tab of the file the code view shows SHALL be marked. Following another lane SHALL show that lane's tabs.
+
+#### Scenario: Two files typed
+- **WHEN** a change to `src/a.ts` has played and a change to `src/b.ts` is being typed
+- **THEN** the pane shows tabs `a.ts` and `b.ts`, in that order, with `b.ts` marked
+
+#### Scenario: Waiting changes have no tab
+- **WHEN** a change to `a.ts` is being typed and a change to `c.ts` waits
+- **THEN** the pane shows a tab for `a.ts` and none for `c.ts`
+
+#### Scenario: Same name in two folders
+- **WHEN** changes to `src/index.ts` and `test/index.ts` have played
+- **THEN** their tabs read `src/index.ts` and `test/index.ts`
+
+#### Scenario: Seek back
+- **WHEN** one change to `a.ts` and then one to `b.ts` have played, and the user picks the change to `a.ts`
+- **THEN** the pane shows a tab for `a.ts` and none for `b.ts`
+
+#### Scenario: Another lane's tabs
+- **WHEN** Main has played changes to `a.ts`, `write tests` has played a change to `limiter.test.ts`, and the person follows `write tests`
+- **THEN** the pane shows a tab for `limiter.test.ts` and none for `a.ts`
