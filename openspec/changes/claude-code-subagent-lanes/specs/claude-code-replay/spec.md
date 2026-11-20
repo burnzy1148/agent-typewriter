@@ -373,7 +373,7 @@ When more changes are kept than the pane can list, the list SHALL show the rows 
 - **THEN** the list does not move for the scroll, and change 41's row is shown
 
 ### Requirement: Clear marks
-The pane SHALL have a Clear marks control. Pressing it SHALL make each file's text as the followed lane last typed it the file's baseline, so the code view shows no marks until more changes play. A clear SHALL belong to the lane followed at the press: other lanes keep their marks, and the clear applies whenever its lane is followed. A file that a change is being typed into at the press SHALL show no marks until that change finishes, and its after text SHALL then be the file's baseline. Clear marks SHALL NOT change playback.
+The pane SHALL have a Clear marks control. Pressing it SHALL make each file's text as the followed lane last typed it the file's baseline, so the code view shows no marks until more changes play. The clear SHALL belong to the followed lane; other lanes keep their marks. A file that a change is being typed into at the press SHALL show no marks until that change finishes, and its after text SHALL then be the file's baseline. Clear marks SHALL NOT change playback.
 
 #### Scenario: Clear, then play more
 - **WHEN** `a.ts` and `b.ts` have marks, the user presses Clear marks, and a change to `a.ts` then plays
