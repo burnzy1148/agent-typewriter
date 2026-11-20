@@ -20,10 +20,10 @@ import {
   type ChangeEvent,
   type Hunk,
 } from './core.mjs';
-import type { CallLinks, Clear, LaneChip, Listing, Row, Saved, SavedChange, SavedLane, Tab, Tool, TurnInfo, Turns, View } from '../types';
+import type { Band, CallLinks, Clear, LaneChip, Listing, Row, Saved, SavedChange, SavedLane, Tab, Tool, TurnInfo, Turns, View } from '../types';
 import { diffRows, lineAt, lineStarts, type DiffRow } from './marks';
 
-export type { CallLinks, Clear, LaneChip, Listing, Row, Saved, SavedChange, SavedLane, Tab, Tool, TurnInfo, Turns, View };
+export type { Band, CallLinks, Clear, LaneChip, Listing, Row, Saved, SavedChange, SavedLane, Tab, Tool, TurnInfo, Turns, View };
 
 export const TICK_MS = 50;
 export const DEFAULT_CHARS_PER_MINUTE = 1000;
@@ -795,6 +795,39 @@ export function listingOf(deck: Deck): Listing {
     followed: timeline.followed,
     autoFollow: deck.autoFollow,
   };
+}
+
+/** What the band above the prompt and the status entry start with. */
+export const BAND_PREFIX = 'Agent Typewriter';
+
+/** The last segment of `path`, by either separator. */
+export function fileName(path: string): string {
+  return path.split(/[\\/]/).filter((x) => x !== '').at(-1) ?? path;
+}
+
+/**
+ * What the band above the prompt and the status entry draw for `deck`, null
+ * before the first recorded change. The line names playback's state, the
+ * shown change by its file name and number, then the followed lane's queued
+ * count and the other lanes', as the pane's header counts them.
+ */
+export function bandOf(deck: Deck): Band | null {
+  if (deck.recorded === 0) return null;
+  const { timeline, playing, shown } = deck;
+  const queued = timeline.pendingCount();
+  const other = timeline.pendingTotal() - queued;
+  const e = shown && eventById(deck, shown.id);
+  // The change being typed outlives its place in the timeline once dropped.
+  const number = e?.number ?? (shown && playing?.change.id === shown.id ? playing.change.number : undefined);
+  const change = shown ? showControls(fileName(shown.path)) + (number === undefined ? '' : ` #${number}`) : '';
+  const isCued = !playing && e !== undefined && timeline.stateOf(e.seq) === 'pending';
+  let what: string;
+  if (shown?.isTooLarge) what = `${change} is too large to replay`;
+  else if (deck.isPaused) what = isCued ? `paused · next ${change}` : `paused · ${change}`;
+  else if (playing || queued > 0) what = `typing ${change}`;
+  else what = `up to date · ${change}`;
+  const parts = [BAND_PREFIX, what.replace(/ · $/, '').trim(), ...(queued > 0 ? [`${queued} queued`] : []), ...(other > 0 ? [`${other} in other lanes`] : [])];
+  return { line: parts.filter((x) => x !== '').join(' · '), isActive: playing !== undefined || timeline.pendingTotal() > 0, isPaused: deck.isPaused };
 }
 
 /** Longest prompt a turn keeps, in characters, its ellipsis included; the pane cuts it again to fit. */

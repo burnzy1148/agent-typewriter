@@ -152,6 +152,7 @@ test('a file over the replay limit is recorded without its text', async ($, on) 
   await start($);
   await $.tool.call({ tool: 'Write', file_path: '/w/big.json', content: 'x'.repeat(1_000_001) });
   await $.tool.call({ tool: 'Write', file_path: '/w/new.json', content: 'x'.repeat(1_000_001) });
+  await w.clock.settle();
 
   expect(w.saved.changes).toEqual([
     { id: expect.any(String), number: 1, tool: 'Write', path: '/w/big.json', kind: 'modify', time: 0, isTooLarge: true },
@@ -164,6 +165,7 @@ test('once a file was over the limit, neither text is read', async ($, on) => {
   const w = world(on, { '/w/big.json': 'x'.repeat(1_000_001) });
   await start($);
   await $.tool.call({ tool: 'Write', file_path: '/w/big.json', content: 'small\n' });
+  await w.clock.settle();
 
   expect(w.reads).toEqual([]);
   expect(w.saved.changes).toMatchObject([{ path: '/w/big.json', isTooLarge: true }]);

@@ -69,6 +69,14 @@ Alternative: keep the status entry in a mixed session, since the requirement "No
 
 The band reuses `openedText`, `PANE` and `TITLE`. The first-change open, its no-surface notice and `/typewriter` answers stay as specified.
 
+### Corrected in implementation
+
+- **Lanes (at-o3z.15) landed before this.** The line's counts follow the pane's header as it now reads: the followed lane's queued count, then ` · <n> in other lanes` while other lanes wait. `isActive` counts every lane (`playing` or `pendingTotal() > 0`), so with auto-follow off the band stays while only another lane waits, saying `up to date` for the followed lane, and Skip to latest, which finishes every lane, clears it. The band names no lane and draws no lane color; that stays a follow-up.
+- **`bandOf(deck)` takes no `cwd`.** The line names the file by its last path segment, with control characters shown as the pane shows them, so the working directory plays no part. A change cued after a pick or a follow is told from a paused change in progress by the shown change still being pending in its lane with nothing typed.
+- **The status entry is set once `hasTerminal` is known.** `session.start` reads the surfaces before the load's first `flush`, so a session that starts on the terminal and the desktop never sets the entry, not even once.
+- **Tests cannot raise `ui.close`.** The test engine exposes no `$.ui.close`. The band tests close the pane by dropping it from the engine's record of panes, which is what the band reads; the `ui.close` hook's redraw is not covered by a plugin test.
+- **One more write in `flush`.** Two recording tests read `saved` straight after the tool calls without letting the queued writes settle; the band's write made the second flush land later. They now settle the clock first, as the other tests do.
+
 ## Risks / Trade-offs
 
 - [VS Code gets no band] → Claude Code does not raise `AbovePrompt` there. The status entry carries the state, if VS Code draws plugin status lines; task 3.2 checks and the README says what VS Code shows.
