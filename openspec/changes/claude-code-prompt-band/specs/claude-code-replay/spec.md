@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A band above the prompt while the pane is out of view
-On the desktop surface, while the pane is closed or open but not placed, and a change is being typed or at least one recorded change waits to play, the plugin SHALL draw one row in the band directly above the prompt. It SHALL draw nothing there while the pane is placed, while nothing is typing or queued, or while a question Claude Code asks the person holds that band. The band SHALL appear or go away as soon as any of these changes, whether or not playback moves.
+On the desktop surface, while the pane is closed or open but not placed, and a change is being typed or at least one recorded change waits to play in any lane, the plugin SHALL draw one row in the band directly above the prompt. It SHALL draw nothing there while the pane is placed, while nothing is typing or queued, or while a question Claude Code asks the person holds that band. The band SHALL appear or go away as soon as any of these changes, whether or not playback moves.
 
 #### Scenario: Pane closed while typing
 - **WHEN** the user closes the pane in the desktop app while a change is being typed
@@ -19,6 +19,10 @@ On the desktop surface, while the pane is closed or open but not placed, and a c
 - **WHEN** the band shows and the last queued change finishes typing
 - **THEN** the band goes away
 
+#### Scenario: Only another lane waits
+- **WHEN** the pane is closed, auto-follow is off, Main has played out, and a subagent's lane has two changes queued
+- **THEN** the band shows, saying Main is up to date and 2 changes wait in other lanes
+
 #### Scenario: Pane open
 - **WHEN** the pane is placed in the desktop app and a change is being typed
 - **THEN** no band is drawn above the prompt
@@ -32,7 +36,7 @@ On the desktop surface, while the pane is closed or open but not placed, and a c
 - **THEN** the plugin draws nothing there until the question is answered
 
 ### Requirement: The band and the status entry share one line
-The band and the status entry SHALL read the same line: `Agent Typewriter`, playback's state (`typing`, `paused`, `paused · next` for a change cued after a pick or a reload, or `up to date`), the shown change's file name and `#` with its change number, then how many changes wait to play, as the pane counts them, when any do. A change too large to replay SHALL be named as such. The band SHALL cut the line to fit beside its controls.
+The band and the status entry SHALL read the same line: `Agent Typewriter`, playback's state (`typing`, `paused`, `paused · next` for a change cued after a pick or a reload, or `up to date`), the shown change's file name and `#` with its change number, then how many of the followed lane's changes wait to play and how many wait in other lanes, as the pane's header counts them, when any do. A change too large to replay SHALL be named as such. The band SHALL cut the line to fit beside its controls.
 
 #### Scenario: Typing with changes queued
 - **WHEN** change 3, to `src/auth/limiter.ts`, is being typed and two changes wait
@@ -45,6 +49,10 @@ The band and the status entry SHALL read the same line: `Agent Typewriter`, play
 #### Scenario: Cued after a pick
 - **WHEN** playback is paused and the user picks change 5, to `b.ts`, in the pane
 - **THEN** the line reads `Agent Typewriter · paused · next b.ts #5`, followed by how many changes wait
+
+#### Scenario: Changes waiting in other lanes
+- **WHEN** Main is typing change 1, to `app.ts`, with one change queued, and a subagent has two changes queued
+- **THEN** the line reads `Agent Typewriter · typing app.ts #1 · 1 queued · 2 in other lanes`
 
 #### Scenario: Too large
 - **WHEN** change 4, to a 2 MB `bundle.js`, comes up to play

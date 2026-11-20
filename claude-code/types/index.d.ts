@@ -179,6 +179,14 @@ export type TurnInfo = { turnId: string; number: number; prompt: string; isEnded
  */
 export type Turns = { next: number; turns: TurnInfo[] };
 
+/**
+ * What the band above the prompt and the status entry draw: the line they
+ * share, whether a change is being typed or any waits to play in any lane
+ * (the band shows only then), and whether playback is paused (its Pause
+ * reads Resume).
+ */
+export type Band = { line: string; isActive: boolean; isPaused: boolean };
+
 /** How the pane groups its changes list: into chapters by turn, or by file. */
 export type Grouping = 'turn' | 'file';
 
@@ -198,6 +206,8 @@ declare module 'claude-code' {
       marks: Shaped<Marks>;
       /** The file tabs over the code view. */
       tabs: Shaped<Tabs>;
+      /** The band above the prompt and the status entry; null before the first recorded change. */
+      band: Shaped<Band | null>;
       /**
        * Member `<change id>:before` or `<change id>:after`, the change's texts,
        * and `<change id>:caption`, its caption, absent or '' when it has none;
