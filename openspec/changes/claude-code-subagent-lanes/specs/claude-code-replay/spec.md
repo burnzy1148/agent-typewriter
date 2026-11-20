@@ -130,11 +130,19 @@ The lane chips and the switch SHALL take at most two rows. When they do not fit,
 - **THEN** the chips that fit in two rows are shown, the followed lane's among them, and the pane says how many it left out
 
 ### Requirement: The pane names the followed lane
-While more than one lane holds a kept change, the pane's header SHALL begin with the followed lane's color and label, and for a subagent's lane its agent type in parentheses when the plugin saw it.
+While more than one lane holds a kept change, the pane's header SHALL begin with the followed lane's color and label, and for a subagent's lane its agent type in parentheses when the plugin saw it and it is not the label itself. The label and the agent type SHALL each be cut to 24 characters with an ellipsis.
 
 #### Scenario: Following a subagent
 - **WHEN** the `write tests` lane of a `general-purpose` subagent is followed and two lanes hold changes
 - **THEN** the header begins with that lane's color and `write tests (general-purpose)`
+
+#### Scenario: A lane labeled by its agent type
+- **WHEN** an `Explore` subagent the plugin saw start with no description is followed and two lanes hold changes
+- **THEN** the header begins with that lane's color and `Explore`, with no agent type after it
+
+#### Scenario: A long description
+- **WHEN** the followed subagent's description is 60 characters long
+- **THEN** the header shows its first 23 characters and an ellipsis
 
 ### Requirement: A row names its lane
 While more than one lane holds a kept change, each row of the changes list for a subagent's change SHALL show its lane's color and label. Rows of the main conversation's changes SHALL NOT name a lane.

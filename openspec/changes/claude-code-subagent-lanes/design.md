@@ -113,6 +113,10 @@ The first version re-read the clock only while nothing was typed, to save a host
 
 The design said at-o3z.16's "clears are already per followed lane" and left them there. In code that meant choosing what a clear means when another lane is followed, and what a seek in one lane does to another lane's clear. Neither choice was in a requirement until review round 1. Each `Clear` gains `lane?`, the lane followed at the press (absent for Main), stored as `marks-2`. Clear marks clears the followed lane only, and a lane's baselines read only its own clears. A move of playback prunes each lane's clears against that lane's own next change, so following or seeking one lane never undoes another's clear. `marks-1` reads as Main's clears. A session-wide clear, as the extension's `clearHighlights()` makes, was the alternative. It would remove the marks of lanes the person has not watched yet. The owner approved the per-lane reading with the round 1 plan, as recommended, and the delta modifies *Clear marks*, *Seeking back past a clear undoes it* and *Clears survive a reload* to say it.
 
+### The header's lane name
+
+The design drew the followed lane's label and agent type in the header uncut. Review round 1 found that a description from the model can run past the pane's width in a row the layout counts as one line, and that a lane labeled by its agent type read `Explore (Explore)`. The header now cuts each to 24 characters, as a chip cuts the label, and leaves out an agent type equal to the label. *The pane names the followed lane* says both, *Added in implementation* in round 2.
+
 ## Migration Plan
 
 Within one session, a reload into this version reads `saved-4` (or older) and `agents-1` and builds lanes as above; a downgrade reads `saved-5` as an unknown tag and starts fresh, the existing rule for shape changes. Nothing outlives a session, so there is no cross-session migration.

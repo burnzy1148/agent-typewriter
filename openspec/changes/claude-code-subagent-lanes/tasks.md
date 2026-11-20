@@ -31,7 +31,7 @@
 
 ## Added in implementation
 
-- [x] 6.3 Write per-lane clears into the delta (MODIFIED *Clear marks*, *Seeking back past a clear undoes it*, *Clears survive a reload*) and a lane's chip into *The list keeps up with playback*. Re-read the auto-follow clock on every tick while several lanes hold changes. Cut the header's lane label and agent type to 24 characters each, and drop an agent type equal to the label. Verify with `openspec validate claude-code-subagent-lanes --strict`, `npm test` and `npm run check:claude-code`.
+- [x] 6.3 Write per-lane clears into the delta (MODIFIED *Clear marks*, *Seeking back past a clear undoes it*, *Clears survive a reload*) and a lane's chip into *The list keeps up with playback*. Re-read the auto-follow clock on every tick while several lanes hold changes. Cut the header's lane label and agent type to 24 characters each, and drop an agent type equal to the label. Say both in *The pane names the followed lane*. Verify with `openspec validate claude-code-subagent-lanes --strict`, `npm test` and `npm run check:claude-code`.
 
 ## Workflow follow-up
 
