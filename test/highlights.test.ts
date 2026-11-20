@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import { baselines, clearedAt, diffMarks, highlightPair, lineMarks, netHunks, removedPreview, renderAction, renderWait, type HighlightState, type Marks } from '../src/highlights';
+import { baselines, clearedAt, diffMarks, highlightPair, lineMarks, removedPreview, renderAction, renderWait, type HighlightState, type Marks } from '../src/highlights';
+import { netHunks } from '../src/netHunks';
 import { applyHunks } from '../src/planner';
 import { Timeline, type ChangeEvent, type ChangeKind } from '../src/timeline';
 

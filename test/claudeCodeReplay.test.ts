@@ -41,6 +41,10 @@ import {
   tick,
   togglePause,
   viewOf,
+  PREVIEW_TICKS,
+  clearMarks,
+  pruneClears,
+  tabsOf,
   MAX_CAPTION,
   MAX_ROW_CAPTION,
   captionLines,
@@ -62,6 +66,7 @@ import {
   type Saved,
   type TurnInfo,
 } from '../claude-code/hooks/replay';
+import { diffRows, tabLabels, tabRows } from '../claude-code/hooks/marks';
 
 const FAST: PlayOptions = { charsPerMinute: 6000, naturalOrder: true };
 
@@ -270,41 +275,52 @@ test('the view follows the caret deep in a long file', () => {
   const view = viewOf({ ...newDeck(), shown: { id: 'v', path: '/w/long.txt', text, caret } });
   assert.equal(view.caretLine, 399);
   assert.equal(view.caretColumn, 4);
-  assert.ok(view.lines.length <= 120);
+  assert.ok(view.rows.length <= 120);
+  assert.ok(view.rows.every((r) => r.startsWith(' ')), 'nothing marked against itself');
   const f = frame({ ...view, isTyping: true }, 20, 80);
-  assert.equal(f.startLine, 390);
-  assert.equal(f.source.split('\n').length, 20);
-  assert.ok(f.source.includes('line▍ 400'));
+  const lines = f.source.split('\n');
+  assert.equal(lines.length, 20);
+  assert.equal(lines[0], '@@ -391,19 +391,19 @@');
+  assert.equal(lines[1], ' line 391');
+  assert.ok(f.source.includes(' line▍ 400'));
   assert.ok(!frame(view, 20, 80).source.includes('▍'), 'no caret mark when not typing');
 });
 
 test('the view handles the caret at the very start, before a leading newline', () => {
   const view = viewOf({ ...newDeck(), shown: { id: 'v', path: '/w/a', text: '\nabc', caret: 0 } });
-  assert.deepEqual([view.caretLine, view.caretColumn, view.firstLine], [0, 0, 1]);
-  assert.deepEqual(view.lines, ['', 'abc']);
+  assert.deepEqual([view.caretLine, view.caretColumn, view.caretRow, view.oldBefore, view.newBefore], [0, 0, 0, 0, 0]);
+  assert.deepEqual(view.rows, [' ', ' abc']);
 });
 
 test('the view shows control characters as symbols, keeping tabs and columns', () => {
-  assert.equal(showControls('a\fb\x1b\x00\x7f\x85\tc'), 'a\u240cb\u241b\u2400\u2421\ufffd\tc');
+  assert.equal(showControls('a\fb\x1b\x00\x7f\x85\tc'), 'a␌b␛␀␡�\tc');
   const view = viewOf({ ...newDeck(), shown: { id: 'v', path: '/w/a', text: 'x = 1\n\f\ny = 2\n', caret: 0 } });
-  assert.deepEqual(view.lines, ['x = 1', '\u240c', 'y = 2', '']);
+  assert.deepEqual(view.rows, [' x = 1', ' ␌', ' y = 2', ' ']);
 });
 
 test('the view cuts a long line around the caret and the frame keeps the caret on screen', () => {
   const text = 'x'.repeat(150_000) + 'HERE' + 'y'.repeat(150_000);
   const view = viewOf({ ...newDeck(), playing: undefined, shown: { id: 'v', path: '/w/min.js', text, caret: 150_002 } });
-  assert.ok(view.lines[0]!.length <= 400);
-  assert.ok(view.lines[0]!.includes('HERE'));
-  const f = frame({ ...view, isTyping: true }, 10, 72);
-  assert.ok(f.source.length <= 73);
-  assert.ok(f.source.includes('HE▍RE'));
+  assert.ok(view.rows[0]!.length <= 401);
+  assert.ok(view.rows[0]!.includes('HERE'));
+  const [header, row] = frame({ ...view, isTyping: true }, 10, 72).source.split('\n');
+  assert.equal(header, '@@ -1,1 +1,1 @@');
+  assert.ok(row!.length <= 74);
+  assert.ok(row!.includes('HE▍RE'));
 });
 
-test('a long or multi-line deletion goes in one step', () => {
+test('a long or multi-line deletion goes in one step, after a beat with its lines drawn removed', () => {
   const before = Array.from({ length: 200 }, (_, i) => `  statement${i}();`).join('\n') + '\n';
   const d = deckOf(change('del', before, ''));
   tick(d, FAST);
   assert.equal(d.shown?.caret, before.length, 'the caret waits after the text to delete');
+  tick(d, FAST);
+  assert.equal(d.playing?.preview, PREVIEW_TICKS);
+  assert.equal(d.shown?.text, before, 'the beat removes nothing yet');
+  const rows = viewOf(d).rows;
+  assert.ok(rows.slice(0, -1).every((r) => r.startsWith('-')), 'every line it takes is drawn removed');
+  for (let i = 1; i < PREVIEW_TICKS; i++) tick(d, FAST);
+  assert.equal(d.shown?.text, before, `the beat lasts ${PREVIEW_TICKS} ticks`);
   tick(d, FAST);
   assert.equal(d.playing, undefined);
   assert.equal(d.shown?.text, '');
@@ -1353,4 +1369,287 @@ test('caption lines count wide characters as two cells', () => {
     assert.ok(lines.every((l) => cellWidth(l) <= 17), JSON.stringify(lines));
     assert.ok(lines[2]!.endsWith('…'));
   }
+});
+
+// ---- Diff marks, clears, the deletion beat and file tabs (at-o3z.16) ----
+
+/** The text a diff's rows give back: the context and added rows, or the context and removed ones. */
+function sideOf(rows: readonly { kind: string; text: string }[], side: '+' | '-'): string {
+  return rows
+    .filter((r) => r.kind !== (side === '+' ? '-' : '+'))
+    .map((r) => r.text)
+    .join('\n');
+}
+
+/** The marked rows a view draws, each its marker then its line. */
+function marksOf(d: Deck, o: Parameters<typeof viewOf>[1] = {}): string[] {
+  return viewOf(d, o).rows.filter((r) => !r.startsWith(' '));
+}
+
+const kinds = (rows: readonly { kind: string; text: string }[]) => rows.map((r) => r.kind + r.text);
+
+test('diff rows: a function added is marked added and nothing else', () => {
+  assert.deepEqual(kinds(diffRows('a\nb\n', 'a\nf1\nf2\nb\n')), [' a', '+f1', '+f2', ' b', ' ']);
+});
+
+test('diff rows: a word changed shows the old line removed, then the new line added', () => {
+  assert.deepEqual(kinds(diffRows('x\nfoo();\ny\n', 'x\nbar();\ny\n')), [' x', '-foo();', '+bar();', ' y', ' ']);
+});
+
+test('diff rows: removed lines stay where they were, and the line after them keeps its new number', () => {
+  const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+  const text = base.replace(/line 20\n[^]*?line 24\n/, '');
+  const rows = diffRows(base, text);
+  assert.deepEqual(kinds(rows.filter((r) => r.kind !== ' ')), ['-line 20', '-line 21', '-line 22', '-line 23', '-line 24']);
+  assert.deepEqual(rows.find((r) => r.text === 'line 25')?.cur, 19, 'numbered 20');
+});
+
+test('diff rows: a created file is all added, and identical texts are all context', () => {
+  assert.deepEqual(kinds(diffRows('', 'a\nb\n')), ['+a', '+b', ' ']);
+  assert.deepEqual(kinds(diffRows('a\nb', 'a\nb')), [' a', ' b']);
+});
+
+test('diff rows give back both texts, over random edits', () => {
+  const random = rng(16);
+  const words = ['if', '{', '}', 'x', 'return', '', '  ', 'foo();', '// c'];
+  const line = () => Array.from({ length: Math.floor(random() * 4) }, () => words[Math.floor(random() * words.length)]).join(' ');
+  for (let n = 0; n < 300; n++) {
+    const base = Array.from({ length: Math.floor(random() * 30) }, line).join('\n') + (random() < 0.5 ? '\n' : '');
+    let text = base;
+    for (let k = Math.floor(random() * 6); k > 0; k--) {
+      const at = Math.floor(random() * (text.length + 1));
+      const cut = Math.floor(random() * Math.min(20, text.length - at + 1));
+      text = text.slice(0, at) + (random() < 0.5 ? line() + (random() < 0.5 ? '\n' : '') : '') + text.slice(at + cut);
+    }
+    const rows = diffRows(base, text);
+    assert.equal(sideOf(rows, '+'), text, JSON.stringify({ base, text }));
+    assert.equal(sideOf(rows, '-'), base, JSON.stringify({ base, text }));
+  }
+});
+
+test('marks: several played changes to a file are each marked, and added then removed leaves none', () => {
+  const a0 = 'top\nend\n';
+  const a1 = 'top\nL1\nend\n';
+  const a2 = 'top\nL1\nL2\nend\n';
+  const a3 = 'top\nL1\nL2\nL3\nend\n';
+  const { deck } = playOut(deckOf(change('c1', a0, a1, '/w/a.ts'), change('c2', a1, a2, '/w/a.ts'), change('c3', a2, a3, '/w/a.ts')));
+  assert.deepEqual(marksOf(deck), ['+L1', '+L2', '+L3']);
+  const back = playOut(deckOf(change('c1', a0, a1, '/w/a.ts'), change('c2', a1, a0, '/w/a.ts'))).deck;
+  assert.deepEqual(marksOf(back), []);
+});
+
+test('marks: a created file is all added', () => {
+  const { deck } = playOut(deckOf({ ...change('b', '', 'a\nb\n', '/w/b.ts'), kind: 'create' }));
+  assert.deepEqual(marksOf(deck), ['+a', '+b']);
+});
+
+test('marks: once the oldest change to a file is dropped, the baseline is the before text of its earliest one left', () => {
+  const changes = [change('first', '', 'one\n', '/w/a.ts')];
+  for (let i = 0; i < MAX_WAITING; i++) changes.push(change(`z${i}`, '', `${i}\n`, `/w/z${i}.ts`));
+  changes.push(change('last', 'one\n', 'one\ntwo\n', '/w/a.ts'));
+  const { deck } = playOut(deckOf(...changes));
+  assert.equal(changeById(deck, 'first'), undefined, 'the first change was dropped');
+  assert.deepEqual(marksOf(deck), ['+two']);
+});
+
+test('marks: a change cued while paused shows its file as it was before it, marked', () => {
+  const d = deckOf(change('c1', 'a\n', 'a\nb\n', '/w/a.ts'), change('c2', 'a\nb\n', 'a\nb\nc\n', '/w/a.ts'));
+  playOut(d);
+  togglePause(d);
+  seek(d, 'c2', FAST);
+  assert.deepEqual(marksOf(d), ['+b']);
+});
+
+test('Clear marks: every file is its own baseline, and a later change is marked against it', () => {
+  const d = deckOf(change('a1', 'a\n', 'a\nA\n', '/w/a.ts'), change('b1', 'b\n', 'b\nB\n', '/w/b.ts'));
+  playOut(d);
+  const clears = clearMarks(d, []);
+  assert.deepEqual(clears, [{ at: 3 }]);
+  assert.deepEqual(marksOf(d, { clears }), []);
+  enqueue(d, change('a2', 'a\nA\n', 'a\nA\nAA\n', '/w/a.ts'));
+  playOut(d);
+  assert.deepEqual(marksOf(d, { clears }), ['+AA']);
+  assert.deepEqual(marksOf(d, { clears, pin: '/w/b.ts', opts: FAST }), [], 'b.ts shows no marks');
+});
+
+test('Clear marks while a change is typed: its file shows none until it finishes, and the next change is marked against what it left', () => {
+  const d = deckOf(change('a1', '', 'x'.repeat(40) + '\n' + 'y'.repeat(40) + '\n', '/w/a.ts'));
+  for (let i = 0; i < 4; i++) tick(d, FAST);
+  assert.equal(playingId(d), 'a1');
+  const clears = clearMarks(d, []);
+  assert.deepEqual(clears, [{ at: 2 }]);
+  while (d.playing) {
+    assert.deepEqual(marksOf(d, { clears }), []);
+    tick(d, FAST);
+  }
+  assert.deepEqual(marksOf(d, { clears }), []);
+  enqueue(d, change('a2', d.shown!.text, d.shown!.text + 'z\n', '/w/a.ts'));
+  playOut(d);
+  assert.deepEqual(marksOf(d, { clears }), ['+z']);
+});
+
+test('Clear marks while a change is typed clears every other file at once', () => {
+  const d = deckOf(change('b1', 'b\n', 'b\nB\n', '/w/b.ts'), change('a1', '', 'x'.repeat(200) + '\n', '/w/a.ts'));
+  while (playingId(d) !== 'a1') tick(d, FAST);
+  for (let i = 0; i < 5; i++) tick(d, FAST);
+  assert.equal(playingId(d), 'a1');
+  assert.deepEqual(marksOf(d, { pin: '/w/b.ts', opts: FAST }), ['+B'], 'b.ts marked before the press');
+  const clears = clearMarks(d, []);
+  assert.deepEqual(marksOf(d, { clears, pin: '/w/b.ts', opts: FAST }), [], 'b.ts unmarked while a1 still types');
+  assert.deepEqual(marksOf(d, { clears }), [], 'a.ts held back');
+  playOut(d);
+  assert.deepEqual(marksOf(d, { clears }), []);
+  assert.deepEqual(marksOf(d, { clears, pin: '/w/b.ts', opts: FAST }), []);
+});
+
+test('a seek back past a clear undoes it; a seek that does not go back keeps it', () => {
+  const a = ['top\n', 'top\nL1\n', 'top\nL1\nL2\n', 'top\nL1\nL2\nL3\n'];
+  const d = deckOf(change('c1', a[0]!, a[1]!, '/w/a.ts'), change('c2', a[1]!, a[2]!, '/w/a.ts'), change('c3', a[2]!, a[3]!, '/w/a.ts'));
+  playOut(d);
+  let clears = clearMarks(d, []);
+  skipToLatest(d, FAST);
+  assert.deepEqual(pruneClears(d, clears), clears, 'Skip to latest keeps it');
+  seek(d, 'c3', FAST);
+  assert.deepEqual(pruneClears(d, [{ at: 2 }]), [{ at: 2 }], 'a pick at or after the change next at the clear keeps it');
+  seek(d, 'c2', FAST);
+  clears = pruneClears(d, clears);
+  assert.deepEqual(clears, []);
+  playOut(d);
+  assert.deepEqual(marksOf(d, { clears }), ['+L1', '+L2', '+L3']);
+});
+
+test('a seek to the change typed when marks were cleared undoes the clear', () => {
+  const d = deckOf(change('a1', '', 'x'.repeat(60) + '\n', '/w/a.ts'));
+  for (let i = 0; i < 3; i++) tick(d, FAST);
+  const clears = clearMarks(d, []);
+  seek(d, 'a1', FAST);
+  assert.deepEqual(pruneClears(d, clears), []);
+});
+
+test('the beat: a deleted baseline block is drawn removed before it goes, and stays marked removed after', () => {
+  const base = Array.from({ length: 30 }, (_, i) => `  statement${i}();`).join('\n') + '\n';
+  const after = base.split('\n').filter((_, i) => i < 5 || i >= 15).join('\n');
+  const d = deckOf(change('del', base, after, '/w/a.ts'));
+  while (d.playing?.preview === undefined) tick(d, FAST);
+  const during = marksOf(d);
+  assert.equal(during.length, 10);
+  assert.ok(during.every((r) => r.startsWith('-')));
+  playOut(d);
+  assert.deepEqual(marksOf(d), during);
+});
+
+test('the beat: lines typed since the baseline are drawn removed, then vanish with no mark', () => {
+  const a0 = 'top\nend\n';
+  const a1 = 'top\nadded one();\nadded two();\nadded three();\nend\n';
+  const d = deckOf(change('c1', a0, a1, '/w/a.ts'), change('c2', a1, a0, '/w/a.ts'));
+  while (!(playingId(d) === 'c2' && d.playing?.preview !== undefined)) tick(d, FAST);
+  assert.deepEqual(marksOf(d), ['-added one();', '-added two();', '-added three();']);
+  playOut(d);
+  assert.deepEqual(marksOf(d), []);
+});
+
+test('the beat: Pause holds it, Finish current skips it, and a backspaced deletion gets none', () => {
+  const base = 'keep\n' + 'gone line();\n'.repeat(4) + 'end\n';
+  const d = deckOf(change('del', base, 'keep\nend\n', '/w/a.ts'));
+  while (d.playing?.preview === undefined) tick(d, FAST);
+  togglePause(d);
+  for (let i = 0; i < 40; i++) tick(d, FAST);
+  assert.equal(d.playing?.preview, PREVIEW_TICKS);
+  assert.equal(d.shown?.text, base);
+  togglePause(d);
+  for (let i = 0; i < PREVIEW_TICKS; i++) tick(d, FAST);
+  assert.equal(d.shown?.text, 'keep\nend\n');
+
+  const f = deckOf(change('del', base, 'keep\nend\n', '/w/a.ts'));
+  while (f.playing?.preview === undefined) tick(f, FAST);
+  finish(f, FAST);
+  assert.equal(f.playing, undefined);
+  assert.equal(f.shown?.text, 'keep\nend\n');
+
+  const b = deckOf(change('ren', 'const total = 1;\n', 'const sum = 1;\n'));
+  while (!isIdle(b)) {
+    tick(b, FAST);
+    assert.equal(b.playing?.preview, undefined);
+  }
+});
+
+test('tabs: a file per played or shown change, in first-typed order; a waiting change has none', () => {
+  const d = deckOf(change('a', '', 'a\n', '/w/src/a.ts'), change('b', '', 'b'.repeat(200) + '\n', '/w/src/b.ts'), change('c', '', 'c\n', '/w/c.ts'));
+  while (playingId(d) !== 'b') tick(d, FAST);
+  assert.deepEqual(
+    tabsOf(d).map((x) => x.path),
+    ['/w/src/a.ts', '/w/src/b.ts'],
+  );
+  playOut(d);
+  seek(d, 'a', FAST);
+  assert.deepEqual(
+    tabsOf(d).map((x) => x.path),
+    ['/w/src/a.ts'],
+    'a seek back takes the tabs of files only later changes typed',
+  );
+});
+
+test('tab labels add folders only to tell files of the same name apart', () => {
+  assert.deepEqual(tabLabels(['src/index.ts', 'test/index.ts', 'src/a.ts']), ['src/index.ts', 'test/index.ts', 'a.ts']);
+  assert.deepEqual(tabLabels(['x/src/i.ts', 'y/src/i.ts', 'i.ts']), ['x/src/i.ts', 'y/src/i.ts', 'i.ts']);
+  assert.deepEqual(tabLabels(['C:\\w\\a.ts', 'C:\\v\\a.ts']), ['w\\a.ts', 'v\\a.ts']);
+});
+
+test('tab rows fit two rows, keep the shown tab, and count the rest', () => {
+  const widths = Array.from({ length: 30 }, () => 10);
+  const priority = [5, ...Array.from({ length: 30 }, (_, k) => 29 - k).filter((k) => k !== 5)];
+  const { rows, left } = tabRows(widths, priority, 80, (n) => `${n} more`.length);
+  assert.ok(rows.length <= 2);
+  assert.ok(rows.flat().includes(5));
+  assert.equal(rows.flat().length + left, 30);
+  assert.ok(left > 0);
+  assert.deepEqual(rows.flat(), [...rows.flat()].sort((x, y) => x - y), 'drawn in their own order');
+  assert.deepEqual(tabRows([10, 10], [1, 0], 80, () => 6), { rows: [[0, 1]], left: 0 });
+});
+
+test('a tab row that holds only the count is kept, empty, so the count is not drawn on a full row', () => {
+  assert.deepEqual(tabRows([9, 9, 15, 15], [0, 1, 2, 3], 19, (l) => `${l} more`.length), { rows: [[0, 1], []], left: 2 });
+});
+
+test('a pinned file shows as last typed, with its marks and no caret, while another file types', () => {
+  const d = deckOf(change('a', 'one\n', 'one\ntwo\n', '/w/a.ts'), change('b', '', 'b'.repeat(300) + '\n', '/w/b.ts'));
+  while (playingId(d) !== 'b') tick(d, FAST);
+  tick(d, FAST);
+  const v = viewOf(d, { pin: '/w/a.ts', opts: FAST });
+  assert.deepEqual(v.pinned, { path: '/w/a.ts' });
+  assert.equal(v.path, '/w/b.ts', 'the header still names playback');
+  assert.equal(v.isTyping, false);
+  assert.deepEqual(v.rows, [' one', '+two', ' ']);
+  assert.equal(viewOf(d, { pin: '/w/b.ts', opts: FAST }).pinned, undefined, 'pinning playback is following it');
+});
+
+test('a view of an unchanged deck reuses the diff it last made', () => {
+  const before = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  const after = before.replace('line 100\n', 'line 100\nNEW\n');
+  const d = deckOf(change('c', before, after, '/w/a.ts'));
+  playOut(d);
+  viewOf(d);
+  const rows = diffRows(before, after);
+  viewOf(d);
+  viewOf(d);
+  assert.equal(diffRows(before, after), rows, 'viewOf hit the memo instead of replacing it');
+});
+
+test('a tick and its view on a 1 MB file stay well within the 50 ms tick', () => {
+  const lines = Array.from({ length: 20_000 }, (_, i) => `  const value${i} = compute(${i}, "some padding text");`);
+  const before = lines.join('\n') + '\n';
+  assert.ok(before.length > 1_000_000);
+  const mid = before.indexOf('value10000');
+  const d = deckOf(change('big', before, before.slice(0, mid) + 'NEW LINE OF TEXT\n' + before.slice(mid), '/w/big.ts'));
+  const opts = { charsPerMinute: 1000, naturalOrder: true };
+  tick(d, opts);
+  const times: number[] = [];
+  for (let i = 0; i < 15; i++) {
+    const t = performance.now();
+    tick(d, opts);
+    viewOf(d, { opts });
+    times.push(performance.now() - t);
+  }
+  const median = times.sort((x, y) => x - y)[7]!;
+  assert.ok(median < 40, `median ${median.toFixed(1)} ms`);
 });

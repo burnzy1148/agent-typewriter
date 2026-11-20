@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing';
 
 import { TICK_MS } from '../hooks/replay';
-import { PANE_ID, kept, start, world } from './world';
+import { PANE_ID, kept, start, viewText, world } from './world';
 
 test('an Edit is recorded with the text before and after it, as a modify by Edit at the time it ran, numbered 1', async ($, on) => {
   const w = world(on, { '/w/app.ts': 'const a = 1;\n' });
@@ -241,5 +241,5 @@ test('many edits to a large file are all recorded and played', { options: { char
   await w.clock.advance(60_000);
   const last = w.views[w.views.length - 1]!;
   expect(last.status).toBe('idle');
-  expect(last.lines.join('\n')).toContain('// edit 44 line 19');
+  expect(viewText(last)).toContain('// edit 44 line 19');
 });

@@ -1,6 +1,6 @@
 import { expect, test, type Engine } from 'claude-code/testing';
 
-import { PANE_ID, seed, start, world } from './world';
+import { PANE_ID, readDiff, seed, start, viewText, world } from './world';
 
 // The plugin draws nothing on the terminal; that is the VS Code extension's.
 const SURFACES = ['desktop', 'vscode', 'mobile'] as const;
@@ -26,7 +26,9 @@ async function look($: Engine, surface: Surface | 'terminal') {
   const name = (await ui.find({ type: 'Text', text: /^(?!.*(typing|paused|idle))/ }))?.text;
   const number = (await ui.find({ type: 'Text', text: /^#\d+$/ }))?.text;
   const status = (await ui.find({ type: 'Text', text: /^(typing|paused|idle)/ }))?.text;
-  const code = (await ui.find({ type: 'Code' }))?.props as { source: string; startLine: number; path: string } | undefined;
+  const props = (await ui.find({ type: 'Code' }))?.props as { source: string; path: string; format?: string } | undefined;
+  // The code view is a unified diff: `source` here is the text it shows, and `diff` the source as drawn.
+  const code = props && { ...readDiff(props.source), source: readDiff(props.source).text, diff: props.source, path: props.path, format: props.format };
   const note = (await ui.find({ type: 'Text', text: /too large|typed out here/ }))?.text;
   await ui.unmount();
   return { name, number, status, code, note };
@@ -161,7 +163,7 @@ test('charsPerMinute sets the speed', { options: { charsPerMinute: 3000 } }, asy
   expect(status).toBe('idle');
   // The pane cuts the line at its width; the view holds all of it.
   expect(LINE.startsWith(code!.source.split('\n')[0]!)).toBe(true);
-  expect(w.views[w.views.length - 1]!.lines.join('\n')).toBe(LINE);
+  expect(viewText(w.views[w.views.length - 1]!)).toBe(LINE);
 });
 
 test('pause stops typing where it is and resume carries on', async ($, on) => {
@@ -467,7 +469,7 @@ test('natural order works in a CRLF file', async ($, on) => {
   await $.tool.call({ tool: 'Write', file_path: '/w/win.ts', content: 'top\r\nfunction f() {\r\n  return 1;\r\n}\r\n' });
   await w.clock.advance(10_000);
 
-  const frames = w.views.map((v) => v.lines.join('\n'));
+  const frames = w.views.map(viewText);
   expect(frames.some((t) => t.includes('}') && !t.includes('return'))).toBe(true);
   expect(frames[frames.length - 1]).toBe('top\nfunction f() {\n  return 1;\n}\n');
 });

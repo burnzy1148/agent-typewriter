@@ -71,18 +71,25 @@ claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
 
 The plugin never writes a file. It reads the file before the tool runs and again after.
 
-Files larger than 1 MB are not typed: the pane names them and moves on. A change that adds more than 6,000 characters, such as a generated file, is shown finished at once instead of typed, as in the VS Code extension. Long deletions go in one step; short ones are backspaced.
+Files larger than 1 MB are not typed: the pane names them and moves on. A change that adds more than 6,000 characters, such as a generated file, is shown finished at once instead of typed, as in the VS Code extension. Long deletions go in one step, after a beat of 400 ms with their lines drawn removed; short ones are backspaced.
 
 ## The pane
 
 The pane opens by itself on the first change, where Claude Code can dock it beside the conversation, as in the desktop app. Anywhere else, run `/typewriter` to open it; in a terminal session it points you to the VS Code extension instead, and where nothing can show the pane, such as a cloud session, it says so and points you to a local session in the desktop app or VS Code.
 
-It shows the file being typed (by its path in your project) and the change's number, the lines around the caret with line numbers and syntax highlighting, and whether playback is typing, paused or idle with how many changes are queued. Its buttons, with the key that presses each while the pane has the keyboard:
+It shows the file being typed (by its path in your project) and the change's number, the lines around the caret with line numbers and syntax highlighting, and whether playback is typing, paused or idle with how many changes are queued.
+
+The code is drawn as a unified diff, marked as Claude Code draws diffs. Lines typed since the file's baseline are marked added, and lines of the baseline that are gone stay in view, marked removed. A file's baseline is the file as it was before the oldest change to it that the pane keeps. Marks are whole lines: a line with one word changed shows its old version removed and its new version added. Text added and later removed leaves no mark.
+
+Over the code there is a tab for each file Claude has typed, in the order it typed them, with the file on show in bold. Press a tab to look at that file as it was last typed while playback carries on elsewhere. A line above the code then says which file playback is in, with **Follow playback** to go back to it. Pressing the playback file's tab, or anything that moves playback, goes back too. If the tabs don't fit in two rows, the files typed longest ago are left out, and the row says how many.
+
+Its buttons, with the key that presses each while the pane has the keyboard:
 
 - **From start** (`r`): play every change again from the first one the pane keeps.
 - **Pause** / **Resume** (`p`): stop typing where it is, and carry on from there.
 - **Finish current** (`f`): show the current change done and start the next one.
 - **Skip to latest** (`l`): finish every queued change and show the last one.
+- **Clear marks**: make every file's text as it is now its baseline, so only later changes are marked. A file being typed when you press it shows no marks until that change is done. Going back to a change from before you cleared, by pressing it or From start, brings the marks back. A reload keeps what you cleared.
 
 Over the code, the pane quotes what Claude wrote just before the call that made the change, such as “Now I'll guard the login route.”, cut to three lines. It takes the words from the same response and the same agent, so a subagent's change shows the subagent's words, never the main conversation's. A call made right after another with no words between them shares that call's words, and a change Claude made without writing anything first shows none. Thinking is never shown, and the words are plain text, as the conversation keeps them.
 
