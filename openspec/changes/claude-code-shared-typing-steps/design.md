@@ -32,14 +32,15 @@ In flight and landing before this change (the plugin slot is serialized): at-o3z
 ```ts
 function* typingSteps(change: TypingChange, start: TypingStart, host: TypingHost, random: () => number): Generator<TypingStep>
 
-interface TypingChange { before: string; after: string; kind: 'create' | 'modify' | 'delete'; languageId?: string }
+interface TypingChange { before: string; after: string; kind: string }   // 'delete' removes the whole file
 interface TypingStart { switching: boolean; jump: boolean }   // another file was shown before; the first edit is jumped to (file switch, rename)
 interface TypingHost {
   settings(): TypingSettings;                                // PlaybackSettings + charsPerMinute, read live
   speed(): number;                                           // catch-up × manual, read live
   finishing(): boolean;                                      // finish now pressed
-  caret(): number;                                           // LF offset of the caret now
+  caret(): Caret;                                            // line and column of the caret now
   inView(first: number, last: number): boolean | undefined;  // lines all in view; undefined when there is no viewport
+  languageId(): string;                                      // whose per-language speed applies
 }
 ```
 
@@ -58,7 +59,7 @@ type TypingStep =
   | { kind: 'caret'; at: number }                            // put the caret at an LF offset (an arrow press or a click)
   | { kind: 'reveal'; at: number; scroll: boolean }          // bring the line of `at` into view; scroll: may animate (after a read pause)
   | { kind: 'mark'; from: number; to: number; oneStep: boolean } // text about to be deleted; from === to clears; oneStep: it goes in one step
-  | { kind: 'select'; from: number; to: number }
+  | { kind: 'select'; from: number; to: number; reveal: boolean } // reveal: bring the selection into view (not for a whole-file delete)
   | { kind: 'delete'; from: number; to: number }             // leaves the caret at `from`
   | { kind: 'insert'; at: number; text: string }             // leaves the caret after the text
   | { kind: 'replace'; text: string }                        // the whole text at once (too large, or the rest after finish now)
@@ -84,7 +85,7 @@ The generator keeps its own copy of the text, applying its edit steps, so line l
 - **Typing**: while text remains, finishing → `insert` the rest and stop (no `added`); at a line start, the leading indent as one `insert` with no wait; else a chunk to `typingChunkEnd(…, round(cps / TICK_HZ))`, `insert`, `reveal scroll:false` after a chunk with a line break or the first chunk, and `wait delayAfter(chunk)`: humanized per-character time, plus 2–(2 + 4·jitter) characters after a line break, up to 1.5 after `; { } ,`, and with probability 0.04·jitter after a line break a thinking pause of 300–1000 ms / speed. After the last chunk, `added` over the hunk.
 - `humanize(ms) = max(0, ms × (1 + 0.8·jitter × (2·random() − 1)))`; `cps = baseCharsPerMinute(languageId, charsPerMinute, languageSpeeds) / 60 × speed`.
 
-`BACKSPACE_MAX`, `ARROW_MAX_KEYS` and `TICK_HZ` (60) move from the player into `typingSteps.ts`. A shared `catchUpSpeed(pending, settings) = min(maxSpeedup, 1 + catchUpFactor × pending)` goes in `pace.ts`; both frontends multiply it by their manual speed.
+`BACKSPACE_MAX`, `ARROW_MAX_KEYS` and `TICK_HZ` (60) move from the player into `typingSteps.ts`, with the beats (`ARRIVE_MS`, `SELECT_MS`, `DELETE_FILE_MS`) and `MAX_WAIT_MS`. `typingHunks(before, after, naturalOrder)` plans the hunks in typing order for both the generator and the plugin's `finalCaret`. A shared `catchUpSpeed(pending, settings) = min(maxSpeedup, 1 + catchUpFactor × pending)` goes in `pace.ts`; both frontends multiply it by their manual speed.
 
 ### Finish now: the generator compresses, the frontend drains
 
@@ -114,7 +115,7 @@ for (const step of typingSteps(change, { switching, jump }, host, Math.random)) 
 - pulls and applies steps: an edit changes `text` and `caret`; `caret` moves the caret; `select`, `mark` and `added` set or clear what the view may draw; `reveal` does nothing (the pane's frame already follows the caret); `show` sets `shown` to the change's before text, keeping the caret when the path is unchanged; a `wait` spends the budget or leaves `owed` and ends the tick; `readPause` ends the tick while `readPauseLeft(lastEditAt, now, readPauseSeconds, speed) > 0`;
 - stops after `MAX_STEPS_PER_TICK` steps, and draws once.
 
-Waits are measured in tick time, so a paused deck (which does not tick) holds a wait where it is and resumes the rest. The read pause is measured in wall time from the `now` at-o3z.15 passes in, so time paused or idle counts, as the extension's does. `lastEditAt` is set by every edit and by `finish()`, and cleared by `seek`, `replayFromStart`, `skipToLatest` and `restore`, so no read pause follows a jump (spec: No read pause after a jump in playback). `start.switching` is true when a change was played since the last reload and its path (`fileKey`) differs; `start.jump` is the same, matching the player, where the first edit after a file switch is clicked.
+Waits are measured in tick time, so a paused deck (which does not tick) holds a wait where it is and resumes the rest. The read pause is measured in wall time from the `now` at-o3z.15 passes in, so time paused or idle counts, as the extension's does. `lastEditAt` is set by every edit and by `finish()`, and cleared by `seek`, `replayFromStart`, `skipToLatest` and `restore`, so no read pause follows a jump (spec: No read pause after a jump in playback). `start.switching` is true when the file playback last showed (`deck.lastPath`, set whenever playback shows a change, cued ones included, and absent after a reload) is another file (`fileKey`); `start.jump` is the same, or true for the first change after a reload, matching the player, where the first edit after a file switch is clicked. A change cued by a pick shows its file already, so it plays without a file-switch delay.
 
 The plugin's host: `settings()` from `playOptions`; `speed()` = `catchUpSpeed(pendingCount of the lane played, settings) × manual` (manual is 1 until at-o3z.17); `finishing()` false; `caret()` the playback caret; `inView` against the window `frame()` would draw for the shown text, caret and `deck.codeRows`, which `register.tsx` sets each time it draws the code view (undefined before the pane has drawn, so no arrow walks and no off-screen read pause until then). Random numbers come from `deck.random`, `Math.random` unless a test sets a seeded one.
 
@@ -130,7 +131,7 @@ at-o3z.16's `preview` ticks give way to the steps: the pane draws a deletion's l
 
 ### Bundle
 
-`CORE_ENTRY` adds `typingSteps`, `caretBeforeHunk`, `BACKSPACE_MAX`, the step and host types from `./src/typingSteps`, `catchUpSpeed` and `baseCharsPerMinute` from `./src/pace`, and `readPauseLeft` from `./src/readPause`. `caretPath.ts` comes in through `typingSteps.ts`. The header comment lists the new source files.
+`CORE_ENTRY` adds `typingSteps`, `typingHunks`, `caretBeforeHunk`, `BACKSPACE_MAX`, the step and host types from `./src/typingSteps`, `Caret` from `./src/caretPath`, `catchUpSpeed` and `baseCharsPerMinute` from `./src/pace`, and `readPauseLeft` from `./src/readPause`. `caretPath.ts` comes in through `typingSteps.ts`. The header comment lists the new source files.
 
 ## Risks / Trade-offs
 

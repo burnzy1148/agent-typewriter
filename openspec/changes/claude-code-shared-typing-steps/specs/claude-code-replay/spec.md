@@ -1,11 +1,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Long deletions are removed at once
-As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be selected, held selected for a beat of about 380 ms divided by the playback speed, and then removed in one step.
+As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be selected, held selected for a beat of about 380 ms divided by the playback speed, and then removed in one step, after the beat in which its lines are drawn removed.
 
 #### Scenario: Deleted function
 - **WHEN** a change deletes a 200-line function
-- **THEN** the function is selected for a beat, disappears in one step, and typing carries on with the next edit
+- **THEN** the function is drawn removed and selected for a beat, then removed from the file in one step, staying in view marked removed when it was in the baseline, and typing carries on with the next edit
 
 #### Scenario: Renamed identifier
 - **WHEN** a change replaces `total` with `sum`
@@ -14,6 +14,25 @@ As in the VS Code extension, a deletion of at most 24 characters within one line
 #### Scenario: Paused during the beat
 - **WHEN** the user pauses while a long deletion is selected and resumes 5 s later
 - **THEN** the deletion stays selected and in place until the user resumes, and is removed after the rest of the beat
+
+### Requirement: Lines are shown red before a deletion removes them
+Before a deletion that is removed in one step, the code view SHALL draw each line the deletion touches marked removed from when the caret reaches it until it is removed: the beat when the caret arrives and the beat it is held selected, together about 600 ms divided by the playback speed. Pausing during that time SHALL hold it, and Finish current or a seek SHALL skip it. A line of the baseline SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A deletion that is backspaced SHALL get no lines drawn removed before it.
+
+#### Scenario: Deleted baseline block
+- **WHEN** a change deletes a 20-line function that was in `a.ts`'s baseline
+- **THEN** the 20 lines are drawn marked removed for about 600 ms, the deletion lands, and the lines stay in view marked removed
+
+#### Scenario: Deleting lines typed earlier
+- **WHEN** one played change added three lines to `a.ts` and the next change deletes them in one step
+- **THEN** the three lines are drawn marked removed for about 600 ms and then disappear, leaving no mark
+
+#### Scenario: Paused on the beat
+- **WHEN** the user pauses while lines are drawn marked removed before a deletion
+- **THEN** they stay drawn that way until the user resumes, and then the deletion lands
+
+#### Scenario: Faster playback
+- **WHEN** four changes wait behind one that deletes a 20-line function
+- **THEN** the lines are drawn marked removed for about a third as long
 
 ### Requirement: Typing speed setting
 The plugin SHALL provide a `charsPerMinute` option that sets the base typing speed in characters per minute, defaulting to 1000. A value that is not a number greater than zero SHALL be treated as 1000. A change to the option SHALL apply from the next keystroke. The catch-up speedup SHALL multiply the base speed.

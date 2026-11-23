@@ -41,7 +41,6 @@ import {
   tick,
   togglePause,
   viewOf,
-  PREVIEW_TICKS,
   clearMarks,
   pruneClears,
   tabsOf,
@@ -96,9 +95,10 @@ function withTexts(saved: Saved, recorded: NewChange[]): Change[] {
   });
 }
 
-/** A new deck with `changes` recorded in order. */
+/** A new deck with `changes` recorded in order, its typing jitter seeded. */
 function deckOf(...changes: NewChange[]): Deck {
   const d = newDeck();
+  d.random = rng(1);
   for (const c of changes) enqueue(d, c);
   return d;
 }
@@ -119,7 +119,7 @@ function playOut(d: Deck, opts: PlayOptions = FAST, max = 1_000_000) {
   while (!isIdle(d) && ticks < max) {
     tick(d, opts);
     ticks++;
-    if (d.playing) assert.equal(d.shown?.text, d.playing.text, 'the pane shows the text being typed');
+    if (d.playing?.isShown) assert.equal(d.shown?.text, d.playing.text, 'the pane shows the text being typed');
     if (d.shown) frames.push(d.shown.text);
   }
   return { deck: d, frames, ticks };
@@ -134,7 +134,7 @@ test('a change plays from its before text to its after text in steps', () => {
   assert.ok(new Set(frames).size > 5, 'typed in steps, not in one jump');
 });
 
-// Same generator as the planner's fuzz test: code-like random edits.
+// Same generator as the planner's fuzz test: code-like random edits. Also seeds the decks' typing jitter.
 function rng(seed: number) {
   let s = seed >>> 0;
   return () => {
@@ -323,21 +323,24 @@ test('the view cuts a long line around the caret and the frame keeps the caret o
   assert.ok(row!.includes('HE▍RE'));
 });
 
-test('a long or multi-line deletion goes in one step, after a beat with its lines drawn removed', () => {
+test('a long or multi-line deletion goes in one step, selected for a beat with its lines drawn removed', () => {
   const before = Array.from({ length: 200 }, (_, i) => `  statement${i}();`).join('\n') + '\n';
   const d = deckOf(change('del', before, ''));
   tick(d, FAST);
-  assert.equal(d.shown?.caret, before.length, 'the caret waits after the text to delete');
-  tick(d, FAST);
-  assert.equal(d.playing?.preview, PREVIEW_TICKS);
+  assert.equal(d.shown?.caret, 0, 'the caret waits where a long deletion starts');
   assert.equal(d.shown?.text, before, 'the beat removes nothing yet');
   const rows = viewOf(d).rows;
   assert.ok(rows.slice(0, -1).every((r) => r.startsWith('-')), 'every line it takes is drawn removed');
-  for (let i = 1; i < PREVIEW_TICKS; i++) tick(d, FAST);
-  assert.equal(d.shown?.text, before, `the beat lasts ${PREVIEW_TICKS} ticks`);
-  tick(d, FAST);
-  assert.equal(d.playing, undefined);
-  assert.equal(d.shown?.text, '');
+  while (!d.playing?.selection) tick(d, FAST);
+  assert.deepEqual(d.playing.selection, { from: 0, to: before.length }, 'then selected');
+  assert.equal(d.shown?.text, before);
+  let beat = 0;
+  while (d.playing && d.shown?.text === before) {
+    tick(d, FAST);
+    beat++;
+  }
+  assert.ok(beat >= 4 && beat <= 13, `held selected about 380 ms (${beat} ticks)`);
+  assert.equal(d.shown?.text, '', 'then gone in one step');
 });
 
 test('a short deletion within a line is backspaced in steps', () => {
@@ -345,7 +348,7 @@ test('a short deletion within a line is backspaced in steps', () => {
   assert.ok(frames.includes('const tota = 1;\n') || frames.includes('const tot = 1;\n'), 'total is backspaced a little at a time');
 });
 
-test('the caret starts at the end of the text a hunk deletes', () => {
+test('the caret starts at the end of the short text a hunk backspaces', () => {
   const d = deckOf(change('c', 'abc xyz;\n', 'abc;\n'));
   tick(d, FAST);
   const h = d.playing!.hunks[0]!;
@@ -354,9 +357,9 @@ test('the caret starts at the end of the text a hunk deletes', () => {
 
 test('high speeds type several lines in one tick', () => {
   const after = 'ab\n'.repeat(300);
-  const { ticks } = playOut(deckOf(change('fast', '', after)), { charsPerMinute: 60_000, naturalOrder: false });
-  // 900 characters at 1000 a second: 0.9 s, 18 ticks, plus the tick that starts the change.
-  assert.ok(ticks <= 20, `took ${ticks} ticks`);
+  const { ticks } = playOut(deckOf(change('fast', '', after)), { charsPerMinute: 60_000, naturalOrder: false, jitter: 0 });
+  // 900 characters at 1000 a second, each line break two characters' time more: 1.5 s, 30 ticks, plus the beat before the edit.
+  assert.ok(ticks <= 36, `took ${ticks} ticks`);
 });
 
 test('a change inserting more than 6,000 characters is shown at once', () => {
@@ -544,8 +547,11 @@ test('a reload at either limit keeps the change being typed, which starts over',
 });
 
 /** A deck typing a change with MAX_WAITING more recorded behind it, so the timeline has dropped the one being typed. */
+/** Long enough to still be typing a few ticks in, at the full catch-up speed. */
+const TYPED = 'typed line\n'.repeat(20);
+
 function typingPastTheLimit() {
-  const d = deckOf(change('typing', '', 'typed\n'));
+  const d = deckOf(change('typing', '', TYPED));
   tick(d, FAST);
   for (let i = 0; i < MAX_WAITING; i++) enqueue(d, change(`c${i}`, '', `${i}\n`));
   assert.equal(d.timeline.get(d.playing!.seq), undefined, 'the timeline dropped the change being typed');
@@ -561,7 +567,7 @@ test('the change being typed still finishes, and is saved, once the timeline dro
     tick(d, FAST);
     frames.push(d.shown!.text);
   }
-  assert.ok(frames.includes('typed\n'));
+  assert.ok(frames.includes(TYPED));
   while (!d.playing) tick(d, FAST);
   assert.equal(playingId(d), 'c0');
   assert.equal(queued(d).length, MAX_WAITING - 1);
@@ -747,8 +753,7 @@ test('a seek to a change no longer kept changes nothing', () => {
 
 test('a seek to the change being typed starts it over even once the timeline has dropped it', () => {
   const d = typingPastTheLimit();
-  tick(d, FAST);
-  assert.ok(d.playing!.text.length > 0);
+  while (d.playing!.text.length === 0) tick(d, FAST);
   assert.equal(seek(d, 'typing', FAST), true);
   assert.equal(playingId(d), 'typing');
   assert.equal(d.playing!.text, '');
@@ -1575,7 +1580,7 @@ test('the beat: a deleted baseline block is drawn removed before it goes, and st
   const base = Array.from({ length: 30 }, (_, i) => `  statement${i}();`).join('\n') + '\n';
   const after = base.split('\n').filter((_, i) => i < 5 || i >= 15).join('\n');
   const d = deckOf(change('del', base, after, '/w/a.ts'));
-  while (d.playing?.preview === undefined) tick(d, FAST);
+  while (!d.playing?.mark?.oneStep) tick(d, FAST);
   const during = marksOf(d);
   assert.equal(during.length, 10);
   assert.ok(during.every((r) => r.startsWith('-')));
@@ -1587,7 +1592,7 @@ test('the beat: lines typed since the baseline are drawn removed, then vanish wi
   const a0 = 'top\nend\n';
   const a1 = 'top\nadded one();\nadded two();\nadded three();\nend\n';
   const d = deckOf(change('c1', a0, a1, '/w/a.ts'), change('c2', a1, a0, '/w/a.ts'));
-  while (!(playingId(d) === 'c2' && d.playing?.preview !== undefined)) tick(d, FAST);
+  while (!(playingId(d) === 'c2' && d.playing?.mark?.oneStep)) tick(d, FAST);
   assert.deepEqual(marksOf(d), ['-added one();', '-added two();', '-added three();']);
   playOut(d);
   assert.deepEqual(marksOf(d), []);
@@ -1596,17 +1601,17 @@ test('the beat: lines typed since the baseline are drawn removed, then vanish wi
 test('the beat: Pause holds it, Finish current skips it, and a backspaced deletion gets none', () => {
   const base = 'keep\n' + 'gone line();\n'.repeat(4) + 'end\n';
   const d = deckOf(change('del', base, 'keep\nend\n', '/w/a.ts'));
-  while (d.playing?.preview === undefined) tick(d, FAST);
+  while (!d.playing?.selection) tick(d, FAST);
   togglePause(d);
   for (let i = 0; i < 40; i++) tick(d, FAST);
-  assert.equal(d.playing?.preview, PREVIEW_TICKS);
+  assert.ok(d.playing?.mark?.oneStep, 'still marked');
   assert.equal(d.shown?.text, base);
   togglePause(d);
-  for (let i = 0; i < PREVIEW_TICKS; i++) tick(d, FAST);
+  for (let i = 0; i < 20 && d.playing; i++) tick(d, FAST);
   assert.equal(d.shown?.text, 'keep\nend\n');
 
   const f = deckOf(change('del', base, 'keep\nend\n', '/w/a.ts'));
-  while (f.playing?.preview === undefined) tick(f, FAST);
+  while (!f.playing?.mark?.oneStep) tick(f, FAST);
   finish(f, FAST);
   assert.equal(f.playing, undefined);
   assert.equal(f.shown?.text, 'keep\nend\n');
@@ -1614,7 +1619,8 @@ test('the beat: Pause holds it, Finish current skips it, and a backspaced deleti
   const b = deckOf(change('ren', 'const total = 1;\n', 'const sum = 1;\n'));
   while (!isIdle(b)) {
     tick(b, FAST);
-    assert.equal(b.playing?.preview, undefined);
+    assert.ok(!b.playing?.mark?.oneStep);
+    assert.ok(viewOf(b).rows.filter((r) => r.startsWith('-')).length <= 1, 'no line is drawn removed for a backspace beyond the diff');
   }
 });
 
@@ -1846,19 +1852,20 @@ test('lanes: auto-follow tours the lanes, oldest queued first, after 3 s of quie
 });
 
 test('lanes: auto-follow stays with a busy followed lane, never switches mid-change, and does nothing while off', () => {
-  const d = deckOf(change('m1', '', 'm\n'));
+  // Main's changes are all to one file, so none waits for a file switch.
+  const d = deckOf(change('m1', '', 'm\n', '/w/m.ts'));
   playTimed(d, 0);
   enqueue(d, by('ag1', change('t1', '', 't1\n')), undefined, WRITE_TESTS);
   // Main gets a change every 2 s: it stays followed.
   let now = d.quietSince;
   for (let i = 2; i <= 6; i++) {
     now += 2_000;
-    enqueue(d, change(`m${i}`, '', `${i}\n`), undefined, undefined, now);
+    enqueue(d, change(`m${i}`, '', `${i}\n`, '/w/m.ts'), undefined, undefined, now);
     playTimed(d, now, 20);
     assert.equal(d.timeline.followed, '');
   }
   // A long change typed past 3 s is not left mid-way.
-  enqueue(d, change('long', '', 'x'.repeat(2_000) + '\n'), undefined, undefined, now);
+  enqueue(d, change('long', '', 'x'.repeat(2_000) + '\n', '/w/m.ts'), undefined, undefined, now);
   tick(d, FAST, now + 50);
   assert.equal(tick(d, FAST, now + 10_000), true);
   assert.equal(playingId(d), 'long');
@@ -2194,4 +2201,138 @@ test('the band names a file by its last path segment, either separator, made saf
   const d = deckOf(change('a', '', 'a\n', '/w/a\u001bb.ts'));
   playOut(d);
   assert.equal(bandOf(d)!.line, 'Agent Typewriter · up to date · a\u241bb.ts #1');
+});
+
+// ------------------------------------------------------------ pace shared with the extension
+
+/** One tick's look at the deck: the time, the file and text shown, and the caret's line. */
+type Moment = { now: number; path?: string; text?: string; caretLine: number; playing?: string };
+
+/** Ticks with the clock moving TICK_MS a tick from `start` until nothing is left to play (or `max` ticks), noting each tick. */
+function timed(d: Deck, opts: PlayOptions, start = 0, max = 2_000): Moment[] {
+  const out: Moment[] = [];
+  let now = start;
+  for (let i = 0; i < max && !isIdle(d); i++) {
+    now += TICK_MS;
+    tick(d, opts, now);
+    const s = d.shown;
+    out.push({ now, path: s?.path, text: s?.text, caretLine: s ? s.text.slice(0, s.caret).split('\n').length - 1 : 0, playing: playingId(d) });
+  }
+  return out;
+}
+
+/** When the shown text last changed in `path` before `until`, and when `path2` was first shown and first edited. */
+function lastEdit(ms: Moment[], path: string): number {
+  let at = -1;
+  for (let i = 1; i < ms.length; i++) if (ms[i]!.path === path && ms[i - 1]!.path === path && ms[i]!.text !== ms[i - 1]!.text) at = ms[i]!.now;
+  return at;
+}
+
+const SLOW: PlayOptions = { charsPerMinute: 3000, naturalOrder: false };
+
+test('pace: the read pause before a file switch, then the file-switch delay before its first edit', () => {
+  const d = deckOf(change('a', '', 'alpha\n', '/w/a.ts'), change('b', 'x\n', 'x\nbeta\n', '/w/b.ts'));
+  const ms = timed(d, SLOW);
+  const aDone = lastEdit(ms, '/w/a.ts');
+  const bShown = ms.find((m) => m.path === '/w/b.ts')!.now;
+  const bEdit = ms.find((m) => m.path === '/w/b.ts' && m.text !== 'x\n')!.now;
+  assert.ok(Math.abs(bShown - aDone - 1500) <= 100, `a stays about 1.5 s (${bShown - aDone} ms)`);
+  // The delay, then the beat when the caret reaches the edit.
+  assert.ok(Math.abs(bEdit - bShown - 1000 - 220) <= 200, `b waits about 1 s before its first edit (${bEdit - bShown} ms)`);
+});
+
+test('pace: a change to the same file waits neither the file-switch delay nor, with no rows drawn, the read pause', () => {
+  const d = deckOf(change('a1', '', 'one\n', '/w/a.ts'), change('a2', 'one\n', 'one\ntwo\n', '/w/a.ts'));
+  const ms = timed(d, SLOW);
+  const a1Done = ms.find((m) => m.playing === 'a2')!.now;
+  const a2Edit = ms.find((m) => m.playing === 'a2' && m.text !== 'one\n')!.now;
+  assert.ok(a2Edit - a1Done < 500, `${a2Edit - a1Done} ms`);
+});
+
+test('pace: a change recorded long after the last one is shown without a further read pause', () => {
+  const d = deckOf(change('a', '', 'alpha\n', '/w/a.ts'));
+  const first = timed(d, SLOW);
+  enqueue(d, change('b', '', 'beta\n', '/w/b.ts'));
+  const later = first.at(-1)!.now + 10_000;
+  tick(d, SLOW, later);
+  assert.equal(d.shown?.path, '/w/b.ts');
+});
+
+test('pace: Finish current counts as typing, so a read pause follows it; a pick does not', () => {
+  const d = deckOf(change('a', '', 'alpha\n'.repeat(30), '/w/a.ts'), change('b', '', 'beta\n', '/w/b.ts'));
+  tick(d, SLOW, 50);
+  tick(d, SLOW, 100);
+  finish(d, SLOW, 100);
+  let now = 100;
+  while (d.shown?.path !== '/w/b.ts') tick(d, SLOW, (now += TICK_MS));
+  assert.ok(Math.abs(now - 100 - 1500) <= 100, `about 1.5 s after Finish current (${now - 100} ms)`);
+
+  const p = deckOf(change('a', '', 'alpha\n', '/w/a.ts'), change('b', '', 'beta\n', '/w/b.ts'));
+  const ms = timed(p, SLOW);
+  seek(p, 'a', SLOW);
+  tick(p, SLOW, ms.at(-1)!.now + 50);
+  assert.equal(p.shown?.path, '/w/a.ts');
+  assert.equal(seek(p, 'b', SLOW), true);
+  tick(p, SLOW, ms.at(-1)!.now + 100);
+  assert.equal(p.shown?.path, '/w/b.ts', 'shown at once after a pick');
+});
+
+test('pace: an edit outside the drawn rows waits the read pause before the view moves there', () => {
+  const lines = Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  const after = lines.replace('line 3\n', 'line 3!\n').replace('line 350\n', 'line 350!\n');
+  const d = deckOf(change('far', lines, after, '/w/a.ts'));
+  d.codeRows = 20;
+  const ms = timed(d, SLOW);
+  // Line 3's edit is one character: the tick it appears is its last keystroke.
+  const typed3 = ms.find((m) => m.text?.includes('line 3!'))!.now;
+  const at350 = ms.find((m) => m.caretLine >= 300)!.now;
+  assert.ok(Math.abs(at350 - typed3 - 1500) <= 150, `the view stays about 1.5 s (${at350 - typed3} ms)`);
+});
+
+test('pace: the caret walks to a nearby edit in the drawn rows a line at a time', () => {
+  const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  const after = lines.replace('line 2\n', 'line 2!\n').replace('line 8\n', 'line 8!\n');
+  const d = deckOf(change('near', lines, after, '/w/a.ts'));
+  d.codeRows = 40;
+  const ms = timed(d, SLOW);
+  const between = new Set(ms.map((m) => m.caretLine).filter((l) => l > 2 && l < 8));
+  assert.ok(between.size >= 3, `the caret passes lines between (${[...between]})`);
+  const far = deckOf(change('far', lines, after, '/w/a.ts'));
+  const unseen = new Set(timed(far, SLOW).map((m) => m.caretLine).filter((l) => l > 2 && l < 8));
+  assert.equal(unseen.size, 0, 'with no rows drawn, the caret is placed at once');
+});
+
+test('pace: a new line’s indent appears at once', () => {
+  const d = deckOf(change('ind', 'f() {\n}\n', 'f() {\n        body();\n}\n', '/w/a.ts'));
+  const ms = timed(d, SLOW);
+  assert.ok(!ms.some((m) => /\n {1,7}\n?}/.test(m.text ?? '') && !/\n {8}/.test(m.text ?? '')), 'no frame shows part of the indent');
+});
+
+test('pace: catch-up speeds typing while changes wait', () => {
+  const line = 'x'.repeat(300) + '\n';
+  const opts: PlayOptions = { charsPerMinute: 1000, naturalOrder: false, jitter: 0 };
+  const alone = deckOf(change('t', '', line, '/w/a.ts'));
+  const aloneTicks = timed(alone, opts, 0, 100_000).filter((m) => m.playing === 't').length;
+  const busy = deckOf(change('t', '', line, '/w/a.ts'), ...[1, 2, 3, 4].map((i) => change(`q${i}`, '', 'q\n', '/w/a.ts')));
+  const busyTicks = timed(busy, opts, 0, 100_000).filter((m) => m.playing === 't').length;
+  const ratio = aloneTicks / busyTicks;
+  assert.ok(ratio > 2.6 && ratio < 3.4, `four waiting: about three times as fast (${ratio.toFixed(2)})`);
+});
+
+test('pace: 300 characters on one line at 3000 per minute take about 6 seconds', () => {
+  const d = deckOf(change('t', '', 'x'.repeat(300), '/w/a.ts'));
+  const ms = timed(d, { charsPerMinute: 3000, naturalOrder: true }, 0, 100_000);
+  const took = ms.filter((m) => m.playing === 't').length * TICK_MS;
+  assert.ok(took > 5_000 && took < 7_000, `${took} ms`);
+});
+
+test('pace: playOptions resolves the extension’s pacing defaults and read pause', () => {
+  const o = playOptions({});
+  assert.equal(o.jitter, 0.6);
+  assert.equal(o.catchUpFactor, 0.5);
+  assert.equal(o.maxSpeedup, 8);
+  assert.equal(o.maxAnimatedChars, 6000);
+  assert.equal(o.fileSwitchDelayMs, 1000);
+  assert.equal(o.arrowKeysPerSecond, 15);
+  assert.equal(o.readPauseSeconds, 1.5);
 });

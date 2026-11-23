@@ -197,7 +197,8 @@ test('finish current shows that change done and the next one starts', async ($, 
   const done = await look($, 'desktop');
   expect(done.name).toBe('a.ts');
   expect(done.code?.source).toBe('alpha\nalpha\n');
-  await w.clock.advance(60);
+  // What Finish current put in is read first: 1.5 s, at 1.5 times the speed with one change waiting.
+  await w.clock.advance(1_100);
   const next = await look($, 'desktop');
   expect(next.name).toBe('b.ts');
   expect(next.status).toBe('typing · 1 queued');

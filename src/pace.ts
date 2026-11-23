@@ -38,3 +38,12 @@ export function baseCharsPerMinute(
   const v = Object.prototype.hasOwnProperty.call(languageSpeeds, languageId) ? languageSpeeds[languageId] : undefined;
   return isFiniteNumber(v) && v > 0 ? v : charsPerMinute;
 }
+
+/**
+ * The catch-up speedup while `pending` changes wait behind the one being
+ * typed: one plus `catchUpFactor` for each, at most `maxSpeedup`. The manual
+ * playback speed multiplies on top of this.
+ */
+export function catchUpSpeed(pending: number, settings: { catchUpFactor: number; maxSpeedup: number }): number {
+  return Math.min(settings.maxSpeedup, 1 + settings.catchUpFactor * pending);
+}

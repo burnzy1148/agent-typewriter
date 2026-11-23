@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { baseCharsPerMinute, resolveCharsPerMinute } from '../src/pace';
+import { baseCharsPerMinute, catchUpSpeed, resolveCharsPerMinute } from '../src/pace';
 
 test('no per-language speeds uses charsPerMinute', () => {
   assert.equal(baseCharsPerMinute('typescript', 1000, {}), 1000);
@@ -84,4 +84,12 @@ test('a value that is not a finite number falls through to the next layer', () =
 test('the result is at least 1', () => {
   assert.equal(resolveCharsPerMinute([{ charsPerMinute: 0 }]).charsPerMinute, 1);
   assert.equal(resolveCharsPerMinute([{ charsPerSecond: -2 }]).charsPerMinute, 1);
+});
+
+test('catch-up speed: none waiting is 1x, each waiting change adds catchUpFactor, capped at maxSpeedup', () => {
+  const s = { catchUpFactor: 0.5, maxSpeedup: 8 };
+  assert.equal(catchUpSpeed(0, s), 1);
+  assert.equal(catchUpSpeed(4, s), 3);
+  assert.equal(catchUpSpeed(30, s), 8);
+  assert.equal(catchUpSpeed(10, { catchUpFactor: 0, maxSpeedup: 8 }), 1);
 });

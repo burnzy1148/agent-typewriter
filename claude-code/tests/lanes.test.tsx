@@ -199,7 +199,8 @@ test('auto-follow moves to a subagent\'s lane after Main is caught up and quiet 
   expect((await look($)).header).toBe('● Main');
   await w.clock.advance(1_500);
   expect((await look($)).header).toBe('● Main');
-  await w.clock.advance(1_000);
+  // Typing a.ts takes up to a second with its beats and pauses; the 3 s of quiet count from its end.
+  await w.clock.advance(2_000);
   expect((await look($)).header).toBe('● write tests (general-purpose)');
 });
 
@@ -384,7 +385,8 @@ test('a pinned tab ends when a chip follows another lane, and the tabs are that 
   await spawn($, 'wt', 'write tests');
   await turn($, 'tw', 'wt');
   await write($, 'limiter.test.ts', 'wt');
-  await w.clock.advance(1_000);
+  // Past a.ts's read pause and b.ts's file-switch delay.
+  await w.clock.advance(3_000);
   await press($, 'tab:/w/a.ts');
   const tabs = async () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as never);

@@ -1,18 +1,13 @@
 import * as vscode from 'vscode';
 import { MirrorFileSystem, mirrorBytes } from './mirrorFs';
-import { baseCharsPerMinute } from './pace';
-import { authoringOrder, lfOffsetToLineCol, normalizeEol, planHunks, type Eol, type Hunk } from './planner';
+import { catchUpSpeed } from './pace';
+import { lfOffsetToLineCol, normalizeEol, type Eol } from './planner';
 import { readPauseLeft } from './readPause';
 import { SCROLL_FRAME_MS, centeredTop, scrollSteps } from './scroll';
-import { caretPath } from './caretPath';
 import type { ChangeEvent, Timeline } from './timeline';
 import type { Settings } from './config';
-import { backspaceStep, typingChunkEnd } from './typingChunks';
+import { typingSteps, type TypingHost, type TypingStep } from './typingSteps';
 
-const BACKSPACE_MAX = 24;
-/** More arrow presses than this to reach an edit, and the caret is clicked there instead. */
-const ARROW_MAX_KEYS = 24;
-const TICK_HZ = 60;
 /** How often a read pause looks again at what is left of it. */
 const READ_PAUSE_STEP_MS = 100;
 
@@ -243,77 +238,124 @@ export class Player implements vscode.Disposable {
   }
 
   private async play(e: ChangeEvent, epoch: number): Promise<void> {
-    const s = this.settings();
     this.liveChange = ++this.changes;
     if (e.fromRelPath !== undefined && !(await this.moveMirror(e, e.fromRelPath, epoch))) return;
-    const switching = this.lastRelPath !== e.relPath;
-    // The last file stays in view while it is read.
-    if (switching && this.lastRelPath !== undefined) {
-      await this.readPause(epoch);
-      if (!this.live(epoch)) return;
+    // The last file stays in view while it is read, and the new one gets a beat before its first edit.
+    const switching = this.lastRelPath !== undefined && this.lastRelPath !== e.relPath;
+    // After a file switch, or a rename's move to the new mirror, the first edit is jumped to; later ones are scrolled to.
+    const jump = this.lastRelPath !== e.relPath || e.fromRelPath !== undefined;
+    let editor: vscode.TextEditor | undefined;
+    /** The editor the steps look at: the mirror's visible one, when the tab was reopened since the last step. */
+    const current = (): vscode.TextEditor | undefined => {
+      const key = MirrorFileSystem.uriFor(e.relPath).toString();
+      if (editor && vscode.window.visibleTextEditors.includes(editor)) return editor;
+      return vscode.window.visibleTextEditors.find((ed) => ed.document.uri.toString() === key) ?? editor;
+    };
+    const host: TypingHost = {
+      settings: () => this.settings(),
+      speed: () => this.speedMultiplier(this.settings()),
+      finishing: () => this.finishNow,
+      caret: () => {
+        const ed = current();
+        if (!ed) return { line: 0, character: 0 };
+        const p = ed.document.validatePosition(ed.selection.active);
+        return { line: p.line, character: p.character };
+      },
+      inView: (first, last) => {
+        const ed = current();
+        return ed && ed.visibleRanges.length > 0 ? inView(ed, first, last) : undefined;
+      },
+      languageId: () => current()?.document.languageId ?? '',
+    };
+    let shown = false;
+    try {
+      for (const step of typingSteps(e, { switching, jump }, host, Math.random)) {
+        if (step.kind === 'readPause') {
+          await this.readPause(epoch);
+        } else if (step.kind === 'show') {
+          // Before showing the tab: VS Code asks for its CodeLens row as it opens.
+          this.setPlaybackPath(e.relPath);
+          this.currentEol = e.eol;
+          // The mirror might not match this event's "before" (first replay, after a
+          // seek, or a reverted mirror). ready() snaps it so the hunks line up. Set
+          // before showing the tab, so the change counts as live from its start.
+          this.expected = e.before;
+          this.liveRelPath = e.relPath;
+          this.liveEpoch = epoch;
+          this.synced = undefined;
+          editor = await this.showMirror(e.relPath, e.before, e.eol);
+          shown = true;
+        } else if (step.kind === 'wait') {
+          await this.sleep(step.ms);
+        } else {
+          if (shown) {
+            this.lastRelPath = e.relPath;
+            shown = false;
+          }
+          if (!editor || !(editor = await this.ready(e.relPath, editor, epoch))) return;
+          editor = await this.apply(e.relPath, editor, step, epoch);
+          if (!editor) return;
+        }
+        if (!this.live(epoch)) return;
+      }
+    } finally {
+      this.previewDelete();
     }
-    // Before showing the tab: VS Code asks for its CodeLens row as it opens.
-    this.setPlaybackPath(e.relPath);
-    this.currentEol = e.eol;
-    // The mirror might not match this event's "before" (first replay, after a
-    // seek, or a reverted mirror). ready() snaps it so the hunks line up. Set
-    // before showing the tab, so the change counts as live from its start.
-    this.expected = e.before;
-    this.liveRelPath = e.relPath;
-    this.liveEpoch = epoch;
-    this.synced = undefined;
-    let editor: vscode.TextEditor | undefined = await this.showMirror(e.relPath, e.before, e.eol);
-    if (switching && this.lastRelPath !== undefined) {
-      await this.sleep(s.fileSwitchDelayMs / this.speedMultiplier(s));
-    }
-    this.lastRelPath = e.relPath;
-    if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
-
+    if (shown) this.lastRelPath = e.relPath;
     if (e.kind === 'delete') {
-      editor.selection = new vscode.Selection(new vscode.Position(0, 0), posAt(editor.document, e.before.length));
-      this.previewDelete(editor, 0, e.before.length);
-      try {
-        await this.sleep(500 / this.speedMultiplier(s));
-        if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
-        await this.edit(editor.document, 0, this.expected.length, '');
-      } finally {
-        this.previewDelete();
-      }
       this.store(e);
       return;
     }
-
-    const planned = planHunks(e.before, e.after);
-    const hunks = s.naturalOrder ? authoringOrder(planned, e.after) : planned;
-    const inserted = hunks.reduce((n, h) => n + h.insertText.length, 0);
-    if (inserted > s.maxAnimatedChars) {
-      await this.edit(editor.document, 0, this.expected.length, e.after);
-      if (!s.highlightAdditions) this.flashRange(editor, new vscode.Range(0, 0, editor.document.lineCount, 0));
-      this.store(e);
-      return;
-    }
-
-    // After a file switch, or a rename's move to the new mirror, the first edit
-    // is jumped to; later ones are scrolled to.
-    let smooth = !switching && e.fromRelPath === undefined;
-    for (const h of hunks) {
-      if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
-      if (this.finishNow) {
-        // Pressed before this edit was reached: it is brought into view at
-        // once, as from the read pause, and the rest of the change put in after the loop.
-        if (!(editor = await this.navigate(e.relPath, editor, h.offset, false, false, epoch))) return;
-        break;
-      }
-      await this.typeHunk(e.relPath, editor, h, smooth, epoch);
-      if (!this.live(epoch)) return;
-      smooth = true;
-    }
-
-    if (!(editor = await this.ready(e.relPath, editor, epoch))) return;
-    if (this.expected !== e.after) await this.edit(editor.document, 0, this.expected.length, e.after);
-    if (!this.live(epoch)) return;
+    if (!editor || !(editor = await this.ready(e.relPath, editor, epoch))) return;
     await setText(editor.document, e.after, e.eol);
     this.store(e);
+  }
+
+  /** Carries out one step that acts on the mirror's editor. Undefined once the change was interrupted. */
+  private async apply(relPath: string, editor: vscode.TextEditor, step: TypingStep, epoch: number): Promise<vscode.TextEditor | undefined> {
+    const doc = editor.document;
+    switch (step.kind) {
+      case 'caret': {
+        const caret = posAt(doc, step.at);
+        editor.selection = new vscode.Selection(caret, caret);
+        return editor;
+      }
+      case 'reveal': {
+        const at = posAt(doc, step.at);
+        if (step.scroll) return this.scrollTo(relPath, editor, at.line, epoch);
+        editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        return editor;
+      }
+      case 'mark':
+        this.previewDelete(editor, step.from, step.to);
+        return editor;
+      case 'select': {
+        const range = new vscode.Range(posAt(doc, step.from), posAt(doc, step.to));
+        editor.selection = new vscode.Selection(range.start, range.end);
+        if (step.reveal) editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        return editor;
+      }
+      case 'delete': {
+        await this.edit(doc, step.from, step.to, '');
+        const caret = posAt(doc, step.from);
+        editor.selection = new vscode.Selection(caret, caret);
+        return editor;
+      }
+      case 'insert': {
+        await this.edit(doc, step.at, step.at, step.text);
+        const caret = posAt(doc, step.at + step.text.length);
+        editor.selection = new vscode.Selection(caret, caret);
+        return editor;
+      }
+      case 'replace':
+        await this.edit(doc, 0, this.expected.length, step.text);
+        return editor;
+      case 'added':
+        if (!this.settings().highlightAdditions) this.flashRange(editor, new vscode.Range(posAt(doc, step.from), posAt(doc, step.to)));
+        return editor;
+      default:
+        return editor;
+    }
   }
 
   /**
@@ -360,84 +402,16 @@ export class Player implements vscode.Disposable {
 
   // ---------------------------------------------------------------- typing
 
-  private async typeHunk(relPath: string, editor: vscode.TextEditor, h: Hunk, smooth: boolean, epoch: number): Promise<void> {
-    const s = this.settings();
-    const caretOffset = h.deleteText.length > 0 && h.deleteText.length <= BACKSPACE_MAX && !h.deleteText.includes('\n')
-      ? h.offset + h.deleteText.length
-      : h.offset;
-
-    const ed = await this.navigate(relPath, editor, caretOffset, smooth, h.continues === true, epoch);
-    if (!ed) return;
-    editor = ed;
-    // The text to delete shows as such from when the caret arrives until it is gone.
-    if (h.deleteText.length > 0) this.previewDelete(editor, h.offset, h.offset + h.deleteText.length);
-    try {
-      await this.sleep(this.humanize(220, s) / this.speedMultiplier(s));
-      if (!this.live(epoch)) return;
-      if (h.deleteText.length > 0) {
-        await this.deleteText(relPath, editor, h, epoch);
-        if (!this.live(epoch)) return;
-      }
-    } finally {
-      this.previewDelete();
-    }
-    if (h.insertText.length > 0) {
-      await this.typeText(relPath, editor, h.offset, h.insertText, epoch);
-    }
-  }
-
   /**
-   * Moves the caret to LF offset `offset`. Close by and in view, it walks
-   * there with arrow keys; otherwise the edit is brought into view and the
-   * caret clicked there. A move that `continues` within the text being typed
-   * is brought into view at once, without the read pause or a scroll.
+   * Brings `line` into view after a read pause: not at all when it came into
+   * view meanwhile (the user scrolled, or resized the editor), by a jump with
+   * smoothScroll off or after finish now, otherwise by scrolling there.
    * Undefined once the change was interrupted.
    */
-  private async navigate(relPath: string, editor: vscode.TextEditor, offset: number, smooth: boolean, continues: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
-    const s = this.settings();
-    const from = editor.document.validatePosition(editor.selection.active);
-    const to = posAt(editor.document, offset);
-    // One visible range holds the whole walk, so the caret never enters a folded region and unfolds it.
-    const walk = smooth && s.arrowNavigation && !this.finishNow && inView(editor, Math.min(from.line, to.line), Math.max(from.line, to.line));
-    let ed = await this.scrollTo(relPath, editor, to.line, smooth && !continues, epoch);
-    if (!ed) return undefined;
-    const doc = ed.document;
-    const keys = walk ? caretPath((n) => doc.lineAt(n).text, from, to, ARROW_MAX_KEYS) : undefined;
-    for (const k of keys ?? []) {
-      if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
-      if (this.finishNow) break;
-      const caret = new vscode.Position(k.line, k.character);
-      ed.selection = new vscode.Selection(caret, caret);
-      await this.sleep(this.humanize(1000 / s.arrowKeysPerSecond, s) / this.speedMultiplier(s));
-    }
-    if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
-    const caret = posAt(ed.document, offset);
-    ed.selection = new vscode.Selection(caret, caret);
-    // Setting the caret doesn't scroll; the view may have moved during a pause or a reopened tab.
-    ed.revealRange(new vscode.Range(caret, caret), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    return ed;
-  }
-
-  /**
-   * Brings `line` into view. With `smooth`, a line outside the viewport waits
-   * for the read pause first, then is scrolled to (or jumped to with
-   * smoothScroll off); otherwise the view jumps there at once. Undefined once
-   * the change was interrupted.
-   */
-  private async scrollTo(relPath: string, editor: vscode.TextEditor, line: number, smooth: boolean, epoch: number): Promise<vscode.TextEditor | undefined> {
+  private async scrollTo(relPath: string, editor: vscode.TextEditor, line: number, epoch: number): Promise<vscode.TextEditor | undefined> {
     const s = this.settings();
     const at = new vscode.Range(line, 0, line, 0);
-    const view = editor.visibleRanges;
-    if (!smooth || view.length === 0 || this.finishNow) {
-      editor.revealRange(at, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-      return editor;
-    }
-    if (inView(editor, line)) return editor;
-
-    await this.readPause(epoch);
     let ed: vscode.TextEditor | undefined = editor;
-    if (!(ed = await this.ready(relPath, ed, epoch))) return undefined;
-    // The user may have scrolled, or resized the editor, during a pause.
     if (inView(ed, line)) return ed;
     const now = ed.visibleRanges;
     if (!s.smoothScroll || this.finishNow || now.length === 0) {
@@ -469,114 +443,10 @@ export class Player implements vscode.Disposable {
     return ed;
   }
 
-  private async deleteText(relPath: string, editor: vscode.TextEditor, h: Hunk, epoch: number): Promise<void> {
-    const s = this.settings();
-    // Characters of this hunk still in the document, counted from h.offset.
-    let remaining = h.deleteText.length;
-    let ed: vscode.TextEditor | undefined = editor;
-
-    if (remaining <= BACKSPACE_MAX && !h.deleteText.includes('\n')) {
-      // Short deletions: backspace one character at a time from the end.
-      while (remaining > 0 && !this.finishNow) {
-        if (!(ed = await this.ready(relPath, ed, epoch))) return;
-        if (this.finishNow) break;
-        const doc = ed.document;
-        const cps = this.cps(s, doc) * 1.6;
-        const step = backspaceStep(h.deleteText, remaining, Math.round(cps / TICK_HZ));
-        await this.edit(doc, h.offset + remaining - step, h.offset + remaining, '');
-        remaining -= step;
-        this.previewDelete(ed, h.offset, h.offset + remaining);
-        const caret = posAt(doc, h.offset + remaining);
-        ed.selection = new vscode.Selection(caret, caret);
-        await this.sleep(this.humanize((step * 1000) / cps, s));
-      }
-      if (remaining === 0) return;
-    }
-
-    // Longer or multi-line deletions (or the rest after "finish now"):
-    // select the text, pause so the selection registers, then delete it.
-    const select = (ed: vscode.TextEditor) => {
-      const range = new vscode.Range(posAt(ed.document, h.offset), posAt(ed.document, h.offset + remaining));
-      ed.selection = new vscode.Selection(range.start, range.end);
-      ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-      this.previewDelete(ed, h.offset, h.offset + remaining);
-      return range;
-    };
-    if (!(ed = await this.ready(relPath, ed, epoch))) return;
-    select(ed);
-    if (!this.finishNow) {
-      await this.sleep(this.humanize(380, s) / this.speedMultiplier(s));
-      // The tab may have been reopened or the text put back meanwhile.
-      if (!(ed = await this.ready(relPath, ed, epoch))) return;
-      select(ed);
-    }
-    await this.edit(ed.document, h.offset, h.offset + remaining, '');
-    const caret = posAt(ed.document, h.offset);
-    ed.selection = new vscode.Selection(caret, caret);
-  }
-
-  private async typeText(relPath: string, editor: vscode.TextEditor, offset: number, text: string, epoch: number): Promise<void> {
-    const s = this.settings();
-    let i = 0;
-    let ed: vscode.TextEditor | undefined = editor;
-    while (i < text.length) {
-      if (!(ed = await this.ready(relPath, ed, epoch))) return;
-      const doc = ed.document;
-
-      if (this.finishNow) {
-        await this.edit(doc, offset + i, offset + i, text.slice(i));
-        return;
-      }
-
-      const cps = this.cps(s, doc);
-      const atLineStart = posAt(doc, offset + i).character === 0;
-      let chunk = '';
-      let instant = false;
-      if (atLineStart) {
-        // Editors auto-indent; nobody types leading spaces one by one.
-        const indent = /^[ \t]+/.exec(text.slice(i, i + 256));
-        if (indent) {
-          chunk = indent[0];
-          instant = true;
-        }
-      }
-      if (!chunk) chunk = text.slice(i, typingChunkEnd(text, i, Math.round(cps / TICK_HZ)));
-
-      await this.edit(doc, offset + i, offset + i, chunk);
-      i += chunk.length;
-      const caret = posAt(doc, offset + i);
-      ed.selection = new vscode.Selection(caret, caret);
-      if (chunk.includes('\n') || i === chunk.length) {
-        ed.revealRange(new vscode.Range(caret, caret), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-      }
-      if (!instant) await this.sleep(this.delayAfter(chunk, cps, s));
-    }
-    if (!s.highlightAdditions) {
-      const end = posAt(ed.document, offset + text.length);
-      this.flashRange(ed, new vscode.Range(posAt(ed.document, offset), end));
-    }
-  }
-
   // ---------------------------------------------------------------- pacing
 
   private speedMultiplier(s: Settings): number {
-    const catchUp = Math.min(s.maxSpeedup, 1 + s.catchUpFactor * this.timeline.pendingCount());
-    return catchUp * this.manualSpeed;
-  }
-
-  private cps(s: Settings, doc: vscode.TextDocument): number {
-    return (baseCharsPerMinute(doc.languageId, s.charsPerMinute, s.languageSpeeds) / 60) * this.speedMultiplier(s);
-  }
-
-  private delayAfter(chunk: string, cps: number, s: Settings): number {
-    const perChar = 1000 / cps;
-    let ms = this.humanize(chunk.length * perChar, s);
-    const last = chunk[chunk.length - 1];
-    if (last === '\n') ms += perChar * (2 + Math.random() * 4 * s.jitter);
-    else if (last === ';' || last === '{' || last === '}' || last === ',') ms += perChar * 1.5 * Math.random();
-    // Occasional "thinking" pause at the end of a line.
-    if (last === '\n' && Math.random() < 0.04 * s.jitter) ms += (300 + Math.random() * 700) / this.speedMultiplier(s);
-    return ms;
+    return catchUpSpeed(this.timeline.pendingCount(), s) * this.manualSpeed;
   }
 
   /**
@@ -594,11 +464,6 @@ export class Player implements vscode.Disposable {
       await this.sleep(Math.min(left, READ_PAUSE_STEP_MS));
     }
     await this.whilePaused(epoch);
-  }
-
-  private humanize(ms: number, s: Settings): number {
-    const spread = s.jitter * 0.8;
-    return Math.max(0, ms * (1 + spread * (Math.random() * 2 - 1)));
   }
 
   // ---------------------------------------------------------------- editors
