@@ -62,7 +62,10 @@ Alternative: the dot first in the row, before `Agent Typewriter`, as the mockup 
 
 `band` moves to `band-2`; a reload from a version with `band-1` starts from `null` until the next `flush`. Rollback is reverting the change.
 
-## Owner choices (unconfirmed)
+## Owner choices
+
+The owner kept all five on 2026-11-22 ("keep .32").
+
 
 1. Lane named only while more than one lane holds kept changes (as the header), not always (the mockup draws a dot in every state).
 2. The label in the shared line, so the status entry names it too; the dot on the band only.
