@@ -53,6 +53,8 @@ import {
   laneTagText,
   laneHeaderText,
   autoFollowText,
+  bandOf,
+  fileName,
   playFrom,
   toggleAutoFollow,
   type LaneAbout,
@@ -2135,4 +2137,61 @@ test('lanes: Clear marks clears the followed lane\'s marks only, and a seek in a
   seek(d, 't1', FAST);
   assert.deepEqual(pruneClears(d, both), [{ at: 3 }], 'only the lane played again loses its clear');
   assert.deepEqual(tabsOf(d).map((t) => t.path), ['/w/b.ts'], 'tabs are the followed lane\'s');
+});
+
+/** Text long enough to stay half typed for a few ticks at FAST. */
+const LONG = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') + '\n';
+
+test('the band line before any change, while typing, with changes queued', () => {
+  assert.equal(bandOf(newDeck()), null);
+  const d = deckOf(change('a', '', 'a\n', '/w/x.ts'), change('b', '', 'b\n'), change('c', '', LONG, '/w/src/auth/limiter.ts'), change('d', '', 'd\n'), change('e', '', 'e\n'));
+  assert.deepEqual(bandOf(d), { line: 'Agent Typewriter · typing · 5 queued', isActive: true, isPaused: false }, 'nothing shown yet');
+  // Up to change 3, with 2 waiting behind it.
+  seek(d, 'c', FAST);
+  tick(d, FAST);
+  assert.equal(playingId(d), 'c');
+  assert.deepEqual(bandOf(d), { line: 'Agent Typewriter · typing limiter.ts #3 · 2 queued', isActive: true, isPaused: false });
+});
+
+test('the band line while paused mid-change, and cued after a pick', () => {
+  const d = deckOf(change('a', '', LONG, '/w/limiter.ts'));
+  tick(d, FAST);
+  togglePause(d);
+  assert.deepEqual(bandOf(d), { line: 'Agent Typewriter · paused · limiter.ts #1', isActive: true, isPaused: true });
+  const e = deckOf(change('a', '', 'a\n'), change('b', '', 'b\n'), change('c', '', 'c\n'), change('d', '', 'd\n'), change('e', '', 'e\n', '/w/b.ts'));
+  playOut(e);
+  togglePause(e);
+  seek(e, 'e', FAST);
+  assert.deepEqual(bandOf(e), { line: 'Agent Typewriter · paused · next b.ts #5 · 1 queued', isActive: true, isPaused: true });
+});
+
+test('the band line when caught up, paused while caught up, and for a too-large change', () => {
+  const d = deckOf(change('a', '', 'a\n'), change('b', '', 'b\n', '/w/limiter.ts'));
+  playOut(d);
+  assert.deepEqual(bandOf(d), { line: 'Agent Typewriter · up to date · limiter.ts #2', isActive: false, isPaused: false });
+  togglePause(d);
+  assert.deepEqual(bandOf(d), { line: 'Agent Typewriter · paused · limiter.ts #2', isActive: false, isPaused: true });
+  const big = deckOf(change('a', '', 'a\n'), change('b', '', 'b\n'), change('c', '', 'c\n'), { ...change('big', '', '', '/w/dist/bundle.js'), isTooLarge: true }, change('n', '', 'n\n'));
+  seek(big, 'big', FAST);
+  tick(big, FAST);
+  assert.deepEqual(bandOf(big), { line: 'Agent Typewriter · bundle.js #4 is too large to replay · 1 queued', isActive: true, isPaused: false });
+});
+
+test('the band line counts the other lanes as the pane does, and stays active while only they wait', () => {
+  const d = deckOf(change('a', '', LONG, '/w/app.ts'), change('b', '', 'b\n'), { ...change('s1', '', 's\n'), agentId: 'ag' }, { ...change('s2', '', 't\n'), agentId: 'ag' });
+  tick(d, FAST);
+  assert.equal(bandOf(d)!.line, 'Agent Typewriter · typing app.ts #1 · 1 queued · 2 in other lanes');
+  toggleAutoFollow(d);
+  playOut(d);
+  assert.deepEqual(bandOf(d), { line: 'Agent Typewriter · up to date · b.ts #2 · 2 in other lanes', isActive: true, isPaused: false }, 'auto-follow off: the subagent\'s changes wait');
+  skipToLatest(d, FAST);
+  assert.equal(bandOf(d)!.isActive, false);
+});
+
+test('the band names a file by its last path segment, either separator, made safe to draw', () => {
+  assert.equal(fileName('/w/src/app.ts'), 'app.ts');
+  assert.equal(fileName('C:\\w\\src\\app.ts'), 'app.ts');
+  const d = deckOf(change('a', '', 'a\n', '/w/a\u001bb.ts'));
+  playOut(d);
+  assert.equal(bandOf(d)!.line, 'Agent Typewriter · up to date · a\u241bb.ts #1');
 });

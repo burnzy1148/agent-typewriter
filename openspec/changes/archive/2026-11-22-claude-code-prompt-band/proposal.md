@@ -14,7 +14,7 @@ Once the person closes the Agent Typewriter pane, or Claude Code leaves it unpla
 Out of scope, and kept possible:
 - The VS Code surface's band. Claude Code raises the band above the prompt only on the terminal and desktop surfaces, so in VS Code only the status entry carries this state.
 - The terminal, where the plugin still draws nothing.
-- Lane colors and a per-lane queued count on the band (at-o3z.15). The count here is the pane's: every recorded change waiting to play.
+- Lane colors and a per-lane queued count on the band (at-o3z.15). The count here is the pane's: every recorded change waiting to play. *Superseded in implementation:* lanes landed first, so the count follows the pane's header: the followed lane's queued changes, then those in other lanes. Lane colors and labels stay out of scope (at-o3z.32). See design.md, *Corrected in implementation*.
 - Treating a pane that is placed but hidden behind another pane's tab as out of view.
 - A chord that presses the band's controls from the prompt. Claude Code binds those only on the terminal.
 - The caption band of at-o3z.14 is inside the pane, over the code. This change's band is Claude Code's band above the prompt; the two do not meet.
@@ -32,7 +32,7 @@ None.
 ## Impact
 
 - `claude-code/hooks/replay.ts`: a pure function from the deck to the shared line (file name, number, state, queued count) and whether anything is typing or queued.
-- `claude-code/hooks/register.tsx`: a `band` atom written in `flush` beside `view` and `listing`; a `ui.render` hook on `AbovePrompt` that draws the band from it when the pane is not placed; `$.ui.status` kept in step with the line; hooks on `ui.close`, `ui.open`, `session.attach` and `session.detach` that redraw the band and refresh which surfaces are attached.
+- `claude-code/hooks/register.tsx`: a `band` atom written in `flush` beside `view` and `listing`; a `ui.render` hook on `AbovePrompt` that draws the band from it when the pane is not placed; `$.ui.status` kept in step with the line; hooks on `ui.close`, `ui.open`, `session.attach` and `session.detach` that redraw the band and refresh which surfaces are attached. *Superseded in implementation:* no `ui.open` hook; the plugin's own opens redraw the band themselves.
 - `claude-code/types/index.d.ts`: the `Band` type and the `band` key in `PluginState`. `saved`, `view` and `listing` keep their shapes, so this does not collide with at-o3z.14 and at-o3z.16 moving `view` to `view-2`.
 - `claude-code/tests/` and `test/claudeCodeReplay.test.ts`: tests for the line, the band's visibility and controls, the hotkeys, and the status entry.
 - `claude-code/README.md`: the band and the status entry.

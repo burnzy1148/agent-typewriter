@@ -32,6 +32,12 @@ export type World = {
   openAnswer: UiOpenResult | { reject: string };
   /** The plugin's `$.ui.log` lines bound for the transcript, in order. */
   logs: string[];
+  /** The plugin's open panes, by id: whether each is placed, as `$.ui.panes()` answers. */
+  panes: Map<string, boolean>;
+  /** Every `$.ui.status` the plugin made, in order; undefined removes the entry. */
+  statuses: (string | undefined)[];
+  /** Every `$.ui.toast` text, in order. */
+  toasts: string[];
 };
 
 /** Answers a Write in place of the in-memory one, as a refusal or a tool of its own would. */
@@ -51,6 +57,9 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
     surfaces: ['desktop'],
     openAnswer: { isPlaced: true },
     logs: [],
+    panes: new Map(),
+    statuses: [],
+    toasts: [],
   };
   let isBroken = false;
   // Each write to a file moves its modification time on.
@@ -94,7 +103,21 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
     w.opens.push(e.id);
     const answer = w.openAnswer;
     if ('reject' in answer) return { deny: answer.reject };
+    w.panes.set(e.id, answer.isPlaced);
     return { value: answer };
+  });
+  on('ui.close', (_, e) => {
+    w.panes.delete(e.id);
+    return { value: undefined };
+  });
+  on('ui.panes', () => ({ value: [...w.panes].map(([id, isPlaced]) => ({ id, title: id, isShown: isPlaced, isFocused: false, isPlaced })) }));
+  on('ui.status', (_, e) => {
+    w.statuses.push(e.text);
+    return { value: undefined };
+  });
+  on('ui.toast', (_, e) => {
+    w.toasts.push(e.text);
+    return { value: undefined };
   });
   on('ui.log', (_, e) => {
     if (e.to === 'transcript') w.logs.push(e.text);
@@ -102,6 +125,8 @@ export function world(on: On, files: Record<string, string> = {}, write?: WriteA
   });
   on('session.start', (_, e) => ({ cwd: e.cwd }));
   on('session.surfaces', () => ({ value: w.surfaces }));
+  on('session.attach', (_, e) => ({ clientId: e.clientId }));
+  on('session.detach', (_, e) => ({ clientId: e.clientId }));
 
   // The file tools, acting on the in-memory files.
   on('tool.call', { tool: 'Edit' }, (_, e) => {

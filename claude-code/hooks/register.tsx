@@ -16,7 +16,7 @@
 import { atom, read, update } from 'claude-code';
 import type { EngineInterface, Register, UiOpenResult } from 'claude-code';
 
-import type { AgentLink, Clear, Grouping, Marks, Tabs, Turns } from '../types';
+import type { AgentLink, Band, Clear, Grouping, Marks, Tabs, Turns } from '../types';
 
 import { normalizeEol } from './core.mjs';
 import { tabLabels, tabRows } from './marks';
@@ -41,6 +41,7 @@ import {
   frame,
   headerLabel,
   autoFollowText,
+  bandOf,
   isUnchanged,
   keptTurns,
   laneChipRows,
@@ -152,6 +153,7 @@ const tabsRef = { plugin: 'agent-typewriter', key: 'tabs' } as const;
 const TABS_SHAPE = 'tabs-1';
 const NO_TABS: Tabs = { tabs: [] };
 const tabs = atom(tabsRef, NO_TABS, { shape: TABS_SHAPE });
+const band = atom({ plugin: 'agent-typewriter', key: 'band' } as const, null as Band | null, { shape: 'band-1' });
 
 /** The module's own state; rebuilt from $.state when the module loads. */
 type Live = {
@@ -172,6 +174,11 @@ type Live = {
   listingJson: string;
   tabsJson: string;
   marksJson: string;
+  bandJson: string;
+  /** What the status entry was last set to, undefined for none; absent until the module sets it, so the first flush after a load always does. */
+  status?: { line: string | undefined };
+  /** Whether a terminal is among the surfaces attached to the session; the status entry is kept off then. */
+  hasTerminal: boolean;
   /** What Clear marks pressed and a move of playback has not undone, oldest first; kept in $.state (`marks`) for a reload. */
   clears: Clear[];
   /** The file whose tab the person pinned; undefined while the code view follows playback. Not kept across a reload. */
@@ -279,6 +286,43 @@ async function flush($: EngineInterface, live: Live): Promise<void> {
     live.marksJson = marksJson;
     await update($, marks, () => nextMarks);
   }
+  const nextBand = bandOf(live.deck);
+  const bandJson = JSON.stringify(nextBand);
+  if (bandJson !== live.bandJson) {
+    live.bandJson = bandJson;
+    await update($, band, () => nextBand);
+  }
+  setStatus($, live, nextBand);
+}
+
+/** Keeps the status entry on the band's line, or none while a terminal is attached: the entry is drawn on every surface, the terminal's too. */
+function setStatus($: EngineInterface, live: Live, now: Band | null): void {
+  const line = live.hasTerminal ? undefined : now?.line;
+  if (live.status && live.status.line === line) return;
+  live.status = { line };
+  $.ui.status(line);
+}
+
+/** Refreshes whether a terminal is attached, and the status entry with it. */
+async function checkSurfaces($: EngineInterface, live: Live): Promise<void> {
+  live.hasTerminal = (await $.session.surfaces()).includes('terminal');
+  setStatus($, live, bandOf(live.deck));
+}
+
+/**
+ * Opens the pane, then redraws: the band above the prompt reads whether the
+ * pane is placed when it draws, and the plugin's own open runs none of its own
+ * `ui.open` hooks, so nothing else would tell a band already drawn.
+ */
+async function openPane($: EngineInterface): Promise<UiOpenResult> {
+  const opened = await $.ui.open({ id: PANE, title: TITLE });
+  $.ui.invalidate('ui.render');
+  return opened;
+}
+
+/** Whether a surface draws the pane now, by the engine's record, which outlives a reload of the module. */
+async function isPanePlaced($: EngineInterface): Promise<boolean> {
+  return (await $.ui.panes()).some((p) => p.id === PANE && p.isPlaced);
 }
 
 /** Rebuilds the deck from what an earlier load saved; a change whose texts are gone is skipped. */
@@ -484,7 +528,7 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   // at all nothing will draw it, so the transcript says so. The tool call does
   // not wait for the open.
   if (isFirst) {
-    void $.ui.open({ id: PANE, title: TITLE }).then(
+    void openPane($).then(
       (opened) => {
         if (isNoSurface(opened)) $.ui.log(NO_SURFACE);
       },
@@ -650,6 +694,9 @@ export const register: Register = (on, options) => {
     // What the atoms hold before anything is written; load() reads what an earlier load wrote.
     tabsJson: JSON.stringify(NO_TABS),
     marksJson: JSON.stringify(NO_MARKS),
+    // Written on the first flush whatever an earlier load left.
+    bandJson: '',
+    hasTerminal: false,
     clears: [],
     writes: Promise.resolve(),
     turns: new Map(),
@@ -668,6 +715,7 @@ export const register: Register = (on, options) => {
     live.now = await $.clock.now().catch(() => 0);
     try {
       await $.command.register({ name: 'typewriter', description: 'Open the Agent Typewriter pane' });
+      live.hasTerminal = await $.session.surfaces().then((s) => s.includes('terminal'), () => false);
       await load($, live).catch(() => undefined);
     } finally {
       live.settleLoaded();
@@ -678,7 +726,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'typewriter' }, async ($) => {
     if (await isTerminalOnly($)) return { text: TERMINAL_POINTER };
-    return { text: openedText(await $.ui.open({ id: PANE, title: TITLE })) };
+    return { text: openedText(await openPane($)) };
   });
 
   // Which turn each loop is in, and where each agent hangs off the main
@@ -779,7 +827,7 @@ export const register: Register = (on, options) => {
               label={`Play from #${row.number} in the typewriter pane`}
               onPress={async () => {
                 move($, live, (d) => seek(d, row.id, live.opts));
-                await $.ui.open({ id: PANE, title: TITLE });
+                await openPane($);
               }}
             >
               {chipLabel(row, { isCurrent: row.id === l.current, isPaused: l.isPaused })}
@@ -791,13 +839,71 @@ export const register: Register = (on, options) => {
               label={`Play turn ${chapter.number} in the typewriter pane`}
               onPress={async () => {
                 move($, live, () => playTurn(live, chapter.key));
-                await $.ui.open({ id: PANE, title: TITLE });
+                await openPane($);
               }}
             >
               {turnChipLabel(chapter)}
             </Button>
           )}
         </Box>
+      </Box>
+    );
+  });
+
+  // The band above the prompt reads whether the pane is placed from the
+  // engine: the person closing it, or a surface coming or going, redraws it
+  // even when playback has not moved (the plugin's own opens redraw through
+  // openPane). A terminal coming or going sets or clears the status entry.
+  // Observed only.
+  on('ui.close', async ($, e, next) => {
+    const r = await next(e);
+    if (e.id === PANE) $.ui.invalidate('ui.render');
+    return r;
+  });
+  on('session.attach', async ($, e, next) => {
+    const r = await next(e);
+    await checkSurfaces($, live).catch(() => undefined);
+    $.ui.invalidate('ui.render');
+    return r;
+  });
+  on('session.detach', async ($, e, next) => {
+    const r = await next(e);
+    await checkSurfaces($, live).catch(() => undefined);
+    $.ui.invalidate('ui.render');
+    return r;
+  });
+
+  // While the pane is out of view and something types or waits: one row above
+  // the prompt with the status entry's line, Pause, Skip to latest and Open
+  // pane. Claude Code raises this band on the terminal and the desktop only;
+  // the terminal is left to the VS Code extension.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface === 'terminal' || e.props.hasSurvey) return next(e);
+    const b = await read($, band);
+    if (!b?.isActive || (await isPanePlaced($))) return next(e);
+    const { Box, Text, Button } = $.ui.resolve(e);
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          <Text wrap="truncate-end">{b.line}</Text>
+        </Box>
+        <Button key="band:pause" hotkey="p" onPress={() => act($, live, togglePause)}>
+          {b.isPaused ? 'Resume' : 'Pause'}
+        </Button>
+        <Button key="band:skip" hotkey="l" onPress={() => move($, live, (d) => skipToLatest(d, live.opts))}>
+          Skip to latest
+        </Button>
+        <Button
+          key="band:open"
+          hotkey="o"
+          variant="primary"
+          onPress={async () => {
+            const opened = await openPane($);
+            if (!opened.isPlaced) $.ui.toast(openedText(opened));
+          }}
+        >
+          Open pane
+        </Button>
       </Box>
     );
   });

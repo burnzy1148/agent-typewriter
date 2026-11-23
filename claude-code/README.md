@@ -113,6 +113,12 @@ By file, each file Claude changed gets a group headed by its name, its folder, h
 
 Press a change to play from it: the pane follows its lane, it is typed next and the lane's later changes follow, other lanes stay where they are, and a pause stays a pause. While paused, the pane shows the file as it was before that change, so Resume types it from there, and Finish current shows it done. Play from first does the same from the file's first change the pane keeps: the changes after it in its lane follow whatever file they changed. Play turn replays the whole turn: every lane with a change in it goes back to its first change there, and the pane follows the lane of the turn's first change.
 
+### When the pane is closed
+
+Close the pane while something is still typing or queued, or leave it where Claude Code couldn't place it, and the desktop app shows a band just above the prompt instead: the file being typed and its change number, whether playback is typing or paused, and how many changes are queued, with **Pause** / **Resume**, **Skip to latest** and **Open pane**. Click the band (or press ctrl+x tab) and `p`, `l` and `o` press them. Typing in the prompt never does. The band goes away once the pane is back or nothing is left to play, and steps aside while Claude Code asks you a question there. VS Code has no band: Claude Code draws that spot only in the desktop app and the terminal, and the plugin draws nothing in the terminal.
+
+From the first change on, the plugin also keeps one status entry under the prompt with the same words, such as `Agent Typewriter · typing limiter.ts #3 · 2 queued`, whether the pane is open or not; it reads `up to date` once playback catches up. A session that also runs in a terminal gets no status entry, since Claude Code shows it on every surface, the terminal's too.
+
 ### Back and forth with the conversation
 
 **Show in conversation**, in the pane's header, scrolls the conversation to the `Edit` or `Write` call that made the change the pane shows; the ↗ beside each row of the list does the same for that change. For a change a subagent made, it goes to the subagent's call, or to the `Agent` call that started the subagent when the conversation doesn't show the subagent's own calls. If it can't scroll there, say because the call is no longer in the conversation, the list says so until your next press in the pane. Neither moves playback.
