@@ -115,9 +115,9 @@ for (const step of typingSteps(change, { switching, jump }, host, Math.random)) 
 - pulls and applies steps: an edit changes `text` and `caret`; `caret` moves the caret; `select`, `mark` and `added` set or clear what the view may draw; `reveal` does nothing (the pane's frame already follows the caret); `show` sets `shown` to the change's before text, keeping the caret when the path is unchanged; a `wait` spends the budget or leaves `owed` and ends the tick; `readPause` ends the tick while `readPauseLeft(lastEditAt, now, readPauseSeconds, speed) > 0`;
 - stops after `MAX_STEPS_PER_TICK` steps, and draws once.
 
-Waits are measured in tick time, so a paused deck (which does not tick) holds a wait where it is and resumes the rest. The read pause is measured in wall time from the `now` at-o3z.15 passes in, so time paused or idle counts, as the extension's does. `lastEditAt` is set by every edit and by `finish()`, and cleared by `seek`, `replayFromStart`, `skipToLatest` and `restore`, so no read pause follows a jump (spec: No read pause after a jump in playback). `start.switching` is true when a change was played since the last reload and its path (`fileKey`) differs; `start.jump` is the same, matching the player, where the first edit after a file switch is clicked. (See Corrections: `deck.lastPath` holds that path, and `jump` is also true for the first change after a reload.)
+Waits are measured in tick time, so a paused deck (which does not tick) holds a wait where it is and resumes the rest. The read pause is measured in wall time from the `now` at-o3z.15 passes in, so time paused or idle counts, as the extension's does. `lastEditAt` is set by every edit and by `finish()`, and cleared by `seek`, `replayFromStart`, `skipToLatest` and `restore`, so no read pause follows a jump (spec: No read pause after a jump in playback). `start.switching` is true when a change was played since the last reload and its path (`fileKey`) differs; `start.jump` is the same, matching the player, where the first edit after a file switch is clicked. (See Corrected in implementation: `deck.lastPath` holds that path, and `jump` is also true for the first change after a reload.)
 
-The plugin's host: `settings()` from `playOptions`; `speed()` = `catchUpSpeed(pendingCount of the lane played, settings) × manual` (manual is 1 until at-o3z.17); `finishing()` false; `caret()` the playback caret; `inView` against the lines of the code rows the pane last drew (see Corrections: `deck.drawn`). Random numbers come from `deck.random`, `Math.random` unless a test sets a seeded one.
+The plugin's host: `settings()` from `playOptions`; `speed()` = `catchUpSpeed(pendingCount of the lane played, settings) × manual` (manual is 1 until at-o3z.17); `finishing()` false; `caret()` the playback caret; `inView` against the lines of the code rows the pane last drew (see Corrected in implementation: `deck.drawn`). Random numbers come from `deck.random`, `Math.random` unless a test sets a seeded one.
 
 `shownBefore` (a change cued while paused, and after a reload) puts the caret at `caretBeforeHunk` of the first hunk, so the cued caret is where typing starts. `HOLD_TICKS` after a change shown at once stays, as the spec's "about a second later" requires.
 
@@ -142,7 +142,7 @@ at-o3z.16's `preview` ticks give way to the steps: the pane draws a deletion's l
 - [A plugin test that counted exact ticks now depends on random delays] → The deck takes a seeded random; tests assert totals within the jitter bounds or with jitter 0 through a test-only settings override.
 - [Throttled plugin timers stretch waits] → As today. The read pause, measured in wall time, does not stretch.
 
-## Corrections during implementation
+## Corrected in implementation
 
 Decisions above that the implementation changed, and why. The first implementation commit edited some of the sentences above in place (the interface sketch, the step list, the bundle entry); these entries are the record of every such change, and the plugin's file-switch rule above is back to what the proposal said.
 
