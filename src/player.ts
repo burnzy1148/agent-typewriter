@@ -288,10 +288,6 @@ export class Player implements vscode.Disposable {
         } else if (step.kind === 'wait') {
           await this.sleep(step.ms);
         } else {
-          if (shown) {
-            this.lastRelPath = e.relPath;
-            shown = false;
-          }
           if (!editor || !(editor = await this.ready(e.relPath, editor, epoch))) return;
           editor = await this.apply(e.relPath, editor, step, epoch);
           if (!editor) return;
@@ -300,8 +296,9 @@ export class Player implements vscode.Disposable {
       }
     } finally {
       this.previewDelete();
+      // Once its tab was shown, this file is the one played into, even when the change was interrupted before its first edit.
+      if (shown) this.lastRelPath = e.relPath;
     }
-    if (shown) this.lastRelPath = e.relPath;
     if (e.kind === 'delete') {
       this.store(e);
       return;

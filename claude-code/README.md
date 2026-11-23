@@ -71,7 +71,7 @@ claude plugin install agent-typewriter --marketplace burnzy1148/agent-typewriter
 
 The plugin never writes a file. It reads the file before the tool runs and again after.
 
-Files larger than 1 MB are not typed: the pane names them and moves on. A change that adds more than 6,000 characters, such as a generated file, is shown finished at once instead of typed, as in the VS Code extension. Long deletions are selected for a beat, their lines drawn removed from when the caret reaches them, and go in one step; short ones are backspaced.
+Files larger than 1 MB are not typed: the pane names them and moves on. A change that adds more than 6,000 characters, such as a generated file, is shown finished at once instead of typed, as in the VS Code extension. Long deletions have their lines drawn removed for a beat from when the caret reaches them, then go in one step; short ones are backspaced.
 
 The pane types at the VS Code extension's pace, using the same code to decide each step: the rhythm varies a little, a new line's indent goes in at once, it lingers after line breaks and punctuation and now and then at the end of a line, and the caret rests a moment at each edit. The caret walks with arrow keys to a nearby edit on screen and jumps to a far one. Before the view leaves what was just typed, for an edit off screen or another file, it waits until 1.5 seconds have passed since the last keystroke, and a new file is shown for a second before its first edit. While changes are queued it speeds up: one and a half times with one waiting, up to eight times. Apart from the two options below, these use the extension's default settings.
 

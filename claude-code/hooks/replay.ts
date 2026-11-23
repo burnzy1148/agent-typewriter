@@ -146,8 +146,8 @@ export type Playback = {
   budget: number;
   /** Text about to be deleted, while the steps mark it; `oneStep` when it goes in one step. */
   mark?: { from: number; to: number; oneStep: boolean };
-  /** The selection, from a select step until the next edit or caret move. */
-  selection?: { from: number; to: number };
+  /** Shown at once rather than typed (too large to replay, or inserting more than maxAnimatedChars): it stays a while once done. */
+  isAtOnce: boolean;
 };
 
 /** What the pane shows, and the id and caption of the change it shows: the playing change, a change cued to play next, or the last one played. */
@@ -177,10 +177,10 @@ export type Deck = {
   kinds: Map<string, string>;
   /** When playback last changed the shown text, in epoch milliseconds; absent after a jump, so no read pause follows it. */
   lastEditAt?: number;
-  /** The file (fileKey) playback last showed; absent before the first change after a reload. */
+  /** The file (fileKey) playback last played into, or skipped to; absent before the first change after a reload. A change cued by a pick does not count. */
   lastPath?: string;
-  /** How many code rows the pane last drew, which tells the typing steps what is in view; absent before it draws. */
-  codeRows?: number;
+  /** The file and the lines (0-based, of its current text) of the code rows the pane last drew, which tell the typing steps what is in view; absent before it draws. */
+  drawn?: { path: string; first: number; last: number };
   /** Where the typing steps' random numbers come from. */
   random: () => number;
 };
@@ -522,18 +522,10 @@ function shownBefore(change: Change, opts: PlayOptions): Shown {
   return { id: change.id, path: change.path, text: change.before, caret: first ? caretBeforeHunk(first) : 0, ...captionOf(change) };
 }
 
-/** Shows `shown` as playback's, so the next change to another file counts as a file switch. */
+/** Shows `shown` as what playback played into, so the next change to another file counts as a file switch. */
 function show(deck: Deck, shown: Shown): void {
   deck.shown = shown;
   deck.lastPath = fileKey(shown.path);
-}
-
-/** Plays the change at `seq` in one go: `shown` stays a while before the next change. */
-function showAtOnce(deck: Deck, seq: number, shown: Shown): boolean {
-  deck.timeline.complete(seq);
-  show(deck, shown);
-  deck.hold = HOLD_TICKS;
-  return true;
 }
 
 /** Line and column of offset `at` in `text`. */
@@ -545,39 +537,44 @@ function caretAt(text: string, at: number): { line: number; character: number } 
 
 /**
  * The playback of `change`: the typing steps over a host that reads the deck
- * as it is when each step is decided. In view are the code rows the pane drew
- * around the caret, as frame() places them; with no rows drawn yet, nothing
- * is known to be in view.
+ * as it is when each step is decided. In view are the lines of the code rows
+ * the pane last drew for the change's file; with none drawn, nothing is known
+ * to be in view. A change too large to replay gets only the steps that leave
+ * the last file (the read pause) and show it, its note in place of its text.
  */
 function playbackOf(deck: Deck, change: Change, seq: number, token: number, opts: PlayOptions): Playback {
   const switching = deck.lastPath !== undefined && deck.lastPath !== fileKey(change.path);
+  const start = { switching, jump: switching || deck.lastPath === undefined };
   const settings = () => settingsOf(opts);
   const live = () => (deck.playing?.seq === seq ? deck.playing : undefined);
-  const steps = typingSteps(
-    change,
-    { switching, jump: switching || deck.lastPath === undefined },
-    {
-      settings,
-      speed: () => speedOf(deck, settings()),
-      finishing: () => false,
-      caret: () => {
-        const p = live();
-        return p ? caretAt(p.text, p.caret) : { line: 0, character: 0 };
-      },
-      inView: (first, last) => {
-        const p = live();
-        const rows = deck.codeRows;
-        if (!p || rows === undefined) return undefined;
-        const starts = lineStarts(p.text);
-        const caretLine = lineAt(starts, Math.max(0, Math.min(p.caret, p.text.length)));
-        const top = Math.max(0, Math.min(caretLine - Math.floor(rows / 2), starts.length - rows));
-        return first >= top && last < top + rows;
-      },
-      languageId: () => '',
-    },
-    () => deck.random(),
-  );
-  return { change, seq, token, hunks: plan(change, opts), steps, isShown: false, text: change.before, caret: 0, owed: 0, isReading: false, budget: 0 };
+  const hunks = plan(change, opts);
+  const isAtOnce = change.isTooLarge === true || hunks.reduce((n, h) => n + h.insertText.length, 0) > settings().maxAnimatedChars;
+  const steps = change.isTooLarge
+    ? (function* (): Generator<TypingStep, void, void> {
+        if (start.switching) yield { kind: 'readPause' };
+        yield { kind: 'show' };
+      })()
+    : typingSteps(
+        change,
+        start,
+        {
+          settings,
+          speed: () => speedOf(deck, settings()),
+          finishing: () => false,
+          caret: () => {
+            const p = live();
+            return p ? caretAt(p.text, p.caret) : { line: 0, character: 0 };
+          },
+          inView: (first, last) => {
+            const d = deck.drawn;
+            if (!d || fileKey(d.path) !== fileKey(change.path)) return undefined;
+            return first >= d.first && last <= d.last;
+          },
+          languageId: () => '',
+        },
+        () => deck.random(),
+      );
+  return { change, seq, token, hunks, steps, isShown: false, text: change.before, caret: 0, owed: 0, isReading: false, budget: 0, isAtOnce };
 }
 
 /** The playback speed: the catch-up speedup while changes wait in the followed lane. */
@@ -589,21 +586,14 @@ function speedOf(deck: Deck, s: { catchUpFactor: number; maxSpeedup: number }): 
 function startNext(deck: Deck, opts: PlayOptions): boolean {
   const next = deck.timeline.peek();
   if (!next) return false;
-  const change = changeOf(next);
-  if (change.isTooLarge) return showAtOnce(deck, next.seq, shownDone(change, 0));
-  const hunks = plan(change, opts);
-  if (hunks.reduce((n, h) => n + h.insertText.length, 0) > settingsOf(opts).maxAnimatedChars) {
-    return showAtOnce(deck, next.seq, shownDone(change, finalCaret(hunks)));
-  }
   const token = deck.timeline.begin(next.seq);
-  deck.playing = playbackOf(deck, change, next.seq, token, opts);
+  deck.playing = playbackOf(deck, changeOf(next), next.seq, token, opts);
   return true;
 }
 
 /** Applies one typing step to `p`. */
 function applyStep(deck: Deck, p: Playback, step: TypingStep, now: number | undefined): void {
   const edited = () => {
-    p.selection = undefined;
     if (now !== undefined) deck.lastEditAt = now;
   };
   switch (step.kind) {
@@ -623,13 +613,9 @@ function applyStep(deck: Deck, p: Playback, step: TypingStep, now: number | unde
       return;
     case 'caret':
       p.caret = step.at;
-      p.selection = undefined;
       return;
     case 'mark':
       p.mark = step.from < step.to ? { from: step.from, to: step.to, oneStep: step.oneStep } : undefined;
-      return;
-    case 'select':
-      p.selection = { from: step.from, to: step.to };
       return;
     case 'delete':
       p.text = p.text.slice(0, step.from) + p.text.slice(step.to);
@@ -646,7 +632,7 @@ function applyStep(deck: Deck, p: Playback, step: TypingStep, now: number | unde
       edited();
       return;
     default:
-      // reveal: the pane's frame already follows the caret. added: the marks come from the baseline.
+      // reveal: the pane's frame already follows the caret. select: the code view marks no ranges; the deletion's lines are drawn removed while it is marked. added: the marks come from the baseline.
       return;
   }
 }
@@ -710,8 +696,10 @@ export function tick(deck: Deck, opts: PlayOptions, now?: number): boolean {
   if (done) {
     deck.timeline.complete(p.seq, p.token);
     deck.playing = undefined;
+    // A change shown at once stays a while before the next one.
+    if (p.isAtOnce) deck.hold = HOLD_TICKS;
   }
-  if (p.isShown) show(deck, { id: p.change.id, path: p.change.path, text: p.text, caret: p.caret, ...captionOf(p.change) });
+  if (p.isShown) show(deck, p.change.isTooLarge ? shownDone(p.change, 0) : { id: p.change.id, path: p.change.path, text: p.text, caret: p.caret, ...captionOf(p.change) });
   return true;
 }
 
@@ -756,7 +744,7 @@ export function follow(deck: Deck, lane: string, opts: PlayOptions, now?: number
     .filter((e) => timeline.stateOf(e.seq) === 'played')
     .at(-1);
   const shown = next ? shownBefore(changeOf(next), opts) : last && shownFinished(changeOf(last), opts);
-  if (shown) show(deck, shown);
+  if (shown) deck.shown = shown;
   else delete deck.shown;
   return true;
 }
@@ -806,7 +794,7 @@ export function seek(deck: Deck, id: string, opts: PlayOptions): boolean {
     deck.timeline.follow(laneOfChange(p.change));
     deck.hold = 0;
     delete deck.lastEditAt;
-    show(deck, shownBefore(p.change, opts));
+    deck.shown = shownBefore(p.change, opts);
     deck.playing = playbackOf(deck, p.change, p.seq, p.token, opts);
     return true;
   }
@@ -815,7 +803,7 @@ export function seek(deck: Deck, id: string, opts: PlayOptions): boolean {
   deck.playing = undefined;
   deck.hold = 0;
   delete deck.lastEditAt;
-  show(deck, shownBefore(changeOf(e), opts));
+  deck.shown = shownBefore(changeOf(e), opts);
   return true;
 }
 
@@ -1571,9 +1559,10 @@ function windowOf(all: readonly DiffRow[], text: string, caret: number): Pick<Vi
  * them, and `columns` wide: shifted left when the caret would be past the
  * right edge and cut at it, with the caret marked while typing. Returns the
  * source to draw under the Code element's `diff` format, one hunk whose
- * header counts the rows it keeps.
+ * header counts the rows it keeps, and the lines of the current text those
+ * rows show (0-based), absent when they show none.
  */
-export function frame(view: View, rows: number, columns: number): { source: string } {
+export function frame(view: View, rows: number, columns: number): { source: string; lines?: { first: number; last: number } } {
   const body = Math.max(1, rows - 1);
   const top = Math.max(0, Math.min(view.caretRow - Math.floor(body / 2), view.rows.length - body));
   const caretX = view.caretColumn - view.firstColumn;
@@ -1596,7 +1585,7 @@ export function frame(view: View, rows: number, columns: number): { source: stri
   });
   // A side with no lines in the hunk is numbered by the line before it, as unified diffs do.
   const header = `@@ -${oldCount > 0 ? oldStart + 1 : oldStart},${oldCount} +${newCount > 0 ? newStart + 1 : newStart},${newCount} @@`;
-  return { source: [header, ...out].join('\n') };
+  return { source: [header, ...out].join('\n'), ...(newCount > 0 && { lines: { first: newStart, last: newStart + newCount - 1 } }) };
 }
 
 /** Longest caption a change keeps, in code units, its ellipsis included. */

@@ -15,11 +15,12 @@ A VS Code extension that watches files change on disk and replays each change as
 ## Architecture
 
 - `src/planner.ts`: diffs before/after text into ordered hunks to type, each offset relative to the text after earlier hunks.
+- `src/typingSteps.ts`: turns one change into the steps a person would type it in (caret moves, selections, deletes, inserts, waits, read pauses); the player and the Claude Code plugin both apply them. `src/caretPath.ts` plans its arrow-key walks.
 - `src/timeline.ts`: ordered buffer of recorded change events, bounded by count and by text size, with a playback cursor and seek.
 - `src/changeText.ts`: holds each change's before/after text, in memory until it is saved, then read back from the log through a small cache.
 - `src/persistence.ts`: saves the timeline as an append-only log per lane in workspace storage (segment files plus a small state file), with recovery from torn writes and migration from the old one-file format.
 - `src/recorder.ts`: watches the workspace, keeps file snapshots, and records each settled write as a before/after event.
-- `src/player.ts`: consumes the timeline in order and types each change into its mirror editor.
+- `src/player.ts`: consumes the timeline in order and types each change into its mirror editor by applying its typing steps.
 - `src/mirrorFs.ts`: in-memory filesystem behind the `agent-typewriter:` mirror documents that replay is typed into.
 - `src/filter.ts`: decides which workspace paths get recorded (extension allow-list, exclude globs, include globs).
 - `src/timelineView.ts`: tree view listing recorded changes and their played/playing/pending state.
@@ -31,7 +32,7 @@ A VS Code extension that watches files change on disk and replays each change as
 
 ### Shared core
 
-The Claude Code plugin reuses `src/planner.ts`, `src/typingChunks.ts`, `src/timeline.ts`, the net diff in `src/netHunks.ts`, the lane colors and auto-follow decision in `src/lanes.ts`, and the playback settings resolvers in `src/playbackSettings.ts`, `src/pace.ts` and `src/readPause.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes, with its declarations in `core.d.mts`, generated from the ones tsc emits. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit both files; CI fails on a stale bundle. To share another module, add it to the bundle's entry.
+The Claude Code plugin reuses `src/planner.ts`, `src/typingChunks.ts`, the typing steps in `src/typingSteps.ts` (with `src/caretPath.ts`), `src/timeline.ts`, the net diff in `src/netHunks.ts`, the lane colors and auto-follow decision in `src/lanes.ts`, and the playback settings resolvers in `src/playbackSettings.ts`, `src/pace.ts` and `src/readPause.ts` through `claude-code/hooks/core.mjs`, a committed bundle that `scripts/build-claude-code.mjs` makes, with its declarations in `core.d.mts`, generated from the ones tsc emits. These shared modules must not import `vscode` or Node built-ins; the bundle is built for a neutral platform and fails if they do. After changing them, run `npm run build:claude-code` and commit both files; CI fails on a stale bundle. To share another module, add it to the bundle's entry.
 
 ## Rules that must not break
 
