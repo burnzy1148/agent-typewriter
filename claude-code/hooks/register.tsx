@@ -309,6 +309,17 @@ async function checkSurfaces($: EngineInterface, live: Live): Promise<void> {
   setStatus($, live, bandOf(live.deck));
 }
 
+/**
+ * Opens the pane, then redraws: the band above the prompt reads whether the
+ * pane is placed when it draws, and the plugin's own open runs none of its own
+ * `ui.open` hooks, so nothing else would tell a band already drawn.
+ */
+async function openPane($: EngineInterface): Promise<UiOpenResult> {
+  const opened = await $.ui.open({ id: PANE, title: TITLE });
+  $.ui.invalidate('ui.render');
+  return opened;
+}
+
 /** Whether a surface draws the pane now, by the engine's record, which outlives a reload of the module. */
 async function isPanePlaced($: EngineInterface): Promise<boolean> {
   return (await $.ui.panes()).some((p) => p.id === PANE && p.isPlaced);
@@ -517,7 +528,7 @@ async function record<R extends { deny?: string; isError?: boolean }>(
   // at all nothing will draw it, so the transcript says so. The tool call does
   // not wait for the open.
   if (isFirst) {
-    void $.ui.open({ id: PANE, title: TITLE }).then(
+    void openPane($).then(
       (opened) => {
         if (isNoSurface(opened)) $.ui.log(NO_SURFACE);
       },
@@ -715,7 +726,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'typewriter' }, async ($) => {
     if (await isTerminalOnly($)) return { text: TERMINAL_POINTER };
-    return { text: openedText(await $.ui.open({ id: PANE, title: TITLE })) };
+    return { text: openedText(await openPane($)) };
   });
 
   // Which turn each loop is in, and where each agent hangs off the main
@@ -816,7 +827,7 @@ export const register: Register = (on, options) => {
               label={`Play from #${row.number} in the typewriter pane`}
               onPress={async () => {
                 move($, live, (d) => seek(d, row.id, live.opts));
-                await $.ui.open({ id: PANE, title: TITLE });
+                await openPane($);
               }}
             >
               {chipLabel(row, { isCurrent: row.id === l.current, isPaused: l.isPaused })}
@@ -828,7 +839,7 @@ export const register: Register = (on, options) => {
               label={`Play turn ${chapter.number} in the typewriter pane`}
               onPress={async () => {
                 move($, live, () => playTurn(live, chapter.key));
-                await $.ui.open({ id: PANE, title: TITLE });
+                await openPane($);
               }}
             >
               {turnChipLabel(chapter)}
@@ -839,18 +850,11 @@ export const register: Register = (on, options) => {
     );
   });
 
-  // The pane's tree fits its body, so the only thing to scroll is the changes
-  // list, which the plugin draws a window of: it moves that window instead.
-  // A scroll that is not the list's goes on to the engine, which has nothing to move.
   // The band above the prompt reads whether the pane is placed from the
-  // engine: a close or open, or a surface coming or going, redraws it even when
-  // playback has not moved. A terminal coming or going sets or clears the
-  // status entry. Observed only.
-  on('ui.open', async ($, e, next) => {
-    const r = await next(e);
-    if (e.id === PANE) $.ui.invalidate('ui.render');
-    return r;
-  });
+  // engine: the person closing it, or a surface coming or going, redraws it
+  // even when playback has not moved (the plugin's own opens redraw through
+  // openPane). A terminal coming or going sets or clears the status entry.
+  // Observed only.
   on('ui.close', async ($, e, next) => {
     const r = await next(e);
     if (e.id === PANE) $.ui.invalidate('ui.render');
@@ -894,7 +898,7 @@ export const register: Register = (on, options) => {
           hotkey="o"
           variant="primary"
           onPress={async () => {
-            const opened = await $.ui.open({ id: PANE, title: TITLE });
+            const opened = await openPane($);
             if (!opened.isPlaced) $.ui.toast(openedText(opened));
           }}
         >
@@ -904,6 +908,9 @@ export const register: Register = (on, options) => {
     );
   });
 
+  // The pane's tree fits its body, so the only thing to scroll is the changes
+  // list, which the plugin draws a window of: it moves that window instead.
+  // A scroll that is not the list's goes on to the engine, which has nothing to move.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, ($, e, next) => {
     const l = live.list;
     const top = l && scrolledTop({ by: e.by, bodyRows: e.bodyRows, contentRows: e.contentRows, pointerRow: e.pointer?.row }, l);

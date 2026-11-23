@@ -292,3 +292,40 @@ test('the band shows while only another lane waits, counting it as the pane does
   await w.clock.settle();
   expect(await look($)).toBeUndefined();
 });
+
+/** Whether a band already drawn, held across acts, shows its controls now. */
+async function shows(ui: Awaited<ReturnType<typeof mount>>) {
+  return (await ui.findAll({ type: 'Button' })).some((b) => b.key === 'band:open');
+}
+
+test('a band already drawn goes away when Open pane places the pane', async ($, on) => {
+  const w = setUp(on);
+  await start($);
+  await write($, 'a.ts');
+  await w.clock.advance(200);
+  closePane(w);
+  const ui = await mount($);
+  expect(await shows(ui)).toBe(true);
+  await ui.press({ key: 'band:open' });
+  expect(await shows(ui)).toBe(false);
+  await ui.unmount();
+});
+
+test('a band already drawn redraws when a surface attaches or leaves', async ($, on) => {
+  const w = setUp(on);
+  w.openAnswer = { isPlaced: false, reason: 'unrequested panes need 144 columns; the window has 120' };
+  await start($);
+  await write($, 'a.ts');
+  await w.clock.advance(200);
+  const ui = await mount($);
+  expect(await shows(ui)).toBe(true);
+  // A surface that places the pane attaches.
+  w.panes.set(PANE_ID, true);
+  await $.session.attach({ surface: 'vscode', clientId: 'vscode:default' });
+  expect(await shows(ui)).toBe(false);
+  // It leaves, and the pane waits unplaced again.
+  w.panes.set(PANE_ID, false);
+  await $.session.detach({ surface: 'vscode', clientId: 'vscode:default', reason: 'detach' });
+  expect(await shows(ui)).toBe(true);
+  await ui.unmount();
+});

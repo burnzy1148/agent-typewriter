@@ -27,17 +27,17 @@ What the engine offers (plugin API types of this build):
 
 **Non-Goals:**
 - Any change to the pane itself.
-- Lane awareness (at-o3z.15 may scope the queued count and add a lane color to the band).
+- Lane awareness (at-o3z.15 may scope the queued count and add a lane color to the band). *Superseded in implementation:* lanes landed first, and the queued count is scoped by lane. A lane color or label on the band is still a non-goal (at-o3z.32). See *Corrected in implementation*.
 
 ## Decisions
 
 ### A `band` atom written in `flush`
 
-`replay.ts` gains `bandOf(deck, cwd)`, returning `null` before the first recorded change, else `{ line, isActive, isPaused }`: the shared line, whether a change is typed or any waits (`deck.playing !== undefined || deck.timeline.pendingCount() > 0`), and whether Pause should read Resume. `flush` writes it to a new `band` atom (`band-1`) when its JSON changes, as it does `view`, and calls `$.ui.status` in the same step (see below).
+`replay.ts` gains `bandOf(deck, cwd)`, returning `null` before the first recorded change, else `{ line, isActive, isPaused }`: the shared line, whether a change is typed or any waits (`deck.playing !== undefined || deck.timeline.pendingCount() > 0`), and whether Pause should read Resume. `flush` writes it to a new `band` atom (`band-1`) when its JSON changes, as it does `view`, and calls `$.ui.status` in the same step (see below). *Superseded in implementation:* `bandOf(deck)` takes no `cwd`, and `isActive` is `playing !== undefined || pendingTotal() > 0`, every lane counted. See *Corrected in implementation*.
 
 Alternative: compute the line in the `AbovePrompt` hook from `view` and `listing`. Rejected: `view` has no change number, so the hook would read two atoms and redraw on every list change, and the status entry, which is set outside any render, would need the same code a second time. Adding the number to `view` would move it to a new shape that collides with .14 and .16.
 
-The line uses the file's last path segment rather than the pane's relative path: the band is one row beside three buttons, and the pane, one press away, names the full path. The queued count is `pendingCount()`, the number the pane's status shows.
+The line uses the file's last path segment rather than the pane's relative path: the band is one row beside three buttons, and the pane, one press away, names the full path. The queued count is `pendingCount()`, the number the pane's status shows. *Superseded in implementation:* the pane's status now counts the followed lane's `pendingCount()` and then the other lanes', and the line does the same. See *Corrected in implementation*.
 
 ### The band asks `$.ui.panes()` when it draws
 
@@ -45,7 +45,7 @@ The `AbovePrompt` hook passes (`next(e)`) on the terminal surface, when `hasSurv
 
 Reading the engine's record rather than a flag the module keeps means a reload, a close from the engine's mark, a close by an unload, and an open placed later by a widened window all read right without the module tracking them.
 
-The band redraws when `band` changes, which covers playback moving. A close or open that changes nothing in `band` (the person closes the pane while paused) has no atom write behind it, so the plugin hooks `ui.close` and `ui.open` (observe only: `await next(e)`, then `$.ui.invalidate('ui.render')`), and `session.attach` / `session.detach` the same way.
+The band redraws when `band` changes, which covers playback moving. A close or open that changes nothing in `band` (the person closes the pane while paused) has no atom write behind it, so the plugin hooks `ui.close` and `ui.open` (observe only: `await next(e)`, then `$.ui.invalidate('ui.render')`), and `session.attach` / `session.detach` the same way. *Superseded in implementation:* the `ui.open` hook is gone. See *Corrected in implementation*.
 
 Alternative: a `paneShown` atom the module sets from those events. Rejected: it duplicates the engine's record and gets it wrong across a reload or an engine-side placement change.
 
@@ -75,11 +75,12 @@ The band reuses `openedText`, `PANE` and `TITLE`. The first-change open, its no-
 - **`bandOf(deck)` takes no `cwd`.** The line names the file by its last path segment, with control characters shown as the pane shows them, so the working directory plays no part. A change cued after a pick or a follow is told from a paused change in progress by the shown change still being pending in its lane with nothing typed.
 - **The status entry is set once `hasTerminal` is known.** `session.start` reads the surfaces before the load's first `flush`, so a session that starts on the terminal and the desktop never sets the entry, not even once.
 - **Tests cannot raise `ui.close`.** The test engine exposes no `$.ui.close`. The band tests close the pane by dropping it from the engine's record of panes, which is what the band reads; the `ui.close` hook's redraw is not covered by a plugin test.
+- **The plugin's own opens skip its `ui.open` hook (review round 1).** A plugin's call does not run its own hooks for that event, so the planned `ui.open` observer never fired for Open pane, `/typewriter`, the chips or the first-change open: a band already drawn stayed after Open pane placed the pane. A test holding one mount across the press showed it, once review asked for a test that sees a drawn band update. Each of those opens now goes through `openPane`, which redraws after the open, and the `ui.open` hook is removed. A person's close still comes in as `ui.close` from the engine, which the plugin hooks.
 - **One more write in `flush`.** Two recording tests read `saved` straight after the tool calls without letting the queued writes settle; the band's write made the second flush land later. They now settle the clock first, as the other tests do.
 
 ## Risks / Trade-offs
 
-- [VS Code gets no band] → Claude Code does not raise `AbovePrompt` there. The status entry carries the state, if VS Code draws plugin status lines; task 3.2 checks and the README says what VS Code shows.
+- [VS Code gets no band] → Claude Code does not raise `AbovePrompt` there. The status entry carries the state, if VS Code draws plugin status lines; task 3.2 checks and the README says what VS Code shows. *Superseded in implementation:* task 3.2 moved to at-o3z.28's desktop check, which also settles whether VS Code shows the status entry. The README says VS Code has no band, and that the status entry shows wherever Claude Code shows plugin status entries.
 - [The band redraws on every tick while typing] → `band` changes only when the line, `isActive` or `isPaused` changes: once per change, per pause and per queue length change, not per keystroke. `view` already redraws the pane per tick.
 - [`$.ui.panes()` is called on every band draw] → it is one engine call answered from memory, and the band draws only when `band` changes or the hooks above invalidate.
 - [A pane placed but behind another pane's tab still hides the band] → out of scope (proposal). `isShown` is available if it is wanted later, but no event says when the shown tab changes, so the band could not keep up.
