@@ -16,7 +16,7 @@ As in the VS Code extension, a deletion of at most 24 characters within one line
 - **THEN** the deletion stays drawn removed and in place until the user resumes, and is removed after the rest of the beat
 
 ### Requirement: Lines are shown red before a deletion removes them
-Before a deletion that is removed in one step, the code view SHALL draw each line the deletion touches marked removed from when the caret reaches it until it is removed: the beat when the caret arrives and the beat it is held, together about 600 ms divided by the playback speed. Pausing during that time SHALL hold it, and Finish current or a seek SHALL skip it. A line of the baseline SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A deletion that is backspaced SHALL get no lines drawn removed before it.
+Before a deletion removed in one step, the code view SHALL draw each line it touches marked removed from when the caret reaches it until it goes: the arrival beat and the held beat, together about 600 ms divided by the playback speed. Pause SHALL hold this, and Finish current or a seek SHALL skip it. A baseline line SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A backspaced deletion SHALL get no lines drawn removed before it.
 
 #### Scenario: Deleted baseline block
 - **WHEN** a change deletes a 20-line function that was in `a.ts`'s baseline
