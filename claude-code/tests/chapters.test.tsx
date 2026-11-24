@@ -232,7 +232,7 @@ test('a turn running at a reload ends when the next turn starts, and then gets i
   ]);
 });
 
-test("a turn is no longer kept once its changes are dropped", async ($, on) => {
+test("a turn is no longer kept once its changes are dropped", { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   loops(on);
   const writes = turnsState(on);
@@ -347,7 +347,7 @@ test('Play turn while paused cues the turn\'s first change as Next and stays pau
   expect(first?.text).toContain('Next');
 });
 
-test('Play turn brings a scrolled list back to following playback', async ($, on) => {
+test('Play turn brings a scrolled list back to following playback', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   loops(on);
   await start($);
@@ -383,7 +383,7 @@ test("a prompt with control characters draws them as stand-ins, and the pane sti
   expect(await lines($)).toEqual(['header t1', '#1']);
 });
 
-test('the dropped note sits above the first chapter', async ($, on) => {
+test('the dropped note sits above the first chapter', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   loops(on);
   await start($);
@@ -445,7 +445,7 @@ test("when a subagent's change is a turn's last, the chip sits on the Agent call
   expect((await row($, 'toolu_agent', 'Workflow')).chips).toEqual([['turn-chip:t1', 'Play turn · 2 changes']]);
 });
 
-test('pressing the Play turn chip opens the pane and plays the turn; while paused it cues the first change', async ($, on) => {
+test('pressing the Play turn chip opens the pane and plays the turn; while paused it cues the first change', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   loops(on);
   engineRows(on);

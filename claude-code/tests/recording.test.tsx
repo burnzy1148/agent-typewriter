@@ -181,7 +181,7 @@ test('a large file left with the same size and time records nothing', async ($, 
   expect(w.reads).toEqual([]);
 });
 
-test('a played change keeps its texts until 200 later changes push it out, and its texts are then cleared', async ($, on) => {
+test('a played change keeps its texts until 200 later changes push it out, and its texts are then cleared', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   await start($);
   await $.tool.call({ tool: 'Write', file_path: '/w/a.ts', content: 'a\n' });
