@@ -970,6 +970,11 @@ export const register: Register = (on, options) => {
     const columns = Math.max(10, bodyColumns - GUTTER);
     const isCodeTooLarge = v.pinned ? v.pinned.isTooLarge : v.isTooLarge;
     const shown = v.path !== undefined && !isCodeTooLarge ? frame(v, rows, columns) : undefined;
+    // What the typing steps count as in view: the lines of playback's file the code rows show.
+    if (!v.pinned && v.path !== undefined) {
+      if (shown?.lines) live.deck.drawn = { path: v.path, ...shown.lines };
+      else delete live.deck.drawn;
+    }
     // Under the header, the caption, the tabs and the pinned line: the code (or its one-line note), the controls and the "Changes" line.
     const firstRow = 1 + above + (shown ? shown.source.split('\n').length : 1) + 2;
     live.list = { top, height, count, firstRow };
@@ -1066,7 +1071,7 @@ export const register: Register = (on, options) => {
           <Button key="pause" hotkey="p" onPress={() => act($, live, togglePause)}>
             {isPaused ? 'Resume' : 'Pause'}
           </Button>
-          <Button key="finish" hotkey="f" onPress={() => move($, live, (d) => finish(d, live.opts))}>
+          <Button key="finish" hotkey="f" onPress={() => move($, live, (d) => finish(d, live.opts, live.now))}>
             Finish current
           </Button>
           <Button key="skip" hotkey="l" onPress={() => move($, live, (d) => skipToLatest(d, live.opts))}>

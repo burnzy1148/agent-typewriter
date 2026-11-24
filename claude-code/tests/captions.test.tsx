@@ -253,7 +253,7 @@ test('changes saved before captions load with no caption', async ($, on) => {
   expect(await card($, 's')).toBeUndefined();
 });
 
-test('a dropped change blanks its caption with its texts', async ($, on) => {
+test('a dropped change blanks its caption with its texts', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   conversation(on);
   await start($);

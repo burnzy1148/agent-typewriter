@@ -2,6 +2,19 @@
 // from the ones tsc emits for each module it bundles. Do not edit: change
 // those modules and run `npm run build:claude-code`.
 
+// src/caretPath.ts
+
+interface Caret {
+    line: number;
+    character: number;
+}
+/**
+ * Caret positions after each key press that walk from `from` to `to`, ending
+ * at `to`. Empty when they are the same. Undefined when it takes more than
+ * `maxKeys` presses: a person clicks there instead.
+ */
+declare function caretPath(lineText: (line: number) => string, from: Caret, to: Caret, maxKeys: number): Caret[] | undefined;
+
 // src/changeText.ts
 
 /** A change's before and after text, LF-normalized. */
@@ -328,6 +341,15 @@ declare function resolveCharsPerMinute(layers: readonly SpeedLayer[], fallback?:
  * charsPerMinute. Catch-up and manual speed multiply on top of this.
  */
 declare function baseCharsPerMinute(languageId: string, charsPerMinute: number, languageSpeeds: Record<string, unknown>): number;
+/**
+ * The catch-up speedup while `pending` changes wait behind the one being
+ * typed: one plus `catchUpFactor` for each, at most `maxSpeedup`. The manual
+ * playback speed multiplies on top of this.
+ */
+declare function catchUpSpeed(pending: number, settings: {
+    catchUpFactor: number;
+    maxSpeedup: number;
+}): number;
 
 // src/planner.ts
 
@@ -800,11 +822,140 @@ declare function typingChunkEnd(text: string, i: number, perTick: number): numbe
  */
 declare function backspaceStep(deleted: string, remaining: number, step: number): number;
 
+// src/typingSteps.ts
+
+/** Deletions this long or shorter, within one line, are backspaced; longer ones are selected and deleted. */
+declare const BACKSPACE_MAX = 24;
+/** More arrow presses than this to reach an edit, and the caret is clicked there instead. */
+declare const ARROW_MAX_KEYS = 24;
+/** Chunk size is the characters typed in one tick at this rate. */
+declare const TICK_HZ = 60;
+/** The longest wait a step asks for, in ms: the longest read pause or file-switch delay. */
+declare const MAX_WAIT_MS = 15000;
+/** Beat when the caret reaches an edit, before deleting or typing there. */
+declare const ARRIVE_MS = 220;
+/** Beat a long deletion stays selected before it goes. */
+declare const SELECT_MS = 380;
+/** Beat a deleted file's whole text stays selected before it goes. */
+declare const DELETE_FILE_MS = 500;
+/** What the steps read live from the frontend's settings: the shared playback settings and the base speed. */
+type TypingSettings = PlaybackSettings & {
+    charsPerMinute: number;
+};
+/** The change to type, texts normalized to LF. A `delete` removes the whole file; any other kind types `before` into `after`. */
+interface TypingChange {
+    before: string;
+    after: string;
+    kind: string;
+}
+/**
+ * How the change starts. `switching`: another file was shown before this one,
+ * so the read pause comes first and the file-switch delay after the file is
+ * shown. `jump`: the first edit is brought into view at once and the caret
+ * clicked there (a file switch, the first change played, or a rename).
+ */
+interface TypingStart {
+    switching: boolean;
+    jump: boolean;
+}
+/** What the steps ask the frontend, each time a decision needs it. */
+interface TypingHost {
+    settings(): TypingSettings;
+    /** The playback speed multiplier: catch-up times manual speed. */
+    speed(): number;
+    /** Whether finish now was pressed: the rest of the change goes in at once. */
+    finishing(): boolean;
+    /** Where the caret is now. */
+    caret(): Caret;
+    /** Whether lines `first` to `last` are all in view; undefined when the frontend has no viewport to tell. */
+    inView(first: number, last: number): boolean | undefined;
+    /** The language whose per-language speed applies, if any. */
+    languageId(): string;
+}
+type TypingStep = 
+/** Wait until the read pause has passed since the last edit. */
+{
+    kind: 'readPause';
+}
+/** Bring the change's file up, holding its before text. */
+ | {
+    kind: 'show';
+}
+/** Put the caret at `at`: an arrow press, or a click. */
+ | {
+    kind: 'caret';
+    at: number;
+}
+/**
+ * Bring the line of `at` into view if it is not. With `scroll`, this comes
+ * after a read pause: the frontend looks again, and may scroll there rather
+ * than jump.
+ */
+ | {
+    kind: 'reveal';
+    at: number;
+    scroll: boolean;
+}
+/** Text about to be deleted, [from, to); from === to takes the mark down. `oneStep`: it goes in one step rather than backspaced. */
+ | {
+    kind: 'mark';
+    from: number;
+    to: number;
+    oneStep: boolean;
+}
+/** Select [from, to), bringing it into view with `reveal`. */
+ | {
+    kind: 'select';
+    from: number;
+    to: number;
+    reveal: boolean;
+}
+/** Delete [from, to), leaving the caret at `from`. */
+ | {
+    kind: 'delete';
+    from: number;
+    to: number;
+}
+/** Insert `text` at `at`, leaving the caret after it. */
+ | {
+    kind: 'insert';
+    at: number;
+    text: string;
+}
+/** Replace the whole text at once. */
+ | {
+    kind: 'replace';
+    text: string;
+}
+/** Text just put in, [from, to): a hunk typed in full, or a whole text replaced. For highlights. */
+ | {
+    kind: 'added';
+    from: number;
+    to: number;
+}
+/** Wait `ms`, already divided by the speed, at most MAX_WAIT_MS. */
+ | {
+    kind: 'wait';
+    ms: number;
+};
+/** Where the caret waits before typing `h`: after the text it backspaces, or where the edit starts. */
+declare function caretBeforeHunk(h: Hunk): number;
+/** The hunks a change is typed in, in the order they are typed. */
+declare function typingHunks(before: string, after: string, naturalOrder: boolean): Hunk[];
+/**
+ * The steps that type `change`. Applying its edit steps (delete, insert,
+ * replace) to the before text in order gives the after text exactly, whenever
+ * finish now is pressed.
+ */
+declare function typingSteps(change: TypingChange, start: TypingStart, host: TypingHost, random: () => number): Generator<TypingStep, void, void>;
+
 export { planHunks, authoringOrder, normalizeEol, countChanges, type Hunk };
 export { typingChunkEnd, backspaceStep };
 export { Timeline, laneOf, type ChangeEvent, type NewChangeEvent, type LaneInfo, type SavedLane, type LaneRestore };
 export { resolvePlaybackSettings, resolveNumber, recordGetter, PLAYBACK_NUMBERS, PLAYBACK_SWITCHES, type PlaybackSettings, type SettingGetter, type NumberSpec };
-export { resolveCharsPerMinute, DEFAULT_CHARS_PER_MINUTE };
-export { resolveReadPauseSeconds, DEFAULT_READ_PAUSE_SECONDS, MAX_READ_PAUSE_SECONDS };
+export { resolveCharsPerMinute, baseCharsPerMinute, catchUpSpeed, DEFAULT_CHARS_PER_MINUTE };
+export { resolveReadPauseSeconds, readPauseLeft, DEFAULT_READ_PAUSE_SECONDS, MAX_READ_PAUSE_SECONDS };
+export { typingSteps, typingHunks, caretBeforeHunk, BACKSPACE_MAX, type TypingStep, type TypingHost, type TypingChange, type TypingStart, type TypingSettings };
+export { type Caret };
 export { netHunks };
 export { colorSlot, autoFollowDecision, autoFollowTarget, LANE_COLORS, AUTO_FOLLOW_IDLE_MS, type LaneActivity };

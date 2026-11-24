@@ -80,15 +80,19 @@ Playback SHALL type each change from its before text by deleting and typing text
 - **THEN** the pane shows the line being edited in steps, and ends showing the after text
 
 ### Requirement: Long deletions are removed at once
-As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be removed in one step, after the beat in which its lines are drawn removed.
+As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be held, after the beat when the caret arrives, for a further beat of about 380 ms divided by the playback speed with its lines drawn removed, and then removed in one step.
 
 #### Scenario: Deleted function
 - **WHEN** a change deletes a 200-line function
-- **THEN** the function is drawn removed for a beat, then removed from the file in one step, staying in view marked removed when it was in the baseline, and typing carries on with the next edit
+- **THEN** the function is drawn removed and held for a beat, then removed from the file in one step, staying in view marked removed when it was in the baseline, and typing carries on with the next edit
 
 #### Scenario: Renamed identifier
 - **WHEN** a change replaces `total` with `sum`
 - **THEN** `total` is backspaced a few characters at a time before `sum` is typed
+
+#### Scenario: Paused during the beat
+- **WHEN** the user pauses during a long deletion's beat and resumes 5 s later
+- **THEN** the deletion stays drawn removed and in place until the user resumes, and is removed after the rest of the beat
 
 ### Requirement: Large insertions are shown at once
 As in the VS Code extension with its default settings, a change whose edits insert more than 6,000 characters in all SHALL be shown at once, finished, instead of typed, and the next change SHALL start about a second later.
@@ -109,15 +113,15 @@ The plugin SHALL replay a file with CRLF or CR line endings as if its line endin
 - **THEN** the function's opening and closing lines are typed before its body, as for an LF file
 
 ### Requirement: Typing speed setting
-The plugin SHALL provide a `charsPerMinute` option that sets the typing speed in characters per minute, defaulting to 1000. A value that is not a number greater than zero SHALL be treated as 1000. A change to the option SHALL apply from the next keystroke.
+The plugin SHALL provide a `charsPerMinute` option that sets the base typing speed in characters per minute, defaulting to 1000. A value that is not a number greater than zero SHALL be treated as 1000. A change to the option SHALL apply from the next keystroke. The catch-up speedup SHALL multiply the base speed.
 
 #### Scenario: Default speed
 - **WHEN** `charsPerMinute` is not set
-- **THEN** changes are typed at 1000 characters per minute
+- **THEN** changes are typed at about 1000 characters per minute while no other change waits
 
 #### Scenario: Faster speed
-- **WHEN** `charsPerMinute` is 3000
-- **THEN** a change of 300 inserted characters takes about 6 seconds to type
+- **WHEN** `charsPerMinute` is 3000 and no other change waits
+- **THEN** a change that inserts 300 characters on one line takes about 6 seconds to type
 
 ### Requirement: Natural order setting
 The plugin SHALL provide a `naturalOrder` option, defaulting to on. With it on, a change that types a whole block SHALL type it in the order the `authoring-order` capability defines for the VS Code extension. With it off, each change SHALL be typed top to bottom.
@@ -1002,19 +1006,23 @@ A file's marks SHALL reflect only the changes the lane has played and the part o
 - **THEN** the code view marks what all three changes did
 
 ### Requirement: Lines are shown red before a deletion removes them
-Before a deletion that is removed in one step, the code view SHALL draw each line the deletion touches marked removed for 400 ms, then remove the deletion. Pausing during that beat SHALL hold it, and Finish current or a seek SHALL skip it. A line of the baseline SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A deletion that is backspaced SHALL get no beat.
+Before a deletion removed in one step, the code view SHALL draw each line it touches marked removed from when the caret reaches it until it goes: the arrival beat and the held beat, together about 600 ms divided by the playback speed. Pause SHALL hold this, and Finish current or a seek SHALL skip it. A baseline line SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A backspaced deletion SHALL get no lines drawn removed before it.
 
 #### Scenario: Deleted baseline block
 - **WHEN** a change deletes a 20-line function that was in `a.ts`'s baseline
-- **THEN** the 20 lines are drawn marked removed for 400 ms, the deletion lands, and the lines stay in view marked removed
+- **THEN** the 20 lines are drawn marked removed for about 600 ms, the deletion lands, and the lines stay in view marked removed
 
 #### Scenario: Deleting lines typed earlier
 - **WHEN** one played change added three lines to `a.ts` and the next change deletes them in one step
-- **THEN** the three lines are drawn marked removed for 400 ms and then disappear, leaving no mark
+- **THEN** the three lines are drawn marked removed for about 600 ms and then disappear, leaving no mark
 
 #### Scenario: Paused on the beat
 - **WHEN** the user pauses while lines are drawn marked removed before a deletion
 - **THEN** they stay drawn that way until the user resumes, and then the deletion lands
+
+#### Scenario: Faster playback
+- **WHEN** four changes wait behind one that deletes a 20-line function
+- **THEN** the lines are drawn marked removed for about a third as long
 
 ### Requirement: Clear marks
 The pane SHALL have a Clear marks control. Pressing it SHALL make each file's text as the followed lane last typed it the file's baseline, so the code view shows no marks until more changes play. The clear SHALL belong to the followed lane; other lanes keep their marks. A file that a change is being typed into at the press SHALL show no marks until that change finishes, and its after text SHALL then be the file's baseline. Clear marks SHALL NOT change playback.
@@ -1354,3 +1362,84 @@ While any surface attached to the session is the terminal, the plugin SHALL keep
 #### Scenario: Terminal attaches
 - **WHEN** a desktop session keeps a status entry and a terminal attaches to it
 - **THEN** the status entry is removed
+
+### Requirement: Typing follows the extension's pace
+The plugin SHALL type each change with the same pacing decisions as the VS Code extension under its default settings: every delay varies at random by up to 48% either way; the indent at the start of a new line goes in at once; a line break is followed by a pause of 2 to 4.4 characters' time; `;`, `{`, `}` and `,` by up to 1.5 characters' time; and about one line in 40 by a thinking pause of 0.3 to 1 s, divided by the playback speed.
+
+#### Scenario: Indented body
+- **WHEN** a change types a function body whose lines are indented by four spaces
+- **THEN** each line's four spaces appear at once and the rest of the line is typed a few characters at a time
+
+#### Scenario: Uneven rhythm
+- **WHEN** a change types 200 characters across 10 lines
+- **THEN** the time between keystrokes varies, and the pane lingers longer after each line break than between letters
+
+### Requirement: A beat before each edit
+When the caret reaches an edit, the plugin SHALL wait about 220 ms, varied at random and divided by the playback speed, before it deletes or types there.
+
+#### Scenario: Two edits in a change
+- **WHEN** a change edits line 3 and then line 9
+- **THEN** the caret rests at line 3 briefly before typing starts there, and again at line 9 before typing starts there
+
+### Requirement: The caret moves to each edit
+Before an edit, the plugin SHALL put the caret at the end of the text it deletes when that is at most 24 characters within one line, and otherwise where the edit starts. When the caret and the edit are both within the code rows the pane last drew, and the caret can reach the edit in at most 24 arrow-key presses, the caret SHALL walk there one press at a time, at about 15 presses per second divided by the playback speed. Otherwise it SHALL be placed there at once.
+
+#### Scenario: Edit a few lines down
+- **WHEN** the caret is at the end of line 2 after an edit, and the next edit, on line 8, is in the drawn rows
+- **THEN** the caret moves through each of lines 3 to 7 before it reaches line 8
+
+#### Scenario: Edit far away
+- **WHEN** the next edit is 300 lines below the caret
+- **THEN** the caret is placed at the edit at once
+
+#### Scenario: Picked while paused
+- **WHEN** playback is paused and the user presses a change whose first edit deletes a 60-character line
+- **THEN** the pane shows the caret where that line starts
+
+### Requirement: Read pause before leaving typed text
+Before the pane's code view leaves what was just typed, the plugin SHALL wait until at least 1.5 s, divided by the playback speed, have passed since it last changed the shown text. The view leaves when the next edit lies outside the code rows the pane last drew, other than a move within a block typed outside in, or when the next change is to another file. Time paused or waiting for the next change SHALL count toward it.
+
+#### Scenario: Next edit off-screen
+- **WHEN** a change edits line 3 and line 350 of a 400-line file, and line 350 is outside the drawn rows after the first edit
+- **THEN** about 1.5 s pass between the last character typed on line 3 and the view moving to line 350
+
+#### Scenario: Switching files
+- **WHEN** a change to `b.ts` is queued right behind a change to `a.ts`
+- **THEN** `a.ts` stays shown for about 1.5 s after its last character is typed, then `b.ts` is shown
+
+#### Scenario: Next change arrives late
+- **WHEN** a change to `a.ts` finishes and the next change, to `b.ts`, is recorded 10 s later
+- **THEN** `b.ts` is shown without a further wait
+
+### Requirement: No read pause after a jump in playback
+The plugin SHALL NOT wait for the read pause for the first change played, or for the first change played after Play from a picked change, From start, Play turn, Skip to latest, or a reload. Text that Finish current puts in SHALL count as just typed, so a read pause still follows it.
+
+#### Scenario: After a pick
+- **WHEN** the user presses an earlier change to another file right after a change finished typing
+- **THEN** that change's file is shown and typed without a read pause
+
+#### Scenario: After Finish current
+- **WHEN** the user presses Finish current on a change to `a.ts` with a change to `b.ts` queued behind it
+- **THEN** `a.ts` shows its after text for about 1.5 s before `b.ts` is shown
+
+### Requirement: File-switch delay
+After the pane switches to another file's text, the plugin SHALL wait about 1 s, divided by the playback speed and at most 15 s, before the first edit there. The first change played SHALL NOT wait for it.
+
+#### Scenario: Default delay
+- **WHEN** a change to `b.ts` is queued right behind a change to `a.ts`
+- **THEN** `a.ts` stays shown about 1.5 s, then `b.ts` is shown about 1 s before its first edit
+
+#### Scenario: Same file
+- **WHEN** a change to `a.ts` is queued right behind another change to `a.ts`
+- **THEN** the second change starts without a file-switch delay
+
+### Requirement: Catch-up speed
+While changes wait behind the one being typed, the plugin SHALL multiply the playback speed by one plus half the number of changes waiting, at most 8. The speedup SHALL follow the count as it changes, from the next keystroke or wait.
+
+#### Scenario: Four changes waiting
+- **WHEN** a change is typed at 1000 characters per minute and four more changes are waiting
+- **THEN** it is typed at about 3000 characters per minute, and its pauses are a third as long
+
+#### Scenario: Long backlog
+- **WHEN** 30 changes are waiting
+- **THEN** playback runs at 8 times its base speed

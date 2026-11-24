@@ -147,7 +147,8 @@ test('at the default speed, 300 characters take about 18 seconds', async ($, on)
 
   await w.clock.advance(17_000);
   expect((await look($, 'desktop')).status).toBe('typing');
-  await w.clock.advance(2_000);
+  // Jitter, the beat before the edit, the line break and a possible thinking pause can add up to about 2.5 s.
+  await w.clock.advance(4_000);
   expect((await look($, 'desktop')).status).toBe('idle');
 });
 
@@ -158,7 +159,8 @@ test('charsPerMinute sets the speed', { options: { charsPerMinute: 3000 } }, asy
 
   await w.clock.advance(5_500);
   expect((await look($, 'desktop')).status).toBe('typing');
-  await w.clock.advance(1_000);
+  // Up to about 1.8 s more with jitter, the beats and a possible thinking pause.
+  await w.clock.advance(2_500);
   const { status, code } = await look($, 'desktop');
   expect(status).toBe('idle');
   // The pane cuts the line at its width; the view holds all of it.
@@ -169,7 +171,8 @@ test('charsPerMinute sets the speed', { options: { charsPerMinute: 3000 } }, asy
 test('pause stops typing where it is and resume carries on', async ($, on) => {
   const w = world(on);
   await start($);
-  await $.tool.call({ tool: 'Write', file_path: '/w/p.ts', content: 'one\ntwo\nthree\nfour\n' });
+  // Twelve lines: still typing 1.8 s in, however the delays vary.
+  await $.tool.call({ tool: 'Write', file_path: '/w/p.ts', content: Array.from({ length: 12 }, (_, i) => `line ${i + 1}\n`).join('') });
   await w.clock.advance(300);
 
   await press($, 'pause');
@@ -179,7 +182,8 @@ test('pause stops typing where it is and resume carries on', async ($, on) => {
   expect((await look($, 'desktop')).code?.source).toBe(paused.code?.source);
 
   await press($, 'pause');
-  await w.clock.advance(300);
+  // Longer than a line break's pause plus a thinking pause.
+  await w.clock.advance(1_500);
   const resumed = await look($, 'desktop');
   expect(resumed.status).toBe('typing');
   expect(resumed.code?.source === paused.code?.source).toBe(false);
@@ -197,7 +201,8 @@ test('finish current shows that change done and the next one starts', async ($, 
   const done = await look($, 'desktop');
   expect(done.name).toBe('a.ts');
   expect(done.code?.source).toBe('alpha\nalpha\n');
-  await w.clock.advance(60);
+  // What Finish current put in is read first: 1.5 s, at 1.5 times the speed with one change waiting.
+  await w.clock.advance(1_100);
   const next = await look($, 'desktop');
   expect(next.name).toBe('b.ts');
   expect(next.status).toBe('typing · 1 queued');
@@ -739,6 +744,7 @@ test('the list says how many older changes were dropped', async ($, on) => {
   await w.clock.advance(60);
   const { rows, dropped } = await list($);
   expect(dropped).toBe('3 older changes were dropped to stay within the limit.');
-  expect(rows[0]).toBe('▸ #4 Write f4.ts Typing +1');
+  // At full catch-up speed #4's two characters may already be typed: the row's state varies, its change does not.
+  expect(rows[0]).toMatch(/^[▸✓] #4 Write f4\.ts (Typing )?\+1$/);
   expect(w.saved.changes[0]?.number).toBe(4);
 });

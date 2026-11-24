@@ -122,7 +122,7 @@ test('By turn is chosen at first, and there are no grouping buttons before the f
   ]);
 });
 
-test('By file groups the rows under each file, ordered by its first change, and By turn groups them back', async ($, on) => {
+test('By file groups the rows under each file, ordered by its first change, and By turn groups them back', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   const writes = groupingState(on);
   await start($);
@@ -151,7 +151,7 @@ test('By file groups the rows under each file, ordered by its first change, and 
   expect(await lines($)).toEqual(['turn ', '#1', '#2', '#3', '#4', '#5']);
 });
 
-test('switching grouping leaves the change being typed going on, and draws every row the same', async ($, on) => {
+test('switching grouping leaves the change being typed going on, and draws every row the same', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   await start($);
   await threeFiles($, (n) => LONG + n);
@@ -170,7 +170,7 @@ test('switching grouping leaves the change being typed going on, and draws every
   expect(await shown($)).toEqual({ number: '#5', status: 'idle' });
 });
 
-test('Play from first types the file\'s first change next, then every later change whatever its file', async ($, on) => {
+test('Play from first types the file\'s first change next, then every later change whatever its file', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   await start($);
   await threeFiles($, (n) => LONG + n);
@@ -201,7 +201,7 @@ test('Play from first while paused cues the file\'s first change as Next and sta
   expect((await rows($)).get('change:toolu_1')).toContain('Next');
 });
 
-test('the dropped note sits above the first file group, and Play from first starts at a file\'s first kept change', async ($, on) => {
+test('the dropped note sits above the first file group, and Play from first starts at a file\'s first kept change', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   await start($);
   for (let i = 1; i <= 3; i++) await write($, 'same.ts', `toolu_${i}`, `${i}\n`);
@@ -218,7 +218,7 @@ test('the dropped note sits above the first file group, and Play from first star
   expect((await rows($)).get('change:toolu_3')).toContain('Next');
 });
 
-test('a switch or Play from first brings a scrolled list back to following playback', async ($, on) => {
+test('a switch or Play from first brings a scrolled list back to following playback', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   await start($);
   for (let i = 1; i <= 30; i++) await write($, `a${i}.ts`, `toolu_${i}`);

@@ -100,13 +100,13 @@ function stored(on: On, key: 'marks' | 'tabs', value: unknown) {
 
 const LONG = 'b'.repeat(400) + '\n';
 
-/** a.ts played, b.ts being typed, c.ts waiting. */
+/** a.ts played, b.ts being typed, c.ts waiting: past a.ts's read pause and b.ts's file-switch delay. */
 async function threeFiles($: Engine, w: ReturnType<typeof world>) {
   await start($);
   await write($, 'src/a.ts', 'a\n');
   await write($, 'src/b.ts', LONG);
   await write($, 'c.ts', 'c\n');
-  await w.clock.advance(1_000);
+  await w.clock.advance(2_500);
 }
 
 test('a tab per file typed, in the order typed, the shown one marked; a waiting file has none', async ($, on) => {
@@ -208,7 +208,7 @@ test('the code view is a unified diff: a changed line shows removed then added, 
   expect(v.code?.text).toBe('one\nTWO\nthree\n');
 });
 
-test('lines a long deletion removes are drawn removed for 400 ms before they go', async ($, on) => {
+test('lines a long deletion removes are drawn removed from when the caret reaches it until it goes, about 600 ms', async ($, on) => {
   const w = world(on);
   await start($);
   const body = 'keep\n' + 'gone line 1();\ngone line 2();\ngone line 3();\n' + 'end\n';
@@ -219,10 +219,14 @@ test('lines a long deletion removes are drawn removed for 400 ms before they go'
   for (let t = 50; t <= 3_000; t += 50) {
     await w.clock.advance(50);
     const v = await look($);
-    if (v.code?.rows.includes('-gone line 1();')) seen.push(t);
+    // The caret waits where a long deletion starts, so its row carries the caret.
+    if (v.code?.rows.some((r) => r.replace('▍', '') === '-gone line 1();')) seen.push(t);
   }
-  expect(seen.length * 50).toBe(400);
-  expect(seen.at(-1)! - seen[0]! + 50).toBe(400);
+  // The beat when the caret arrives and the beat the deletion is held selected, each varied by up to 48%.
+  const span = seen.at(-1)! - seen[0]! + 50;
+  expect(seen.length * 50).toBe(span);
+  expect(span).toBeGreaterThanOrEqual(300);
+  expect(span).toBeLessThanOrEqual(950);
   // They were typed since the baseline, so once gone they leave no mark.
   expect((await look($)).marks).toEqual(['+keep', '+end']);
 });

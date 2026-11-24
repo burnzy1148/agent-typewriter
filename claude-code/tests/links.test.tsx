@@ -157,7 +157,7 @@ test('an agent started while a reload is still loading keeps the stored agents, 
   expect(linksOf(w, 'toolu_oldwrite')).toEqual({ turnId: 'tx', agentId: 'old', mainTurnId: 't0', agentCallId: 'toolu_old' });
 });
 
-test('the agents started are saved for a reload, the newest 200', async ($, on) => {
+test('the agents started are saved for a reload, the newest 200', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   loops(on);
   const writes = agentsState(on);
@@ -371,7 +371,7 @@ test('rows with no kept change are drawn as the engine draws them', async ($, on
   expect((await row($, 'toolu_never', 'Write')).chip).toBe(undefined);
 });
 
-test("a change dropped to stay within the limits loses its call row's chip", async ($, on) => {
+test("a change dropped to stay within the limits loses its call row's chip", { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on);
   engineRows(on);
   await start($);

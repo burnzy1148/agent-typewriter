@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyHunks, authoringOrder, countChanges, normalizeEol, planHunks, type Hunk } from '../src/planner';
+import { applyHunks, authoringOrder, countChanges, lfOffsetToLineCol, normalizeEol, planHunks, type Hunk } from '../src/planner';
+import { PLAYBACK_NUMBERS, PLAYBACK_SWITCHES } from '../src/playbackSettings';
+import { splitsPair } from '../src/typingChunks';
+import { typingSteps, type TypingSettings } from '../src/typingSteps';
 
 function roundTrip(before: string, after: string) {
   const hunks = planHunks(before, after);
@@ -370,4 +373,93 @@ test('fuzz: 3000 block-shaped edits round trip in authoring order', () => {
     if (hunks.some((h, k) => k > 0 && h.continues && h.offset < hunks[k - 1].offset + hunks[k - 1].insertText.length)) reordered++;
   }
   assert.ok(reordered > 1000, `only ${reordered} plans were reordered`);
+});
+
+// ------------------------------------------------------------ typing steps
+
+/**
+ * Types `before` into `after` through typingSteps, as any frontend applies
+ * them, with finish now pressed at a random step (or never), the viewport
+ * answering at random, and natural order on or off. The edit steps must give
+ * the after text exactly, and no step may point outside the text or between
+ * the halves of a surrogate pair.
+ */
+function stepsRoundTrip(r: () => number, before: string, after: string): void {
+  const settings: TypingSettings = {
+    ...(Object.fromEntries(Object.entries(PLAYBACK_NUMBERS).map(([k, v]) => [k, v.default])) as Record<keyof typeof PLAYBACK_NUMBERS, number>),
+    ...PLAYBACK_SWITCHES,
+    languageSpeeds: {},
+    charsPerMinute: 200 + Math.floor(r() * 20000),
+    naturalOrder: r() < 0.5,
+    maxAnimatedChars: r() < 0.1 ? 5 : 6000,
+  };
+  const finishAt = r() < 0.5 ? Math.floor(r() * 60) : Infinity;
+  let text = before;
+  let caret = 0;
+  let pulled = 0;
+  const steps = typingSteps(
+    { before, after, kind: 'modify' },
+    { switching: r() < 0.3, jump: r() < 0.3 },
+    {
+      settings: () => settings,
+      speed: () => 1 + r() * 4,
+      finishing: () => pulled >= finishAt,
+      caret: () => lfOffsetToLineCol(text, caret),
+      inView: () => (r() < 0.1 ? undefined : r() < 0.6),
+      languageId: () => '',
+    },
+    r,
+  );
+  const inText = (at: number) => at >= 0 && at <= text.length && !splitsPair(text, at);
+  for (const s of steps) {
+    pulled++;
+    if (s.kind === 'delete') {
+      assert.ok(inText(s.from) && inText(s.to) && s.from <= s.to, JSON.stringify(s));
+      text = text.slice(0, s.from) + text.slice(s.to);
+      caret = s.from;
+    } else if (s.kind === 'insert') {
+      assert.ok(inText(s.at), JSON.stringify(s));
+      text = text.slice(0, s.at) + s.text + text.slice(s.at);
+      caret = s.at + s.text.length;
+    } else if (s.kind === 'replace') {
+      text = s.text;
+      caret = 0;
+    } else if (s.kind === 'caret' || s.kind === 'reveal') {
+      assert.ok(inText(s.at), JSON.stringify(s));
+      if (s.kind === 'caret') caret = s.at;
+    } else if (s.kind === 'select' || s.kind === 'mark' || s.kind === 'added') {
+      assert.ok(inText(s.from) && inText(s.to) && s.from <= s.to, JSON.stringify(s));
+    } else if (s.kind === 'wait') {
+      assert.ok(s.ms > 0 && s.ms <= 15000, JSON.stringify(s));
+    }
+  }
+  assert.equal(text, after);
+}
+
+test('fuzz: 3000 random edits round trip through the typing steps', () => {
+  const r = rng(43);
+  for (let i = 0; i < 3000; i++) {
+    const before = randomText(r, Math.floor(r() * 80));
+    stepsRoundTrip(r, before, mutate(r, before));
+  }
+});
+
+test('fuzz: 3000 block-shaped edits round trip through the typing steps', () => {
+  const r = rng(8);
+  for (let i = 0; i < 3000; i++) {
+    const before = r() < 0.2 ? '' : randomCode(r, '', 0);
+    const after = r() < 0.7 ? mutateLines(r, before) : mutate(r, mutateLines(r, before));
+    stepsRoundTrip(r, before, after);
+  }
+});
+
+test('fuzz: edits with surrogate pairs round trip through the typing steps', () => {
+  const r = rng(99);
+  const pieces = ['😀', 'a', '\n', ' ', '𝒳', 'bc', '  '];
+  const pick = (n: number) => Array.from({ length: n }, () => pieces[Math.floor(r() * pieces.length)]).join('');
+  for (let i = 0; i < 1000; i++) {
+    const before = pick(Math.floor(r() * 40));
+    const after = pick(Math.floor(r() * 40));
+    stepsRoundTrip(r, before, after);
+  }
 });
