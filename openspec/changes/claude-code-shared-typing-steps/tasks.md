@@ -2,7 +2,7 @@
 
 ## 1. Rebase onto the in-flight plugin changes
 
-- [x] 1.1 Rebase onto `claude-code-extension` once at-o3z.16, .15 and .18 have merged. Add a MODIFIED block to `specs/claude-code-replay/spec.md` for at-o3z.16's archived *Lines are shown red before a deletion removes them*: the lines show as removed while the deletion is marked (the beat when the caret arrives and the beat it is held selected, together about 600 ms divided by the playback speed), Pause holds it, Finish current or a seek skips it, and a backspaced deletion gets none. Copy the requirement whole and keep its other scenarios. Verify with `openspec validate claude-code-shared-typing-steps --strict`.
+- [x] 1.1 Rebase onto `claude-code-extension` once at-o3z.16, .15 and .18 have merged. Add a MODIFIED block to `specs/claude-code-replay/spec.md` for at-o3z.16's archived *Lines are shown red before a deletion removes them*: the lines show as removed while the deletion is marked (the beat when the caret arrives and the beat it is held, together about 600 ms divided by the playback speed; see design.md, Corrected in implementation: no selection state in the plugin), Pause holds it, Finish current or a seek skips it, and a backspaced deletion gets none. Copy the requirement whole and keep its other scenarios. Verify with `openspec validate claude-code-shared-typing-steps --strict`.
 
 ## 2. The shared generator
 

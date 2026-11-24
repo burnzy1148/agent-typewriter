@@ -1,22 +1,22 @@
 ## MODIFIED Requirements
 
 ### Requirement: Long deletions are removed at once
-As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be selected, held selected for a beat of about 380 ms divided by the playback speed, and then removed in one step, after the beat in which its lines are drawn removed.
+As in the VS Code extension, a deletion of at most 24 characters within one line SHALL be backspaced in steps, and a longer deletion, or one that spans lines, SHALL be held, after the beat when the caret arrives, for a further beat of about 380 ms divided by the playback speed with its lines drawn removed, and then removed in one step.
 
 #### Scenario: Deleted function
 - **WHEN** a change deletes a 200-line function
-- **THEN** the function is drawn removed and selected for a beat, then removed from the file in one step, staying in view marked removed when it was in the baseline, and typing carries on with the next edit
+- **THEN** the function is drawn removed and held for a beat, then removed from the file in one step, staying in view marked removed when it was in the baseline, and typing carries on with the next edit
 
 #### Scenario: Renamed identifier
 - **WHEN** a change replaces `total` with `sum`
 - **THEN** `total` is backspaced a few characters at a time before `sum` is typed
 
 #### Scenario: Paused during the beat
-- **WHEN** the user pauses while a long deletion is selected and resumes 5 s later
-- **THEN** the deletion stays selected and in place until the user resumes, and is removed after the rest of the beat
+- **WHEN** the user pauses during a long deletion's beat and resumes 5 s later
+- **THEN** the deletion stays drawn removed and in place until the user resumes, and is removed after the rest of the beat
 
 ### Requirement: Lines are shown red before a deletion removes them
-Before a deletion that is removed in one step, the code view SHALL draw each line the deletion touches marked removed from when the caret reaches it until it is removed: the beat when the caret arrives and the beat it is held selected, together about 600 ms divided by the playback speed. Pausing during that time SHALL hold it, and Finish current or a seek SHALL skip it. A line of the baseline SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A deletion that is backspaced SHALL get no lines drawn removed before it.
+Before a deletion that is removed in one step, the code view SHALL draw each line the deletion touches marked removed from when the caret reaches it until it is removed: the beat when the caret arrives and the beat it is held, together about 600 ms divided by the playback speed. Pausing during that time SHALL hold it, and Finish current or a seek SHALL skip it. A line of the baseline SHALL stay marked removed after the deletion; a line typed since the baseline SHALL disappear. A deletion that is backspaced SHALL get no lines drawn removed before it.
 
 #### Scenario: Deleted baseline block
 - **WHEN** a change deletes a 20-line function that was in `a.ts`'s baseline
