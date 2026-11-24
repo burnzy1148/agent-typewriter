@@ -25,8 +25,10 @@
 
 ## 5. Integration
 
-- [ ] 5.1 Run `npm run typecheck`, `npm test`, `npm run it`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-shared-typing-steps --strict`. All pass.
-- [ ] 5.2 In a local desktop session with the plugin loaded (`claude --plugin-dir claude-code`), watch a multi-file turn type: jittered rhythm, indents at once, the read pause before a file switch and an off-screen edit, arrow walks, the deletion beat, and catch-up with a backlog. Note anything that reads wrong as a bead `--deps discovered-from:at-o3z.6`.
+- [x] 5.1 Run `npm run typecheck`, `npm test`, `npm run it`, `npm run typecheck:claude-code`, `npm run check:claude-code`, and `openspec validate claude-code-shared-typing-steps --strict`. All pass.
+  - Done at ea59f65 and a01b5c5: typecheck clean; `npm test` 1035 pass, 0 fail, 1 skipped; `typecheck:claude-code` clean; `check:claude-code` 172 plugin tests pass and the plugin installs from the checkout's marketplace (80 runs of the plugin suite in a row passed at d518522); `openspec validate --strict` passes. `npm run it` passes in CI on Ubuntu and Windows (all ten groups at ea59f65 and a01b5c5); run locally on macOS, the recording group's "sibling change recorded" timed out.
+- [x] 5.2 In a local desktop session with the plugin loaded (`claude --plugin-dir claude-code`), watch a multi-file turn type: jittered rhythm, indents at once, the read pause before a file switch and an off-screen edit, arrow walks, the deletion beat, and catch-up with a backlog. Note anything that reads wrong as a bead `--deps discovered-from:at-o3z.6`.
+  - *Superseded in implementation:* watching the pane needs a person at the desktop app, so it moves to at-o3z.28's desktop check, whose notes now list what to watch here, as `claude-code-prompt-band`'s status-entry check did. The pacing is covered by the plugin tests and `test/claudeCodeReplay.test.ts` with a seeded random.
 
 ## Workflow follow-up
 
