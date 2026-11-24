@@ -362,7 +362,8 @@ test('Play from first on a file another lane changed first follows that lane, an
   await spawn($, 'wt', 'write tests');
   await turn($, 'tw', 'wt');
   await write($, 'limiter.test.ts', 'wt');
-  await w.clock.advance(10_000);
+  // Main quiet 3 s, limiter.test.ts typed with its file-switch delay and any thinking pauses, then 3 s quiet again.
+  await w.clock.advance(15_000);
   await write($, 'b.ts', undefined, LONG);
   await w.clock.advance(100);
   expect((await look($)).chips[0]).toBe('[● Main · typing]');
